@@ -1,0 +1,25 @@
+FROM ros:humble
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    git \
+    ros-humble-tf-transformations \
+    ros-humble-cv-bridge \
+    ros-humble-visualization-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install mujoco numpy transforms3d
+
+# Clone MuJoCo Menagerie for G1 model
+WORKDIR /app
+RUN git clone https://github.com/google-deepmind/mujoco_menagerie.git && \
+    cp -r mujoco_menagerie/unitree_g1/* /app/ && \
+    rm -rf mujoco_menagerie
+
+COPY arena.xml /app/
+COPY mujoco_ros_bridge.py /app/
+COPY sim_config.json /app/
+
+# Source ROS 2 and run bridge
+CMD ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 mujoco_ros_bridge.py"]

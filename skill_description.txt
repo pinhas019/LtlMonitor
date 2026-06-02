@@ -1,0 +1,20 @@
+Skill: AutonomousNavigation
+Description: The robot navigates to a target location while avoiding obstacles until the target is reached.
+============================================================
+Execution Phases:
+============================================================
+
+[PlanningAndMoving]
+  Condition  : nav_accepted_or_executing and not near_target
+  Description: The robot is executing the path plan and moving towards the target.
+
+[ApproachingTarget]
+  Condition  : nav_accepted_or_executing and near_target
+  Description: The robot is in the final stages of approach to the target.
+
+============================================================
+Terminal Conditions:
+  SUCCESS : nav_success
+            The navigation status explicitly reports success.
+  FAILURE : nav_failure
+            The navigation status reports cancellation or abortion.

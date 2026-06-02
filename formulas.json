@@ -1,0 +1,42 @@
+{
+  "skill_name": "AutonomousNavigation",
+  "description": "The robot navigates to a target location while avoiding obstacles until the target is reached.",
+  "atomic_propositions": {
+    "moving": "True when linear_vel > 0.05. The robot is actively moving.",
+    "near_target": "True when distance_to_target < 0.5. The robot is close to the target location.",
+    "obstacle_detected": "True when min_range < 0.25. A close obstacle is detected.",
+    "nav_accepted_or_executing": "True when nav_status in ['accepted', 'executing']. The navigation command is active.",
+    "nav_success": "True when nav_status == 'succeeded'. The navigation task completed successfully.",
+    "nav_failure": "True when nav_status in ['aborted', 'canceled']. The navigation task failed or was stopped."
+  },
+  "ltl_formulas": [
+    {
+      "name": "path_is_collision_free_while_moving",
+      "formula": "G (moving -> !obstacle_detected)"
+    },
+    {
+      "name": "eventually_reach_target_or_fail",
+      "formula": "F (near_target || nav_failure)"
+    }
+  ],
+  "execution_phases": [
+    {
+      "phase": "PlanningAndMoving",
+      "condition": "nav_accepted_or_executing and not near_target",
+      "description": "The robot is executing the path plan and moving towards the target."
+    },
+    {
+      "phase": "ApproachingTarget",
+      "condition": "nav_accepted_or_executing and near_target",
+      "description": "The robot is in the final stages of approach to the target."
+    }
+  ],
+  "terminal_success": {
+    "condition": "nav_success",
+    "description": "The navigation status explicitly reports success."
+  },
+  "terminal_failure": {
+    "condition": "nav_failure",
+    "description": "The navigation status reports cancellation or abortion."
+  }
+}

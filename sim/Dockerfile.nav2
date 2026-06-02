@@ -1,0 +1,23 @@
+FROM ros:humble
+
+RUN apt-get update && apt-get install -y \
+    ros-humble-navigation2 \
+    ros-humble-nav2-bringup \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY nav2_config /app/nav2_config
+
+# Script to wait a few seconds then send a goal
+COPY send_goal.py /app/
+COPY generate_map.py /app/
+COPY nav2_params.yaml /app/
+
+CMD ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && \
+    python3 /app/generate_map.py && \
+    ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 map odom & \
+    ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 base_link base_footprint & \
+    ros2 run nav2_map_server map_server --ros-args -p yaml_filename:=/app/nav2_config/map.yaml -p use_sim_time:=False & \
+    ros2 run nav2_lifecycle_manager lifecycle_manager --ros-args -r __node:=lifecycle_manager_map -p node_names:=\"['map_server']\" -p autostart:=true -p use_sim_time:=False & \
+    ros2 launch nav2_bringup navigation_launch.py use_sim_time:=False use_composition:=False params_file:=/app/nav2_params.yaml & \
+    sleep 15 && python3 /app/send_goal.py && wait"]
