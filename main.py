@@ -110,6 +110,12 @@ class SkillSpec:
         self.terminal_failure_aps: set[str] = _extract_aps_from_condition(self.terminal_failure_condition)
         self.terminal_aps: set[str] = self.terminal_success_aps | self.terminal_failure_aps
 
+        # APs needed across all phase conditions (enter + progress + exit)
+        self.phase_aps: set[str] = set()
+        for phase in self.execution_phases:
+            for key in ("enter_condition", "progress_condition", "exit_condition", "condition"):
+                self.phase_aps |= _extract_aps_from_condition(phase.get(key, ""))
+
 
 def load_formulas_from_file(path: Path) -> SkillSpec:
     try:
@@ -139,16 +145,7 @@ def load_formulas_from_file(path: Path) -> SkillSpec:
     )
 
 
-def detect_phase(phases: list[dict], observation: dict[str, bool]) -> str:
-    current = "—"
-    for phase in phases:
-        condition = _sanitize_condition(phase.get("condition", "False"))
-        try:
-            if eval(condition, {"__builtins__": {}}, observation):
-                current = phase["phase"]
-        except Exception:
-            pass
-    return current
+_PHASE_VIOLATION_LIMIT = 3  # default consecutive-step limit before a phase failure
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +200,7 @@ def _print_step_block(
     changed_only: bool = False,
     prev_statuses: dict[str, MonitorStatus] | None = None,
     prev_states: dict[str, int] | None = None,
+    phase_violations: int = 0,
 ) -> None:
     has_changes = False
     if prev_statuses:
@@ -217,7 +215,8 @@ def _print_step_block(
     if changed_only and not has_changes and step != "init":
         return
 
-    phase_str = f"  {CYAN}[{phase}]{RESET}" if phase and phase != "—" else ""
+    phase_label = phase if phase else "Idle"
+    phase_str = f"  {CYAN}[{phase_label}]{RESET}"
     print(f"  {BOLD}┌── Step {step}{phase_str} {'─' * 30}{RESET}")
 
     # AP truth table — one line for TRUE, one for FALSE
@@ -231,6 +230,11 @@ def _print_step_block(
         if false_aps:
             parts = "  ".join(f"\033[31m{k}\033[0m" for k in false_aps)
             print(f"  │ {DIM}FALSE:{RESET}  {parts}")
+        print(f"  │ {'─' * 52}")
+
+    if phase_violations > 0:
+        YELLOW = "\033[33m"
+        print(f"  │ {BOLD}{YELLOW}⚠  Phase progress violations: {phase_violations}/{_PHASE_VIOLATION_LIMIT}{RESET}")
         print(f"  │ {'─' * 52}")
 
     # Formula status with current automaton state and labels
@@ -330,6 +334,8 @@ class LtlMonitorNode(Node):
         self.has_phases = bool(spec.execution_phases)
 
         self.current_phase = ""
+        self.phase_idx = -1           # index into spec.execution_phases; -1 = Idle
+        self.phase_violation_count = 0
         self.halted = False
 
         # Watch formulas file for changes
@@ -362,6 +368,15 @@ class LtlMonitorNode(Node):
         return False
 
     def is_terminal_observation(self, observation: dict[str, bool]) -> bool:
+        # Skip terminal checks until the skill has actually started:
+        # - When phases are defined, wait until the first phase is entered.
+        # - Always enforce a minimum step count (grace period) to absorb
+        #   stale sensor state and LLM warm-up hallucinations.
+        if self.step_idx < 2:
+            return False
+        if self.has_phases and self.phase_idx < 0:
+            return False
+
         success_cond_raw = getattr(self.spec, "terminal_success_condition", "False")
         success_cond = _sanitize_condition(success_cond_raw)
         try:
@@ -398,8 +413,7 @@ class LtlMonitorNode(Node):
         self.prev_statuses = dict(self.multi.statuses())
         self.step_idx = 0
         self.halted = False
-        self.current_phase = ""
-        self.current_observation = {}
+        self._reset_phase_state()
 
         # Print new skill header and formulas/automaton table to stdout
         _print_skill_header(spec)
@@ -408,13 +422,134 @@ class LtlMonitorNode(Node):
         print(f"\n{BOLD}{'─' * 64}{RESET}")
         print(f"{BOLD}  Monitoring Trace (Reloaded specs){RESET}")
         print(f"{BOLD}{'─' * 64}{RESET}")
-        
-        init_phase = detect_phase(spec.execution_phases, {}) if self.has_phases else None
-        _print_step_block("init", self.multi, {}, init_phase)
+
+        _print_step_block("init", self.multi, {}, "Idle")
         self.get_logger().info("Monitor reset successfully with new specs.")
 
+    def _update_phase_state(self, observation: dict[str, bool]) -> tuple[str, bool]:
+        """
+        Advance the phase state machine one step.
+
+        Returns (phase_name, is_progress_failure).
+        is_progress_failure=True means progress conditions were violated
+        _PHASE_VIOLATION_LIMIT consecutive times and the skill should fail.
+        """
+        phases = self.spec.execution_phases
+        if not phases:
+            return "Idle", False
+
+        def _eval(raw: str, default: bool) -> bool:
+            try:
+                return bool(eval(_sanitize_condition(raw), {"__builtins__": {}}, observation))
+            except Exception:
+                return default
+
+        # Try to enter phase 0 from Idle
+        if self.phase_idx < 0:
+            p = phases[0]
+            enter = p.get("enter_condition") or p.get("condition", "False")
+            if _eval(enter, False):
+                self.phase_idx = 0
+                self.phase_violation_count = 0
+                self.get_logger().info(f"Phase enter: '{p['phase']}'")
+
+        if self.phase_idx < 0:
+            return "Idle", False
+
+        p = phases[self.phase_idx]
+        name = p["phase"]
+        limit = p.get("progress_violation_limit", _PHASE_VIOLATION_LIMIT)
+
+        # Check progress condition
+        if not _eval(p.get("progress_condition", "True"), True):
+            self.phase_violation_count += 1
+            self.get_logger().warn(
+                f"Phase '{name}' progress violation {self.phase_violation_count}/{limit}"
+            )
+            if self.phase_violation_count >= limit:
+                return name, True
+        else:
+            if self.phase_violation_count > 0:
+                self.get_logger().info(f"Phase '{name}' progress restored")
+            self.phase_violation_count = 0
+
+        # Check exit condition → advance to next phase
+        if _eval(p.get("exit_condition", "False"), False):
+            next_idx = self.phase_idx + 1
+            if next_idx < len(phases):
+                np_ = phases[next_idx]
+                np_enter = np_.get("enter_condition") or np_.get("condition", "True")
+                if _eval(np_enter, True):
+                    self.get_logger().info(f"Phase: '{name}' → '{np_['phase']}'")
+                    self.phase_idx = next_idx
+                    self.phase_violation_count = 0
+            else:
+                self.get_logger().info(f"Phase '{name}' complete — all phases done")
+                self.phase_idx = -1
+                return "Done", False
+
+        if 0 <= self.phase_idx < len(phases):
+            return phases[self.phase_idx]["phase"], False
+        return "Idle", False
+
+    def _reset_phase_state(self) -> None:
+        self.phase_idx = -1
+        self.phase_violation_count = 0
+        self.current_phase = "Idle"
+
+    def _print_phase_context(self) -> None:
+        """Print a banner showing the current phase's enter/progress/exit conditions."""
+        phases = self.spec.execution_phases
+        if self.phase_idx < 0 or self.phase_idx >= len(phases):
+            return
+        p = phases[self.phase_idx]
+        YELLOW = "\033[33m"
+        enter    = p.get("enter_condition") or p.get("condition", "—")
+        progress = p.get("progress_condition", "True")
+        exit_c   = p.get("exit_condition", "False")
+        limit    = p.get("progress_violation_limit", _PHASE_VIOLATION_LIMIT)
+        from_name = phases[self.phase_idx - 1]["phase"] if self.phase_idx > 0 else "Idle"
+        to_name   = phases[self.phase_idx + 1]["phase"] if self.phase_idx + 1 < len(phases) else "Done"
+
+        print(f"\n  {BOLD}{'═' * 64}{RESET}")
+        print(f"  {BOLD}{YELLOW}▶  Phase: {p['phase']}{RESET}")
+        if p.get("description"):
+            print(f"  {DIM}{p['description']}{RESET}")
+        print(f"  {BOLD}{'─' * 64}{RESET}")
+        print(f"  {DIM}Enter from  :{RESET}  {from_name}  →  when: {enter}")
+        print(f"  {DIM}Progress    :{RESET}  {progress}  {DIM}(fail after {limit} violations){RESET}")
+        print(f"  {DIM}Exit to     :{RESET}  {to_name}  →  when: {exit_c}")
+        print(f"  {BOLD}{'═' * 64}{RESET}\n")
+
+    def _halt(self, reason: str) -> None:
+        """Terminal state reached — signal LLM client then shut down both nodes."""
+        self.halted = True
+        RED = "\033[31m"
+        print(f"\n{BOLD}{'═' * 64}{RESET}")
+        print(f"{BOLD}{RED}  ■  MONITOR HALTED{RESET}")
+        print(f"  Reason : {reason}")
+        print(f"{BOLD}{'═' * 64}{RESET}\n")
+        self.get_logger().info(f"Monitor halting. Reason: {reason}")
+
+        # Tell the LLM client to shut down
+        aps_msg = String()
+        aps_msg.data = json.dumps([])
+        self.aps_pub.publish(aps_msg)
+
+        halt_desc = {"state": "halt", "skill_name": self.spec.skill_name, "reason": reason}
+        desc_msg = String()
+        desc_msg.data = json.dumps(halt_desc)
+        self.state_desc_pub.publish(desc_msg)
+
+        # Shut down after a brief delay so the messages can be delivered
+        self._halt_timer = self.create_timer(0.5, self._do_shutdown)
+
+    def _do_shutdown(self) -> None:
+        self._halt_timer.destroy()
+        rclpy.shutdown()
+
     def _enter_idle(self, reason: str) -> None:
-        """Halt monitoring and enter the idle state, waiting for the next skill."""
+        """Suspend monitoring and wait for reset (recoverable — e.g. progress failure)."""
         self.halted = True
         YELLOW = "\033[33m"
         print(f"\n{BOLD}{'═' * 64}{RESET}")
@@ -426,16 +561,11 @@ class LtlMonitorNode(Node):
         print(f"{BOLD}{'═' * 64}{RESET}\n")
         self.get_logger().info(f"Monitor entering IDLE state. Reason: {reason}")
 
-        # Publish empty APs + idle state description so LLM client halts
         aps_msg = String()
         aps_msg.data = json.dumps([])
         self.aps_pub.publish(aps_msg)
 
-        idle_desc = {
-            "state": "idle",
-            "skill_name": self.spec.skill_name,
-            "reason": reason,
-        }
+        idle_desc = {"state": "idle", "skill_name": self.spec.skill_name, "reason": reason}
         desc_msg = String()
         desc_msg.data = json.dumps(idle_desc)
         self.state_desc_pub.publish(desc_msg)
@@ -446,12 +576,11 @@ class LtlMonitorNode(Node):
         self.prev_statuses = dict(self.multi.statuses())
         self.step_idx = 0
         self.halted = False
-        self.current_phase = ""
+        self._reset_phase_state()
         print(f"\n{BOLD}{'─' * 64}{RESET}")
         print(f"{BOLD}  Monitoring Trace (New Execution){RESET}")
         print(f"{BOLD}{'─' * 64}{RESET}")
-        init_phase = detect_phase(self.spec.execution_phases, {}) if self.has_phases else None
-        _print_step_block("init", self.multi, {}, init_phase)
+        _print_step_block("init", self.multi, {}, "Idle")
         self.publish_current_state()
 
     def eval_callback(self, msg: String):
@@ -481,7 +610,16 @@ class LtlMonitorNode(Node):
 
         # Step the automaton
         statuses = self.multi.step(observation)
-        self.current_phase = detect_phase(self.spec.execution_phases, observation) if self.has_phases else ""
+
+        # Advance phase state machine
+        if self.has_phases:
+            prev_phase_idx = self.phase_idx
+            phase_name, is_progress_failure = self._update_phase_state(observation)
+            self.current_phase = phase_name
+            if self.phase_idx != prev_phase_idx and self.phase_idx >= 0:
+                self._print_phase_context()
+        else:
+            is_progress_failure = False
 
         # Print standard console step block
         _print_step_block(
@@ -489,7 +627,17 @@ class LtlMonitorNode(Node):
             changed_only=self.args.changes_only,
             prev_statuses=self.prev_statuses,
             prev_states=prev_states,
+            phase_violations=self.phase_violation_count,
         )
+
+        # Phase progress failure → treat as terminal failure
+        if is_progress_failure:
+            _print_summary(self.multi)
+            self._enter_idle(
+                f"Phase '{self.current_phase}' progress conditions violated "
+                f"{self.phase_violation_count} consecutive step(s)"
+            )
+            return
 
         # Log current states to ROS logs
         for mon in self.multi.monitors:
@@ -498,8 +646,7 @@ class LtlMonitorNode(Node):
             self.get_logger().info(
                 f"[{mon.name}] {prev_s} ──► {curr_s}{_state_label(mon, curr_s)} | {mon.status.name}"
             )
-        if self.current_phase:
-            self.get_logger().info(f"Current phase: {self.current_phase}")
+        self.get_logger().info(f"Phase: {self.current_phase}")
 
         self.prev_statuses = dict(statuses)
         self.step_idx += 1
@@ -510,7 +657,7 @@ class LtlMonitorNode(Node):
             rclpy.shutdown()
             return
 
-        # Check if we reached a terminal observation
+        # Check if we reached a terminal observation → enter idle/waiting state
         if self.is_terminal_observation(observation):
             _print_summary(self.multi)
             self._enter_idle("Terminal state reached (success or failure)")
@@ -536,20 +683,33 @@ class LtlMonitorNode(Node):
             self.state_desc_pub.publish(desc_msg)
             return
 
-        # Determine required APs for next step — always include terminal APs so
-        # the LLM evaluates them with full terminal-context descriptions.
-        required_aps = self.multi.get_required_aps() | self.spec.terminal_aps
+        # Automaton APs + terminal APs + phase APs — all must be evaluated each step.
+        required_aps = self.multi.get_required_aps() | self.spec.terminal_aps | self.spec.phase_aps
         aps_msg = String()
         aps_msg.data = json.dumps(list(required_aps))
         self.aps_pub.publish(aps_msg)
 
-        # Publish state description — include terminal context so the LLM
-        # prompt can describe success/failure conditions explicitly.
+        # Build phase_info for the LLM client (current phase's conditions + transitions)
+        phases = self.spec.execution_phases
+        phase_info: dict = {}
+        if 0 <= self.phase_idx < len(phases):
+            p = phases[self.phase_idx]
+            next_name = phases[self.phase_idx + 1]["phase"] if self.phase_idx + 1 < len(phases) else "Done"
+            phase_info = {
+                "enter_condition":      p.get("enter_condition") or p.get("condition", ""),
+                "progress_condition":   p.get("progress_condition", "True"),
+                "exit_condition":       p.get("exit_condition", "False"),
+                "next_phase":           next_name,
+                "violation_count":      self.phase_violation_count,
+                "violation_limit":      p.get("progress_violation_limit", _PHASE_VIOLATION_LIMIT),
+            }
+
         state_desc = {
             "phase": self.current_phase,
             "skill_name": self.spec.skill_name,
             "description": self.spec.description,
             "ap_descriptions": self.spec.atomic_propositions,
+            "phase_info": phase_info,
             "terminal_success": {
                 "condition": self.spec.terminal_success_condition,
                 "description": self.spec.terminal_success_description,
@@ -614,8 +774,7 @@ def main(args=None) -> None:
     print(f"{BOLD}  Monitoring Trace{RESET}")
     print(f"{BOLD}{'─' * 64}{RESET}")
     
-    init_phase = detect_phase(spec.execution_phases, {}) if bool(spec.execution_phases) else None
-    _print_step_block("init", multi, {}, init_phase)
+    _print_step_block("init", multi, {}, "Idle")
 
     try:
         rclpy.spin(node)

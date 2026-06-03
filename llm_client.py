@@ -1,4 +1,5 @@
 import json
+import re
 import urllib.request
 import argparse
 import queue
@@ -96,9 +97,20 @@ class LlmClientNode(Node):
 
     def desc_callback(self, msg: String):
         try:
-            self.state_desc = json.loads(msg.data)
+            data = json.loads(msg.data)
         except Exception as e:
             self.get_logger().error(f"Failed to parse state description: {e}")
+            return
+
+        if data.get("state") == "halt":
+            self.get_logger().info(
+                f"Monitor halted ({data.get('reason','')}) — shutting down LLM client."
+            )
+            self._drain_queue()
+            rclpy.shutdown()
+            return
+
+        self.state_desc = data
 
     def odom_callback(self, msg: Odometry):
         x = msg.pose.pose.position.x
@@ -117,6 +129,11 @@ class LlmClientNode(Node):
     def scan_callback(self, msg: LaserScan):
         valid_ranges = [r for r in msg.ranges if r > 0.0 and r != float('inf')]
         if not valid_ranges:
+            self.scan_data = {
+                "min_range": 10.0,
+                "mean_range": 10.0,
+                "close_objects": 0
+            }
             return
         self.scan_data = {
             "min_range": round(min(valid_ranges), 2),
@@ -195,7 +212,10 @@ class LlmClientNode(Node):
             "nav_status": self.nav_status
         }
         self.query_queue.put(snapshot)
-        self.get_logger().info(f"Queued evaluation request (Queue size: {self.query_queue.qsize()})")
+        phase = self.state_desc.get("phase") or "—"
+        self.get_logger().info(
+            f"→ queued | phase={phase} | aps={len(self.required_aps)} | depth={self.query_queue.qsize()}"
+        )
 
     def _worker_loop(self):
         while rclpy.ok():
@@ -211,87 +231,165 @@ class LlmClientNode(Node):
             finally:
                 self.query_queue.task_done()
 
+    # ------------------------------------------------------------------
+    # ANSI helpers (shared across print calls)
+    # ------------------------------------------------------------------
+    _BOLD  = "\033[1m"
+    _RESET = "\033[0m"
+    _DIM   = "\033[2m"
+    _CYAN  = "\033[36m"
+    _GREEN = "\033[32m"
+    _RED   = "\033[31m"
+
+    # Matches "True when <rule>" in AP descriptions — used for rule-based eval
+    _TRUE_WHEN_RE = re.compile(r'[Tt]rue when\s+(.+?)(?:\.|$)', re.IGNORECASE)
+
+    def _rule_eval(self, desc: str, sensor_data: dict):
+        """
+        Extract the 'True when <expr>' rule from an AP description and evaluate
+        it directly against sensor_data.  Returns bool on success, None if the
+        rule cannot be parsed or evaluated (→ fall back to LLM).
+        """
+        m = self._TRUE_WHEN_RE.search(desc)
+        if not m:
+            return None
+        rule = m.group(1).strip().rstrip('.')
+        try:
+            return bool(eval(rule, {"__builtins__": {}}, sensor_data))
+        except Exception:
+            return None
+
     def _process_evaluation(self, task):
         required_aps = task["required_aps"]
-        state_desc = task["state_desc"]
-        odom_data = task["odom_data"]
-        scan_data = task["scan_data"]
-        nav_status = task["nav_status"]
+        state_desc   = task["state_desc"]
+        odom_data    = task["odom_data"]
+        scan_data    = task["scan_data"]
+        nav_status   = task["nav_status"]
 
-        # Prepare context
-        ap_descriptions = state_desc.get("ap_descriptions", {})
-
+        ap_descriptions  = state_desc.get("ap_descriptions", {})
         terminal_success = state_desc.get("terminal_success", {})
         terminal_failure = state_desc.get("terminal_failure", {})
-        terminal_section = ""
-        if terminal_success.get("description") or terminal_failure.get("description"):
-            terminal_section = (
-                f"\nTerminal conditions (evaluate these APs precisely):\n"
-                f"  SUCCESS when: {terminal_success.get('description', 'N/A')}\n"
-                f"  FAILURE when: {terminal_failure.get('description', 'N/A')}\n"
-            )
+        phase_info       = state_desc.get("phase_info", {})
 
-        # Build one line per AP: description + the current sensor value most relevant to it
-        sensor_summary = {
-            "position_x":        odom_data.get("position", {}).get("x", "N/A"),
-            "position_y":        odom_data.get("position", {}).get("y", "N/A"),
-            "linear_vel":        odom_data.get("linear_vel", "N/A"),
-            "angular_vel":       odom_data.get("angular_vel", "N/A"),
-            "distance_to_target": odom_data.get("distance_to_target", "N/A"),
-            "min_range":         scan_data.get("min_range", "N/A"),
-            "mean_range":        scan_data.get("mean_range", "N/A"),
-            "close_objects":     scan_data.get("close_objects", "N/A"),
-            "nav_status":        nav_status or "N/A",
+        # ── Build sensor data for display (strings) and rule eval (numbers) ──
+        pos = odom_data.get("position", {})
+        px  = pos.get("x", "N/A")
+        py  = pos.get("y", "N/A")
+        vel = odom_data.get("linear_vel",        "N/A")
+        ang = odom_data.get("angular_vel",        "N/A")
+        dist= odom_data.get("distance_to_target", "N/A")
+        rng = scan_data.get("min_range",          "N/A")
+        rng_mean = scan_data.get("mean_range",    "N/A")
+        close    = scan_data.get("close_objects", "N/A")
+        nav      = nav_status or "none"
+
+        # Numeric dict for Python rule evaluation — safe defaults keep APs false
+        # when sensors haven't published yet (e.g. dist=9999 → never near_target)
+        sensor_eval = {
+            "position_x":        pos.get("x",     0.0),
+            "position_y":        pos.get("y",     0.0),
+            "linear_vel":        odom_data.get("linear_vel",        0.0),
+            "angular_vel":       odom_data.get("angular_vel",       0.0),
+            "distance_to_target":odom_data.get("distance_to_target",9999.0),
+            "min_range":         scan_data.get("min_range",         10.0),
+            "mean_range":        scan_data.get("mean_range",        10.0),
+            "close_objects":     int(scan_data.get("close_objects", 0)),
+            "nav_status":        nav_status or "",
         }
 
-        ap_lines = []
+        skill = state_desc.get("skill_name", "?")
+        phase = state_desc.get("phase") or "Idle"
+        B, D, R, C = self._BOLD, self._DIM, self._RESET, self._CYAN
+
+        violations = phase_info.get("violation_count", 0)
+        vlimit     = phase_info.get("violation_limit", 3)
+        viol_str   = f"  {B}\033[33m⚠ {violations}/{vlimit} violations{R}" if violations > 0 else ""
+
+        # ── Pre-query display block ─────────────────────────────────────
+        print(f"  {B}┌── Eval  [{C}{skill}{R}{B}]  phase: {C}{phase}{R}{B}  {'─' * 22}{R}")
+        print(f"  │ {D}pos=({px}, {py}) m  vel={vel} m/s  dist={dist} m  min_range={rng} m{R}")
+        print(f"  │ {D}nav_status={nav}  close_objects={close}{R}")
+        if phase_info:
+            print(f"  │ {'─' * 52}")
+            print(f"  │ {D}Progress :{R}  {phase_info.get('progress_condition','—')}{viol_str}")
+            print(f"  │ {D}Exit  →  :{R}  {phase_info.get('next_phase','?')}  when: {phase_info.get('exit_condition','—')}")
+
+        # ── Rule-based evaluation (first pass) ──────────────────────────
+        rule_evals: dict[str, bool] = {}
+        llm_aps:    list[str]       = []
+
         for ap in required_aps:
-            desc = ap_descriptions.get(ap, "No description provided.")
-            ap_lines.append(f'  "{ap}": {desc}')
+            desc   = ap_descriptions.get(ap, "")
+            result = self._rule_eval(desc, sensor_eval)
+            if result is not None:
+                rule_evals[ap] = result
+            else:
+                llm_aps.append(ap)
 
-        prompt = f"""You are evaluating atomic propositions for a robot skill monitor.
+        # ── LLM evaluation (fallback for non-rule APs) ───────────────────
+        llm_evals: dict[str, bool] = {}
+        if llm_aps:
+            terminal_section = ""
+            if terminal_success.get("description") or terminal_failure.get("description"):
+                terminal_section = (
+                    f"\nTerminal conditions:\n"
+                    f"  SUCCESS when: {terminal_success.get('description','N/A')}\n"
+                    f"  FAILURE when: {terminal_failure.get('description','N/A')}\n"
+                )
+            ap_lines = "\n".join(
+                f'  "{ap}": {ap_descriptions.get(ap,"No description.")}' for ap in llm_aps
+            )
+            prompt = f"""You are evaluating atomic propositions for a robot skill monitor.
 
-Skill: {state_desc.get("skill_name", "Unknown")} — {state_desc.get("description", "")}
-Phase: {state_desc.get("phase", "Unknown")}
+Skill: {skill} — {state_desc.get("description","")}
+Phase: {phase}
 {terminal_section}
 Current sensor readings:
-  position_x        = {sensor_summary["position_x"]} m
-  position_y        = {sensor_summary["position_y"]} m
-  linear_vel        = {sensor_summary["linear_vel"]} m/s
-  angular_vel       = {sensor_summary["angular_vel"]} rad/s
-  distance_to_target = {sensor_summary["distance_to_target"]} m
-  min_range         = {sensor_summary["min_range"]} m
-  mean_range        = {sensor_summary["mean_range"]} m
-  close_objects     = {sensor_summary["close_objects"]}
-  nav_status        = "{sensor_summary["nav_status"]}"
+  position_x         = {px} m
+  position_y         = {py} m
+  linear_vel         = {vel} m/s
+  angular_vel        = {ang} rad/s
+  distance_to_target = {dist} m
+  min_range          = {rng} m
+  mean_range         = {rng_mean} m
+  close_objects      = {close}
+  nav_status         = "{nav}"
 
-Evaluate each proposition below to true or false.
-Each description contains the exact rule to apply — follow it literally using the sensor values above.
+Evaluate each proposition to true or false using the sensor values above.
 
-{chr(10).join(ap_lines)}
+{ap_lines}
 
-Reply with ONLY a JSON object: keys are proposition names, values are booleans (true/false).
-No markdown, no explanation.
+Reply with ONLY a JSON object. No markdown, no explanation.
 """
-        self.get_logger().info(
-            f"\n--- [Evaluation Queue Size: {self.query_queue.qsize()}] ---\n"
-            f"Evaluating APs: {required_aps}\n"
-            f"Against Current State Description: Phase={state_desc.get('phase', 'Unknown')}, Skill={state_desc.get('skill_name', 'Unknown')}\n"
-            f"Sensor & Odometry Data: Odom={json.dumps(odom_data)}, Scan={json.dumps(scan_data)}, NavStatus={nav_status}"
-        )
+            raw = self._query_llm(prompt)
+            llm_evals = {ap: bool(raw.get(ap, False)) for ap in llm_aps} if raw else {}
 
-        evals = self._query_llm(prompt)
-        if evals:
-            # Ensure all required APs are present and boolean
-            final_evals = {}
-            for ap in required_aps:
-                val = evals.get(ap, False)
-                final_evals[ap] = bool(val)
-                
-            self.get_logger().info(f"Evaluation results from LLM: {json.dumps(final_evals)}")
-            msg = String()
-            msg.data = json.dumps(final_evals)
-            self.eval_pub.publish(msg)
+        # ── Merge and publish ────────────────────────────────────────────
+        final_evals = {**rule_evals, **llm_evals}
+        # Ensure every required AP is present (default False if LLM failed)
+        for ap in required_aps:
+            final_evals.setdefault(ap, False)
+
+        # ── Result display ───────────────────────────────────────────────
+        print(f"  │ {'─' * 52}")
+        G, RE = self._GREEN, self._RED
+        def _ap_tag(ap):
+            tag = "R" if ap in rule_evals else "L"
+            color = G if final_evals[ap] else RE
+            return f"{color}{ap}[{tag}]{R}"
+
+        true_aps  = [ap for ap in required_aps if final_evals[ap]]
+        false_aps = [ap for ap in required_aps if not final_evals[ap]]
+        print(f"  │ {D}TRUE :{R}  {'  '.join(_ap_tag(a) for a in true_aps)  or '—'}")
+        print(f"  │ {D}FALSE:{R}  {'  '.join(_ap_tag(a) for a in false_aps) or '—'}")
+        if llm_aps:
+            print(f"  │ {D}(rule:{len(rule_evals)}  llm:{len(llm_evals)}){R}")
+        print(f"  {B}└{'─' * 50}{R}")
+        print()
+
+        msg = String()
+        msg.data = json.dumps(final_evals)
+        self.eval_pub.publish(msg)
 
 
 def main():

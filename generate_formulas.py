@@ -175,7 +175,28 @@ def _validate_and_fix(spec: dict) -> tuple[dict, list[str]]:
 # ---------------------------------------------------------------------------
 
 def generate_skill_description(api_url: str, model: str, spec: dict) -> str:
-    """Generate a human-readable narrative description from the validated spec."""
+    """Generate a structured per-phase skill description document."""
+    phases = spec.get("execution_phases", [])
+
+    # Build a detailed per-phase context block for the LLM
+    phase_details = []
+    for i, p in enumerate(phases):
+        enter    = p.get("enter_condition") or p.get("condition", "—")
+        progress = p.get("progress_condition", "True")
+        exit_c   = p.get("exit_condition", "False")
+        limit    = p.get("progress_violation_limit", 3)
+        from_p   = phases[i - 1]["phase"] if i > 0 else "Idle"
+        to_p     = phases[i + 1]["phase"] if i + 1 < len(phases) else "Done"
+        phase_details.append(
+            f"Phase {i+1}: {p['phase']}\n"
+            f"  Description : {p.get('description', '')}\n"
+            f"  Entered from: {from_p}\n"
+            f"  Enter when  : {enter}\n"
+            f"  Progress    : {progress}  (fail after {limit} consecutive violations)\n"
+            f"  Exit when   : {exit_c}\n"
+            f"  Exits to    : {to_p}"
+        )
+
     ap_block = "\n".join(
         f"  {name}: {desc}"
         for name, desc in spec.get("atomic_propositions", {}).items()
@@ -184,46 +205,87 @@ def generate_skill_description(api_url: str, model: str, spec: dict) -> str:
         f"  {f['name']}: {f['formula']}"
         for f in spec.get("ltl_formulas", [])
     )
-    phase_block = "\n".join(
-        f"  [{p['phase']}] condition={p['condition']}\n    {p.get('description', '')}"
-        for p in spec.get("execution_phases", [])
-    )
     ts = spec.get("terminal_success", {})
     tf = spec.get("terminal_failure", {})
 
-    prompt = f"""You are writing operator documentation for a robot skill monitor.
+    prompt = f"""You are writing operator documentation for a robot skill runtime monitor.
 
-Given the formal specification below, write a clear and informative skill description document.
-The document will be shown to operators and engineers to understand what the monitor is checking.
+The document must follow this EXACT structure and use these EXACT section headings.
+Each section and sub-section must appear even if content is minimal.
 
-Skill name: {spec.get("skill_name", "")}
-High-level description: {spec.get("description", "")}
+Skill: {spec.get("skill_name", "")}
+Description: {spec.get("description", "")}
 
-Atomic propositions and their sensor-based evaluation rules:
-{ap_block}
+---
+FORMAL SPEC (do NOT copy verbatim — translate into clear technical prose):
 
-LTL safety/liveness formulas being monitored:
+LTL formulas:
 {formula_block}
 
 Execution phases:
-{phase_block}
+{chr(10).join(phase_details)}
 
-Terminal success: {ts.get("condition", "")}
-  {ts.get("description", "")}
-Terminal failure: {tf.get("condition", "")}
-  {tf.get("description", "")}
+Terminal success: {ts.get("condition", "")} — {ts.get("description", "")}
+Terminal failure: {tf.get("condition", "")} — {tf.get("description", "")}
 
-Write a structured document with these sections:
-1. Overview — 3-4 sentences explaining what the skill does, its goal, and why it matters.
-2. Monitored Properties — for each LTL formula, explain in plain English what safety or liveness property it enforces and why it is important for this skill.
-3. Execution Phases — for each phase, describe what the robot is doing and what the monitor verifies.
-4. Terminal Conditions — explain clearly what constitutes a successful completion and what constitutes a failure, and what happens when each is reached.
-5. Atomic Propositions — for each AP, give a one-line plain-English interpretation alongside its sensor rule.
+Atomic propositions:
+{ap_block}
 
-Write in clear technical prose. Do not use bullet points except inside sections. Do not include JSON or code.
+---
+REQUIRED OUTPUT FORMAT (reproduce these exact headings):
+
+# Skill Monitor Documentation: {spec.get("skill_name", "")}
+
+## Overview
+(3-4 sentences: what the skill does, its goal, what failure looks like)
+
+## Monitored LTL Properties
+(For each formula: name, what safety/liveness property it enforces, why it matters)
+
+## Execution Phases
+
+(Repeat this block for EVERY phase in order:)
+
+### Phase: <PhaseName>
+**Description**
+(1-2 sentences on what the robot is doing in this phase)
+
+**Enter Conditions**
+Entered from: <previous phase or Idle>
+When: <plain-English explanation of enter_condition>
+
+**Progress Conditions**
+(Plain-English explanation of progress_condition — what must remain True)
+If violated for <N> consecutive steps, the skill is declared failed.
+
+**Exit Conditions**
+Exits to: <next phase or Done>
+When: <plain-English explanation of exit_condition>
+
+**Possible Transitions**
+- Advance → <next phase>: when <exit condition plain English>
+- Failure: when progress conditions are violated <N> consecutive times
+
+---
+
+## Terminal Conditions
+
+### Success
+Condition: <plain English>
+(Description of what this means operationally)
+
+### Failure
+Condition: <plain English>
+(Description of what this means operationally)
+
+## Atomic Propositions
+(Table or list: AP name | evaluation rule | plain-English meaning)
+
+---
+Write only the document. No preamble, no JSON, no code fences.
 """
 
-    print("[*] Generating narrative skill description...")
+    print("[*] Generating structured skill description...")
     return query_llm_text(api_url, model, prompt)
 
 
@@ -289,13 +351,18 @@ CRITICAL RULES:
    GOOD: "nav_status_success and near_target"
    BAD:  "G(nav_status_success) && near_target"
 
-3. execution_phases[].condition must also use plain Python boolean syntax (and/or/not).
+3. execution_phases[].enter_condition, progress_condition, exit_condition must all use plain Python boolean syntax (and/or/not).
 
 4. ltl_formulas[].formula MUST use LTL syntax (G, F, X, U, ->, &&, ||, !) valid for the Spot library.
 
 5. Only reference AP names that are defined in atomic_propositions.
 
 6. description must be 2-3 sentences covering the skill's purpose, what it monitors, and its termination criteria.
+
+7. Each execution phase MUST have three conditions:
+   - enter_condition: APs that must be True to enter this phase (checked on transition from previous phase or Idle)
+   - progress_condition: APs that must remain True WHILE in this phase; if violated for progress_violation_limit consecutive steps the skill fails
+   - exit_condition: APs that must be True to leave this phase and advance to the next
 
 Respond with a single valid JSON object:
 {{
@@ -313,8 +380,11 @@ Respond with a single valid JSON object:
   "execution_phases": [
     {{
       "phase": "PhaseName",
-      "condition": "ap1 and ap2",
-      "description": "What the robot is doing and what is verified in this phase."
+      "description": "What the robot is doing in this phase.",
+      "enter_condition": "ap1 and ap2",
+      "progress_condition": "ap3 and not ap4",
+      "exit_condition": "ap5",
+      "progress_violation_limit": 3
     }}
   ],
   "terminal_success": {{
