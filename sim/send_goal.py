@@ -48,38 +48,37 @@ def main(args=None):
         except ValueError:
             print("Usage: python3 send_goal.py [x y]")
     else:
-        # Check if stdin is interactive
         if sys.stdin.isatty():
-            print("Interactive Goal Sender. Enter coordinates to send navigation goals.")
+            print("Nav2 Goal Sender — type 'x y' to send a goal, 'q' to quit.")
             try:
                 while rclpy.ok():
                     try:
-                        x_str = input("Enter goal X coordinate (or 'q' to quit): ").strip()
-                        if x_str.lower() == 'q':
-                            break
-                        if not x_str:
-                            continue
-                        y_str = input("Enter goal Y coordinate: ").strip()
-                        if y_str.lower() == 'q':
-                            break
-                        
-                        x = float(x_str)
-                        y = float(y_str)
-                    except ValueError:
-                        print("Invalid input. Please enter numeric values.")
+                        raw = input("Goal (x y) > ").strip()
+                    except EOFError:
+                        break
+                    if not raw:
                         continue
-                        
+                    if raw.lower() in ("q", "quit", "exit"):
+                        break
+                    parts = raw.split()
+                    if len(parts) != 2:
+                        print("  Enter exactly two numbers, e.g.:  3.0 2.0")
+                        continue
+                    try:
+                        x, y = float(parts[0]), float(parts[1])
+                    except ValueError:
+                        print("  Invalid numbers. Try:  3.0 2.0")
+                        continue
+
                     sender.send_goal(x, y)
-                    
-                    # Spin briefly to send
                     start_time = time.time()
                     while rclpy.ok() and (time.time() - start_time) < 1.0:
                         rclpy.spin_once(sender, timeout_sec=0.1)
+                    print(f"  ✔ Goal ({x}, {y}) sent to Nav2")
             except KeyboardInterrupt:
-                print("\nExiting interactive mode.")
+                print("\nExiting.")
         else:
-            # Fallback for non-interactive execution (e.g. docker-compose startup)
-            print("Non-interactive mode detected. Sending default goal (3.0, 2.0).")
+            print("Non-interactive mode — sending default goal (3.0, 2.0).")
             sender.send_goal(3.0, 2.0)
             start_time = time.time()
             while rclpy.ok() and (time.time() - start_time) < 5.0:

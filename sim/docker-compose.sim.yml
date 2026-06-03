@@ -48,6 +48,8 @@ services:
     volumes:
       - ../formulas.json:/app/formulas.json
       - ../output:/app/output
+      - ../main.py:/app/main.py
+      - ../monitor.py:/app/monitor.py
     command: ["--formulas-file", "formulas.json"]
 
   llm-client:
@@ -61,6 +63,8 @@ services:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
     command: ["--model", "${LLM_MODEL:-Gemma4}", "--api-url", "${LLM_API_URL:-http://192.168.140.111/developer-api/v1}"]
+    volumes:
+      - ../llm_client.py:/app/llm_client.py
     depends_on:
       - ltl-monitor
 

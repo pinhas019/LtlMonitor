@@ -231,10 +231,11 @@ class MujocoRosBridge(Node):
             pnt = np.array([x, y, z + 0.5])
             vec = np.array([math.cos(world_angle), math.sin(world_angle), 0.0])
             
-            geomid = np.array([0], dtype=np.int32)
+            geomid = np.array([-1], dtype=np.int32)
             dist = mujoco.mj_ray(self.model, self.data, pnt, vec, None, 1, -1, geomid)
             
-            if dist > 0:
+            # Only count the hit if it hit an external object (worldbody geom, body_id == 0)
+            if dist > 0 and geomid[0] >= 0 and self.model.geom_bodyid[geomid[0]] == 0:
                 ranges.append(float(dist))
             else:
                 ranges.append(float('inf'))
