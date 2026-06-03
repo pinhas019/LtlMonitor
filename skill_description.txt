@@ -1,20 +1,88 @@
-Skill: AutonomousNavigation
-Description: The robot navigates to a target location while avoiding obstacles until the target is reached.
-============================================================
-Execution Phases:
-============================================================
+# Skill Monitor Documentation: AutonomousNavigation
 
-[PlanningAndMoving]
-  Condition  : nav_accepted_or_executing and not near_target
-  Description: The robot is executing the path plan and moving towards the target.
+## Overview
+This skill manages autonomous navigation to a target location, ensuring collision-free movement throughout the process. Its primary goal is to guide the robot successfully to the specified destination while actively monitoring for and avoiding obstacles. The skill succeeds only upon reaching the target successfully, and it fails if the navigation process is aborted, canceled, or if the robot halts prematurely.
 
-[ApproachingTarget]
-  Condition  : nav_accepted_or_executing and near_target
-  Description: The robot is in the final stages of approach to the target.
+## Monitored LTL Properties
+navigation_completes_successfully: This liveness property ensures that if the skill is running, the navigation process will eventually reach a successful state. This is critical to guarantee that the robot eventually completes its assigned task.
 
-============================================================
-Terminal Conditions:
-  SUCCESS : nav_success
-            The navigation status explicitly reports success.
-  FAILURE : nav_failure
-            The navigation status reports cancellation or abortion.
+## Execution Phases
+
+### Phase: PlanningAndAcceptance
+**Description**
+The robot waits in this phase until a target location is provided and the navigation system confirms it has accepted the necessary path plan.
+
+**Enter Conditions**
+Entered from: Idle
+When: A target location has been received by the system.
+
+**Progress Conditions**
+The system must continuously report that a path has been planned.
+If violated for 5 consecutive steps, the skill is declared failed.
+
+**Exit Conditions**
+Exits to: ExecutingNavigation
+When: The navigation system confirms the path has been accepted.
+
+**Possible Transitions**
+- Advance → ExecutingNavigation: when the path has been planned
+- Failure: when progress conditions are violated 5 consecutive times
+
+### Phase: ExecutingNavigation
+**Description**
+The robot actively moves towards the target while continuously verifying that no obstacles are detected in its path.
+
+**Enter Conditions**
+Entered from: PlanningAndAcceptance
+When: A path has been planned and the robot is confirmed to be moving.
+
+**Progress Conditions**
+The robot must remain in motion and must not detect any obstacles.
+If violated for 5 consecutive steps, the skill is declared failed.
+
+**Exit Conditions**
+Exits to: ReachingTarget
+When: The robot is within close proximity of the target, or the navigation process has failed.
+
+**Possible Transitions**
+- Advance → ReachingTarget: when the robot is near the target or navigation has failed
+- Failure: when progress conditions are violated 5 consecutive times
+
+### Phase: ReachingTarget
+**Description**
+The robot is in the final approach phase, confirming that it is within the required proximity of the target location.
+
+**Enter Conditions**
+Entered from: ExecutingNavigation
+When: The robot is near the target and is still moving.
+
+**Progress Conditions**
+The robot must remain within the close proximity of the target.
+If violated for 3 consecutive steps, the skill is declared failed.
+
+**Exit Conditions**
+Exits to: Done
+When: The navigation status explicitly reports success.
+
+**Possible Transitions**
+- Advance → Done: when the navigation has succeeded
+- Failure: when progress conditions are violated 3 consecutive times
+
+## Terminal Conditions
+
+### Success
+Condition: navigation_succeeded
+The mission is accomplished when the navigation status explicitly reports that the target location has been successfully reached.
+
+### Failure
+Condition: navigation_failed or (not navigation_succeeded and not near_target and not is_moving)
+The mission fails if the navigation process is aborted or canceled, or if the robot stops moving before reaching the target without a success confirmation.
+
+## Atomic Propositions
+target_received | True when distance_to_target > 100.0 | A target location has been set for navigation.
+path_planned | True when nav_status == 'accepted' | The navigation system has accepted the path plan.
+is_moving | True when linear_vel > 0.05 | The robot is actively moving towards the goal.
+near_target | True when distance_to_target < 0.5 | The robot is within close proximity of the target location.
+obstacle_detected | True when min_range < 0.25 | A close obstacle is detected by the laser scanner.
+navigation_succeeded | True when nav_status == 'succeeded' | The navigation goal was successfully reached.
+navigation_failed | True when nav_status in ['aborted', 'canceled'] | The navigation process was terminated prematurely.
