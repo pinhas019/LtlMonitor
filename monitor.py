@@ -12,10 +12,34 @@ Classes:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Iterator
 
 import spot
+
+
+# ---------------------------------------------------------------------------
+# Named failure mode descriptor
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FailureModeInfo:
+    """
+    Metadata attached to an LTL formula that represents a named failure mode.
+
+    When the formula's monitor reaches VIOLATED the fault is reported under
+    this name and category rather than as a generic LTL violation.
+
+    Attributes
+    ----------
+    name          : Short machine-readable identifier, e.g. "collision_detected".
+    fault_category: Semantic fault bucket, e.g. "SAFETY", "NAVIGATION", "TIMEOUT".
+    description   : Human-readable explanation for logs/display.
+    """
+    name: str
+    fault_category: str
+    description: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -66,9 +90,15 @@ class LTLMonitor:
         An LTL formula string, e.g. ``"F(goal)"``, ``"G(!obstacle)"``.
     """
 
-    def __init__(self, formula: str, name: str | None = None) -> None:
+    def __init__(
+        self,
+        formula: str,
+        name: str | None = None,
+        failure_mode: FailureModeInfo | None = None,
+    ) -> None:
         self.formula = formula
         self.name: str = name if name is not None else formula
+        self.failure_mode: FailureModeInfo | None = failure_mode
 
         # Translate to a deterministic, complete, state-based Büchi automaton.
         #   'Buchi'    → state-based Büchi acceptance (accepting states).
@@ -135,13 +165,35 @@ class LTLMonitor:
         """Return the Büchi automaton in DOT format for visualization."""
         return self.aut.to_str("dot")
 
-    def format_automaton(self) -> str:
-        """Return a human-readable text representation of the Büchi automaton structure."""
-        BOLD = "\033[1m"
-        RESET = "\033[0m"
+    def format_automaton(
+        self,
+        ap_descriptions: dict[str, str] | None = None,
+        state_annotations: dict[int, dict] | None = None,
+    ) -> str:
+        """Return a human-readable text representation of the Büchi automaton.
+
+        Parameters
+        ----------
+        ap_descriptions : dict[str, str], optional
+            Maps AP names to human-readable descriptions.
+        state_annotations : dict[int, dict], optional
+            Maps automaton state index to phase metadata inferred from the spec.
+            Each dict may contain: phase_name, description, precondition,
+            precondition_fault_category, invariant, invariant_fault_category,
+            timing_bounds.
+        """
+        BOLD   = "\033[1m"
+        RESET  = "\033[0m"
+        DIM    = "\033[2m"
+        GREEN  = "\033[32m"
+        RED    = "\033[31m"
+        YELLOW = "\033[33m"
+        CYAN   = "\033[36m"
+
         lines = []
-        lines.append(f"  {BOLD}Büchi Automaton for '{self.name}' (Formula: {self.formula}):{RESET}")
-        
+        lines.append(f"  {BOLD}Büchi Automaton for '{self.name}'{RESET}")
+        lines.append(f"  {DIM}Formula: {self.formula}{RESET}")
+
         for s in range(self.aut.num_states()):
             labels = []
             if s == self._initial_state:
@@ -150,13 +202,68 @@ class LTLMonitor:
                 labels.append("accepting")
             if s in self._sink_states:
                 labels.append("sink/trap")
-            
+
+            # Semantic status hint
+            if s in self._sink_states:
+                semantic = f"  {RED}✘ VIOLATED — irrecoverable{RESET}"
+            elif self.aut.state_is_accepting(s):
+                semantic = f"  {GREEN}✔ Property holds{RESET}"
+            else:
+                semantic = f"  {YELLOW}● Monitoring…{RESET}"
+
             label_str = f" [{', '.join(labels)}]" if labels else ""
-            lines.append(f"    {BOLD}State {s}{label_str}:{RESET}")
-            
+            lines.append(f"    {BOLD}State {s}{label_str}:{RESET}{semantic}")
+
+            # ── Phase annotation ──────────────────────────────────
+            if state_annotations and s in state_annotations:
+                ann = state_annotations[s]
+                phase_name = ann.get("phase_name", "")
+                if phase_name:
+                    lines.append(f"      {BOLD}{CYAN}Phase: {phase_name}{RESET}")
+                if ann.get("description"):
+                    lines.append(f"      {DIM}{ann['description']}{RESET}")
+                if ann.get("precondition"):
+                    pc_cat = ann.get("precondition_fault_category", "PRECONDITION")
+                    lines.append(
+                        f"      {DIM}Precondition : {ann['precondition']}"
+                        f"  [{pc_cat} — checked on entry]{RESET}"
+                    )
+                if ann.get("invariant"):
+                    inv_cat = ann.get("invariant_fault_category", "INVARIANT")
+                    lines.append(
+                        f"      {RED}Invariant    : {ann['invariant']}"
+                        f"  [{inv_cat} — immediate halt]{RESET}"
+                    )
+                timing = ann.get("timing_bounds", {})
+                if timing:
+                    min_s = timing.get("min_steps", "—")
+                    max_s = timing.get("max_steps", "—")
+                    lines.append(
+                        f"      {DIM}Timing       : min {min_s} / max {max_s} steps"
+                        f"  [TIMEOUT on exceed]{RESET}"
+                    )
+            # ─────────────────────────────────────────────────────
+
             for edge in self.aut.out(s):
                 cond_str = spot.bdd_format_formula(self.bdict, edge.cond)
-                lines.append(f"      ──► State {edge.dst} on: {cond_str}")
+
+                # Destination hint
+                if edge.dst in self._sink_states:
+                    dst_hint = f"  {RED}→ VIOLATED{RESET}"
+                elif self.aut.state_is_accepting(edge.dst):
+                    dst_hint = f"  {GREEN}→ ACCEPTED{RESET}"
+                else:
+                    dst_hint = ""
+
+                if edge.cond == spot.buddy.bddtrue:
+                    lines.append(f"      ──► State {edge.dst} on: {cond_str}  {DIM}(any input){RESET}{dst_hint}")
+                else:
+                    lines.append(f"      ──► State {edge.dst} on: {cond_str}{dst_hint}")
+                    if ap_descriptions:
+                        for ap_name in sorted(self._get_edge_aps(edge)):
+                            if ap_name in ap_descriptions:
+                                lines.append(f"          {DIM}{ap_name}: {ap_descriptions[ap_name]}{RESET}")
+
         return "\n".join(lines)
 
     def num_states(self) -> int:
@@ -175,24 +282,29 @@ class LTLMonitor:
             return set()  # sink state — nothing to evaluate
 
         required: set[str] = set()
-        # Build a reverse map: BDD variable number → AP name
-        var_to_ap: dict[int, str] = {
-            self.bdict.varnum(ap): str(ap) for ap in self.aut.ap()
-        }
-
         for edge in self.aut.out(self.current_state):
             if edge.cond == spot.buddy.bddtrue:
                 continue  # unconditional edge — no APs needed
-            # Walk the BDD support (set of variables this condition depends on)
-            support = spot.buddy.bdd_support(edge.cond)
-            bdd = support
-            while bdd != spot.buddy.bddtrue and bdd != spot.buddy.bddfalse:
-                var = spot.buddy.bdd_var(bdd)
-                if var in var_to_ap:
-                    required.add(var_to_ap[var])
-                bdd = spot.buddy.bdd_high(bdd)
+            required |= self._get_edge_aps(edge)
 
         return required
+
+    def _get_edge_aps(self, edge) -> set[str]:
+        """Extract the set of AP names referenced by a BDD edge condition."""
+        var_to_ap: dict[int, str] = {
+            self.bdict.varnum(ap): str(ap) for ap in self.aut.ap()
+        }
+        aps: set[str] = set()
+        if edge.cond == spot.buddy.bddtrue or edge.cond == spot.buddy.bddfalse:
+            return aps
+        support = spot.buddy.bdd_support(edge.cond)
+        bdd = support
+        while bdd != spot.buddy.bddtrue and bdd != spot.buddy.bddfalse:
+            var = spot.buddy.bdd_var(bdd)
+            if var in var_to_ap:
+                aps.add(var_to_ap[var])
+            bdd = spot.buddy.bdd_high(bdd)
+        return aps
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -258,13 +370,23 @@ class MultiMonitor:
         A list of LTL formula strings.
     """
 
-    def __init__(self, formulas: list[str], names: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        formulas: list[str],
+        names: list[str] | None = None,
+        failure_modes: list[FailureModeInfo | None] | None = None,
+    ) -> None:
         if names is None:
             names = formulas
         if len(names) != len(formulas):
             raise ValueError("Length of 'names' must match length of 'formulas'.")
+        if failure_modes is None:
+            failure_modes = [None] * len(formulas)
+        elif len(failure_modes) != len(formulas):
+            raise ValueError("Length of 'failure_modes' must match length of 'formulas'.")
         self.monitors: list[LTLMonitor] = [
-            LTLMonitor(f, name=n) for f, n in zip(formulas, names)
+            LTLMonitor(f, name=n, failure_mode=fm)
+            for f, n, fm in zip(formulas, names, failure_modes)
         ]
 
     def step(self, observation: dict[str, bool]) -> dict[str, MonitorStatus]:
@@ -306,4 +428,24 @@ class MultiMonitor:
         for m in self.monitors:
             aps |= m.get_required_aps()
         return aps
+
+    def get_violated_failure_modes(self) -> list[tuple[LTLMonitor, FailureModeInfo]]:
+        """
+        Return (monitor, failure_info) for every named-failure-mode monitor that
+        has reached VIOLATED.  Regular property monitors (failure_mode=None) are
+        excluded — they surface via ``any_violated()`` as before.
+        """
+        return [
+            (m, m.failure_mode)
+            for m in self.monitors
+            if m.status is MonitorStatus.VIOLATED and m.failure_mode is not None
+        ]
+
+    def get_failure_mode_monitors(self) -> list[LTLMonitor]:
+        """Return all monitors that carry a FailureModeInfo annotation."""
+        return [m for m in self.monitors if m.failure_mode is not None]
+
+    def get_property_monitors(self) -> list[LTLMonitor]:
+        """Return monitors that are pure LTL property checks (no failure annotation)."""
+        return [m for m in self.monitors if m.failure_mode is None]
 

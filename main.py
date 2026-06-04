@@ -23,7 +23,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from monitor import MonitorStatus, MultiMonitor, LTLMonitor
+from monitor import FailureModeInfo, MonitorStatus, MultiMonitor, LTLMonitor
 
 # ---------------------------------------------------------------------------
 # ANSI helpers
@@ -46,6 +46,7 @@ _STATUS_LABELS = {
 # ---------------------------------------------------------------------------
 
 _LTL_OPS = re.compile(r'\b(G|F|X)\s*\(')
+_TRUE_WHEN_RE = re.compile(r'[Tt]rue when\s+(.+?)(?:\.|$)', re.IGNORECASE)
 
 def _sanitize_condition(condition: str) -> str:
     """Translate LTL/C-style boolean syntax to Python-eval-compatible syntax.
@@ -90,6 +91,7 @@ class SkillSpec:
         execution_phases: list[dict] | None = None,
         terminal_success: dict | None = None,
         terminal_failure: dict | None = None,
+        named_failure_modes: list[dict] | None = None,
     ) -> None:
         self.formulas            = formulas
         self.names               = names
@@ -97,24 +99,59 @@ class SkillSpec:
         self.description         = description
         self.atomic_propositions = atomic_propositions or {}
         self.execution_phases    = execution_phases or []
-        
+
+        # Named failure modes: LTL formulas whose VIOLATION signals a specific fault.
+        # Each entry: {name, formula, fault_category, description?}
+        self.named_failure_modes: list[dict] = named_failure_modes or []
+
         terminal_success = terminal_success or {}
-        self.terminal_success_condition = terminal_success.get("condition", "False")
+        self.terminal_success_condition   = terminal_success.get("condition",   "False")
         self.terminal_success_description = terminal_success.get("description", "")
 
         terminal_failure = terminal_failure or {}
-        self.terminal_failure_condition = terminal_failure.get("condition", "False")
+        self.terminal_failure_condition   = terminal_failure.get("condition",   "False")
         self.terminal_failure_description = terminal_failure.get("description", "")
 
         self.terminal_success_aps: set[str] = _extract_aps_from_condition(self.terminal_success_condition)
         self.terminal_failure_aps: set[str] = _extract_aps_from_condition(self.terminal_failure_condition)
-        self.terminal_aps: set[str] = self.terminal_success_aps | self.terminal_failure_aps
+        self.terminal_aps: set[str]          = self.terminal_success_aps | self.terminal_failure_aps
 
-        # APs needed across all phase conditions (enter + progress + exit)
+        # APs needed across all phase conditions:
+        # enter + precondition + invariant + progress + exit
         self.phase_aps: set[str] = set()
         for phase in self.execution_phases:
-            for key in ("enter_condition", "progress_condition", "exit_condition", "condition"):
+            for key in (
+                "enter_condition", "condition",
+                "precondition",
+                "invariant",
+                "progress_condition",
+                "exit_condition",
+            ):
                 self.phase_aps |= _extract_aps_from_condition(phase.get(key, ""))
+
+    def build_failure_mode_infos(self) -> list[FailureModeInfo | None]:
+        """
+        Return a parallel list of FailureModeInfo for each named failure formula,
+        sized to match the combined formula list (property formulas first, then
+        failure-mode formulas).  Use alongside ``all_formulas`` / ``all_names``.
+        """
+        return [None] * len(self.formulas) + [
+            FailureModeInfo(
+                name=fm["name"],
+                fault_category=fm.get("fault_category", "UNKNOWN"),
+                description=fm.get("description", ""),
+            )
+            for fm in self.named_failure_modes
+        ]
+
+    @property
+    def all_formulas(self) -> list[str]:
+        """Property formulas + named-failure-mode formulas, in that order."""
+        return self.formulas + [fm["formula"] for fm in self.named_failure_modes]
+
+    @property
+    def all_names(self) -> list[str]:
+        return self.names + [fm["name"] for fm in self.named_failure_modes]
 
 
 def load_formulas_from_file(path: Path) -> SkillSpec:
@@ -134,18 +171,105 @@ def load_formulas_from_file(path: Path) -> SkillSpec:
         names.append(entry.get("name", entry["formula"]))
 
     return SkillSpec(
-        formulas            = formulas,
-        names               = names,
-        skill_name          = data.get("skill_name", ""),
-        description         = data.get("description", ""),
-        atomic_propositions = data.get("atomic_propositions", {}),
-        execution_phases    = data.get("execution_phases", []),
-        terminal_success    = data.get("terminal_success"),
-        terminal_failure    = data.get("terminal_failure"),
+        formulas             = formulas,
+        names                = names,
+        skill_name           = data.get("skill_name", ""),
+        description          = data.get("description", ""),
+        atomic_propositions  = data.get("atomic_propositions", {}),
+        execution_phases     = data.get("execution_phases", []),
+        terminal_success     = data.get("terminal_success"),
+        terminal_failure     = data.get("terminal_failure"),
+        named_failure_modes  = data.get("named_failure_modes", []),
     )
 
 
 _PHASE_VIOLATION_LIMIT = 3  # default consecutive-step limit before a phase failure
+
+
+def _infer_state_annotations(
+    mon: LTLMonitor, spec: "SkillSpec"
+) -> dict[int, dict]:
+    """
+    Map each automaton state to the execution phase it represents.
+
+    Strategy — works reliably for sequential formulas such as
+        F(p1 && F(p2 && F(p3 && ...)))
+
+    For each progress state we inspect the automaton's own forward transitions
+    (edges that leave the current state) to find which AP advances it, then
+    step with that AP to reach the next state.  Phases are assigned in
+    declaration order: state 0 → phase 0, state after stepping p1 → phase 1, …
+
+    Returns a dict mapping automaton-state-index → phase metadata dict.
+    """
+    phases = spec.execution_phases
+    if not phases or mon.status is MonitorStatus.VIOLATED:
+        return {}
+
+    annotations: dict[int, dict] = {}
+
+    saved_state  = mon.current_state
+    saved_status = mon.status
+    mon.current_state = mon._initial_state
+    mon.status        = mon._compute_status()
+
+    def _phase_meta(p: dict) -> dict:
+        return {
+            "phase_name":                  p["phase"],
+            "description":                 p.get("description", ""),
+            "precondition":                p.get("precondition", ""),
+            "precondition_fault_category": p.get("precondition_fault_category", "PRECONDITION"),
+            "invariant":                   p.get("invariant", ""),
+            "invariant_fault_category":    p.get("invariant_fault_category", "INVARIANT"),
+            "timing_bounds":               p.get("timing_bounds", {}),
+        }
+
+    all_known_aps: dict[str, bool] = {str(ap): False for ap in mon.aut.ap()}
+
+    # Initial state → first phase
+    annotations[mon.current_state] = _phase_meta(phases[0])
+
+    # Walk one step per phase transition using the AP that the automaton
+    # itself requires to advance from the current state.
+    for phase_idx in range(len(phases) - 1):
+        # Collect APs on edges that leave the current state (non-self-loop)
+        forward_aps: set[str] = set()
+        for edge in mon.aut.out(mon.current_state):
+            if edge.dst != mon.current_state and edge.dst not in mon._sink_states:
+                forward_aps |= mon._get_edge_aps(edge)
+
+        if not forward_aps:
+            break  # accepting or sink — nothing more to walk
+
+        # Try each forward AP until one actually advances the state
+        advanced = False
+        for ap in sorted(forward_aps):          # sorted for determinism
+            obs = dict(all_known_aps)
+            obs[ap] = True
+            obs_bdd   = mon._observation_to_bdd(obs)
+            next_s    = mon._find_successor(obs_bdd)
+            if next_s is not None and next_s != mon.current_state:
+                prev = mon.current_state
+                mon.step(obs)
+                if mon.current_state != prev and mon.status is not MonitorStatus.VIOLATED:
+                    annotations[mon.current_state] = _phase_meta(phases[phase_idx + 1])
+                    advanced = True
+                break
+
+        if not advanced:
+            break
+
+    # Mark accepting states not yet annotated as "Done"
+    for s in range(mon.aut.num_states()):
+        if mon.aut.state_is_accepting(s) and s not in annotations:
+            annotations[s] = {
+                "phase_name":  "Done",
+                "description": "All phases complete — formula accepted.",
+            }
+
+    mon.current_state = saved_state
+    mon.status        = saved_status
+    return annotations
 
 
 # ---------------------------------------------------------------------------
@@ -163,22 +287,126 @@ def _print_skill_header(spec: SkillSpec) -> None:
         print(f"{BOLD}{'═' * 64}{RESET}")
 
 
-def _print_formula_table(multi: MultiMonitor, output_dir: Path = Path("output")) -> None:
-    print(f"\n{BOLD}Formulas & Büchi Automata Structure:{RESET}")
-    for mon in multi:
-        print(mon.format_automaton())
+def _print_formula_table(multi: MultiMonitor, spec: SkillSpec, output_dir: Path = Path("output")) -> None:
+    ap_descs = spec.atomic_propositions or None
+
+    # ── Property formulas (annotated with phase info) ─────────────
+    prop_monitors  = multi.get_property_monitors()
+    fault_monitors = multi.get_failure_mode_monitors()
+
+    if prop_monitors:
+        print(f"\n{BOLD}Property Formulas & Büchi Automata:{RESET}")
+    for mon in prop_monitors:
+        state_ann = _infer_state_annotations(mon, spec)
+        print(mon.format_automaton(ap_descriptions=ap_descs, state_annotations=state_ann))
         save_automaton_image(mon, output_dir)
         print()
 
+    # ── Named failure-mode formulas ───────────────────────────────
+    if fault_monitors:
+        RED = "\033[31m"
+        print(f"\n{BOLD}Named Failure-Mode Automata:{RESET}")
+    for mon in fault_monitors:
+        finfo = mon.failure_mode
+        RED = "\033[31m"
+        print(f"  {BOLD}{RED}[{finfo.fault_category}] {finfo.name}{RESET}  —  {finfo.description}")
+        print(mon.format_automaton(ap_descriptions=ap_descs))
+        save_automaton_image(mon, output_dir)
+        print()
+
+    # ── Combined product automaton ────────────────────────────────
     try:
         combined_formula = " && ".join(f"({m.formula})" for m in multi.monitors)
         combined_mon = LTLMonitor(combined_formula, name="CombinedSkillSpec")
-        print(f"{BOLD}Combined/Product Büchi Automaton — Whole Skill Specification:{RESET}")
-        print(combined_mon.format_automaton())
+        print(f"{BOLD}Combined/Product Büchi Automaton — Full Skill Specification:{RESET}")
+        print(combined_mon.format_automaton(ap_descriptions=ap_descs))
         print()
         save_automaton_image(combined_mon, output_dir)
     except Exception as e:
         print(f"Note: Could not build combined product automaton: {e}")
+
+    _print_evaluation_rules(spec)
+
+
+def _print_evaluation_rules(spec: SkillSpec) -> None:
+    """Print the AP evaluation rules table, terminal conditions, and phase summary."""
+    GREEN = "\033[32m"
+    RED   = "\033[31m"
+    YELLOW = "\033[33m"
+
+    # ── AP rules table ────────────────────────────────────────────
+    if spec.atomic_propositions:
+        max_ap = max(len(ap) for ap in spec.atomic_propositions)
+        max_ap = max(max_ap, 10)
+
+        print(f"\n{BOLD}  Atomic Propositions & Evaluation Rules:{RESET}")
+        print(f"  {'─' * 64}")
+        for ap_name, desc in spec.atomic_propositions.items():
+            m = _TRUE_WHEN_RE.search(desc)
+            if m:
+                rule = m.group(1).strip().rstrip('.')
+                method = f"{YELLOW}⚡ Rule{RESET}"
+            else:
+                rule = desc
+                method = f"{CYAN}🤖 LLM{RESET}"
+            print(f"    {CYAN}{ap_name:<{max_ap}}{RESET}  {DIM}│{RESET}  {rule}  {DIM}[{RESET}{method}{DIM}]{RESET}")
+        print(f"  {'─' * 64}")
+
+    # ── Terminal conditions ────────────────────────────────────────
+    has_success = spec.terminal_success_condition != "False"
+    has_failure = spec.terminal_failure_condition != "False"
+    if has_success or has_failure:
+        print(f"\n{BOLD}  Terminal Conditions:{RESET}")
+        if has_success:
+            print(f"    {GREEN}✔ SUCCESS:{RESET}  {spec.terminal_success_condition}")
+            if spec.terminal_success_description:
+                print(f"      {DIM}{spec.terminal_success_description}{RESET}")
+        if has_failure:
+            print(f"    {RED}✘ FAILURE:{RESET}  {spec.terminal_failure_condition}")
+            if spec.terminal_failure_description:
+                print(f"      {DIM}{spec.terminal_failure_description}{RESET}")
+
+    # ── Named failure modes ───────────────────────────────────────
+    if spec.named_failure_modes:
+        max_fm = max(len(fm["name"]) for fm in spec.named_failure_modes)
+        max_fm = max(max_fm, 12)
+        print(f"\n{BOLD}  Named Failure Modes:{RESET}")
+        print(f"  {'─' * 64}")
+        for fm in spec.named_failure_modes:
+            cat  = fm.get("fault_category", "UNKNOWN")
+            desc = fm.get("description", "")
+            print(f"    {RED}{fm['name']:<{max_fm}}{RESET}  {DIM}│{RESET}  formula: {DIM}{fm['formula']}{RESET}")
+            print(f"    {' ' * max_fm}  {DIM}│  [{cat}]{RESET}  {desc}")
+        print(f"  {'─' * 64}")
+
+    # ── Execution phases ──────────────────────────────────────────
+    if spec.execution_phases:
+        print(f"\n{BOLD}  Execution Phases:{RESET}")
+        for i, phase in enumerate(spec.execution_phases):
+            enter    = phase.get("enter_condition") or phase.get("condition", "—")
+            exit_c   = phase.get("exit_condition", "—")
+            progress = phase.get("progress_condition", "True")
+            precond  = phase.get("precondition", "")
+            invariant = phase.get("invariant", "")
+            timing   = phase.get("timing_bounds", {})
+            next_name = spec.execution_phases[i + 1]["phase"] if i + 1 < len(spec.execution_phases) else "Done"
+
+            print(f"    {BOLD}{i + 1}. {CYAN}{phase['phase']}{RESET}")
+            if phase.get("description"):
+                print(f"       {DIM}{phase['description']}{RESET}")
+            print(f"       {DIM}enter     :{RESET} {enter}")
+            if precond:
+                print(f"       {DIM}precond   :{RESET} {precond}  {DIM}[checked on entry]{RESET}")
+            if invariant:
+                inv_cat = phase.get("invariant_fault_category", "INVARIANT")
+                print(f"       {DIM}invariant :{RESET} {invariant}  {DIM}[{inv_cat} — immediate failure]{RESET}")
+            print(f"       {DIM}progress  :{RESET} {progress}")
+            print(f"       {DIM}exit → {next_name}:{RESET} {exit_c}")
+            if timing:
+                min_s = timing.get("min_steps", "—")
+                max_s = timing.get("max_steps", "—")
+                print(f"       {DIM}timing    :{RESET} min {min_s} steps / max {max_s} steps")
+        print()
 
 
 def _state_label(mon: LTLMonitor, state: int) -> str:
@@ -336,6 +564,7 @@ class LtlMonitorNode(Node):
         self.current_phase = ""
         self.phase_idx = -1           # index into spec.execution_phases; -1 = Idle
         self.phase_violation_count = 0
+        self.phase_step_count = 0     # steps elapsed in the current phase
         self.halted = False
 
         # Watch formulas file for changes
@@ -405,7 +634,11 @@ class LtlMonitorNode(Node):
         self.spec = spec
         self.has_phases = bool(spec.execution_phases)
         try:
-            self.multi = MultiMonitor(spec.formulas, names=spec.names)
+            self.multi = MultiMonitor(
+                spec.all_formulas,
+                names=spec.all_names,
+                failure_modes=spec.build_failure_mode_infos(),
+            )
         except Exception as exc:
             self.get_logger().error(f"Failed to build reloaded automaton: {exc}")
             return
@@ -417,7 +650,7 @@ class LtlMonitorNode(Node):
 
         # Print new skill header and formulas/automaton table to stdout
         _print_skill_header(spec)
-        _print_formula_table(self.multi, self.args.output_dir)
+        _print_formula_table(self.multi, self.spec, self.args.output_dir)
 
         print(f"\n{BOLD}{'─' * 64}{RESET}")
         print(f"{BOLD}  Monitoring Trace (Reloaded specs){RESET}")
@@ -426,17 +659,23 @@ class LtlMonitorNode(Node):
         _print_step_block("init", self.multi, {}, "Idle")
         self.get_logger().info("Monitor reset successfully with new specs.")
 
-    def _update_phase_state(self, observation: dict[str, bool]) -> tuple[str, bool]:
+    def _update_phase_state(
+        self, observation: dict[str, bool]
+    ) -> tuple[str, str | None, str | None, bool]:
         """
         Advance the phase state machine one step.
 
-        Returns (phase_name, is_progress_failure).
-        is_progress_failure=True means progress conditions were violated
-        _PHASE_VIOLATION_LIMIT consecutive times and the skill should fail.
+        Returns
+        -------
+        (phase_name, failure_reason, fault_category, recoverable)
+
+        failure_reason is None when no failure occurred.
+        recoverable=True  → enter IDLE (e.g. progress violations, awaitable)
+        recoverable=False → halt permanently  (e.g. invariant, timeout, precondition)
         """
         phases = self.spec.execution_phases
         if not phases:
-            return "Idle", False
+            return "Idle", None, None, False
 
         def _eval(raw: str, default: bool) -> bool:
             try:
@@ -444,70 +683,125 @@ class LtlMonitorNode(Node):
             except Exception:
                 return default
 
-        # Try to enter phase 0 from Idle
+        def _enter_phase(idx: int) -> tuple[str, str | None, str | None, bool] | None:
+            """Try to enter phase[idx]; return failure tuple if precondition fails."""
+            p = phases[idx]
+            self.phase_idx = idx
+            self.phase_step_count = 0
+            self.phase_violation_count = 0
+            self.get_logger().info(f"Phase enter: '{p['phase']}'")
+            precond = p.get("precondition", "")
+            if precond and not _eval(precond, True):
+                cat = p.get("precondition_fault_category", "PRECONDITION")
+                return (
+                    p["phase"],
+                    f"Precondition not met on entry to phase '{p['phase']}': {precond}",
+                    cat,
+                    False,
+                )
+            return None
+
+        # ── Idle → enter phase 0 ──────────────────────────────────
         if self.phase_idx < 0:
-            p = phases[0]
-            enter = p.get("enter_condition") or p.get("condition", "False")
+            p0 = phases[0]
+            enter = p0.get("enter_condition") or p0.get("condition", "False")
             if _eval(enter, False):
-                self.phase_idx = 0
-                self.phase_violation_count = 0
-                self.get_logger().info(f"Phase enter: '{p['phase']}'")
+                fail = _enter_phase(0)
+                if fail:
+                    return fail
 
         if self.phase_idx < 0:
-            return "Idle", False
+            return "Idle", None, None, False
 
-        p = phases[self.phase_idx]
-        name = p["phase"]
+        p     = phases[self.phase_idx]
+        name  = p["phase"]
         limit = p.get("progress_violation_limit", _PHASE_VIOLATION_LIMIT)
 
-        # Check progress condition
+        # ── Hard invariant (immediate failure) ────────────────────
+        invariant = p.get("invariant", "")
+        if invariant and not _eval(invariant, True):
+            cat = p.get("invariant_fault_category", "INVARIANT")
+            return (
+                name,
+                f"Invariant violated in phase '{name}': {invariant}",
+                cat,
+                False,
+            )
+
+        # ── Timing: max_steps ─────────────────────────────────────
+        timing    = p.get("timing_bounds", {})
+        max_steps = timing.get("max_steps")
+        if max_steps is not None and self.phase_step_count >= max_steps:
+            return (
+                name,
+                f"Phase '{name}' timed out: {self.phase_step_count} steps elapsed (max={max_steps})",
+                "TIMEOUT",
+                False,
+            )
+
+        # ── Progress condition (counted violations) ───────────────
         if not _eval(p.get("progress_condition", "True"), True):
             self.phase_violation_count += 1
             self.get_logger().warn(
                 f"Phase '{name}' progress violation {self.phase_violation_count}/{limit}"
             )
             if self.phase_violation_count >= limit:
-                return name, True
+                return (
+                    name,
+                    f"Phase '{name}' progress conditions violated {limit} consecutive step(s)",
+                    "PROGRESS",
+                    True,  # recoverable — await new skill execution
+                )
         else:
             if self.phase_violation_count > 0:
                 self.get_logger().info(f"Phase '{name}' progress restored")
             self.phase_violation_count = 0
 
-        # Check exit condition → advance to next phase
-        if _eval(p.get("exit_condition", "False"), False):
+        # ── Exit condition (respects min_steps) ───────────────────
+        min_steps = timing.get("min_steps", 0)
+        if self.phase_step_count >= min_steps and _eval(p.get("exit_condition", "False"), False):
             next_idx = self.phase_idx + 1
             if next_idx < len(phases):
                 np_ = phases[next_idx]
                 np_enter = np_.get("enter_condition") or np_.get("condition", "True")
                 if _eval(np_enter, True):
                     self.get_logger().info(f"Phase: '{name}' → '{np_['phase']}'")
-                    self.phase_idx = next_idx
-                    self.phase_violation_count = 0
+                    fail = _enter_phase(next_idx)
+                    if fail:
+                        return fail
             else:
                 self.get_logger().info(f"Phase '{name}' complete — all phases done")
                 self.phase_idx = -1
-                return "Done", False
+                self.phase_step_count = 0
+                return "Done", None, None, False
 
+        self.phase_step_count += 1
         if 0 <= self.phase_idx < len(phases):
-            return phases[self.phase_idx]["phase"], False
-        return "Idle", False
+            return phases[self.phase_idx]["phase"], None, None, False
+        return "Idle", None, None, False
 
     def _reset_phase_state(self) -> None:
         self.phase_idx = -1
         self.phase_violation_count = 0
+        self.phase_step_count = 0
         self.current_phase = "Idle"
 
     def _print_phase_context(self) -> None:
-        """Print a banner showing the current phase's enter/progress/exit conditions."""
+        """Print a banner showing the current phase's full constraint set."""
         phases = self.spec.execution_phases
         if self.phase_idx < 0 or self.phase_idx >= len(phases):
             return
         p = phases[self.phase_idx]
         YELLOW = "\033[33m"
-        enter    = p.get("enter_condition") or p.get("condition", "—")
-        progress = p.get("progress_condition", "True")
-        exit_c   = p.get("exit_condition", "False")
-        limit    = p.get("progress_violation_limit", _PHASE_VIOLATION_LIMIT)
+        RED    = "\033[31m"
+
+        enter     = p.get("enter_condition") or p.get("condition", "—")
+        precond   = p.get("precondition", "")
+        invariant = p.get("invariant", "")
+        progress  = p.get("progress_condition", "True")
+        exit_c    = p.get("exit_condition", "False")
+        limit     = p.get("progress_violation_limit", _PHASE_VIOLATION_LIMIT)
+        timing    = p.get("timing_bounds", {})
         from_name = phases[self.phase_idx - 1]["phase"] if self.phase_idx > 0 else "Idle"
         to_name   = phases[self.phase_idx + 1]["phase"] if self.phase_idx + 1 < len(phases) else "Done"
 
@@ -516,9 +810,19 @@ class LtlMonitorNode(Node):
         if p.get("description"):
             print(f"  {DIM}{p['description']}{RESET}")
         print(f"  {BOLD}{'─' * 64}{RESET}")
-        print(f"  {DIM}Enter from  :{RESET}  {from_name}  →  when: {enter}")
-        print(f"  {DIM}Progress    :{RESET}  {progress}  {DIM}(fail after {limit} violations){RESET}")
-        print(f"  {DIM}Exit to     :{RESET}  {to_name}  →  when: {exit_c}")
+        print(f"  {DIM}Enter from   :{RESET}  {from_name}  →  when: {enter}")
+        if precond:
+            inv_cat = p.get("precondition_fault_category", "PRECONDITION")
+            print(f"  {DIM}Precondition :{RESET}  {precond}  {DIM}[{inv_cat}]{RESET}")
+        if invariant:
+            inv_cat = p.get("invariant_fault_category", "INVARIANT")
+            print(f"  {RED}Invariant    :{RESET}  {invariant}  {DIM}[{inv_cat} — immediate halt]{RESET}")
+        print(f"  {DIM}Progress     :{RESET}  {progress}  {DIM}(fail after {limit} violations){RESET}")
+        print(f"  {DIM}Exit to      :{RESET}  {to_name}  →  when: {exit_c}")
+        if timing:
+            min_s = timing.get("min_steps", "—")
+            max_s = timing.get("max_steps", "—")
+            print(f"  {DIM}Timing       :{RESET}  min {min_s} steps  /  max {max_s} steps  {DIM}[TIMEOUT on exceed]{RESET}")
         print(f"  {BOLD}{'═' * 64}{RESET}\n")
 
     def _halt(self, reason: str) -> None:
@@ -608,18 +912,25 @@ class LtlMonitorNode(Node):
         # Capture current automaton states before stepping
         prev_states = {m.name: m.current_state for m in self.multi.monitors}
 
-        # Step the automaton
+        # Step the automaton (property formulas + named-failure-mode formulas)
         statuses = self.multi.step(observation)
 
+        # ── Named failure modes: detect newly violated formulas ───
+        triggered_failures = self.multi.get_violated_failure_modes()
+
         # Advance phase state machine
+        phase_fail_reason: str | None = None
+        phase_fault_cat:   str | None = None
+        phase_recoverable: bool       = False
         if self.has_phases:
             prev_phase_idx = self.phase_idx
-            phase_name, is_progress_failure = self._update_phase_state(observation)
+            phase_name, phase_fail_reason, phase_fault_cat, phase_recoverable = \
+                self._update_phase_state(observation)
             self.current_phase = phase_name
             if self.phase_idx != prev_phase_idx and self.phase_idx >= 0:
                 self._print_phase_context()
         else:
-            is_progress_failure = False
+            pass
 
         # Print standard console step block
         _print_step_block(
@@ -630,21 +941,45 @@ class LtlMonitorNode(Node):
             phase_violations=self.phase_violation_count,
         )
 
-        # Phase progress failure → treat as terminal failure
-        if is_progress_failure:
-            _print_summary(self.multi)
-            self._enter_idle(
-                f"Phase '{self.current_phase}' progress conditions violated "
-                f"{self.phase_violation_count} consecutive step(s)"
+        # ── Named failure mode triggered → halt with fault info ───
+        if triggered_failures:
+            mon, finfo = triggered_failures[0]  # first triggered is reported
+            RED = "\033[31m"
+            print(f"\n{BOLD}{'─' * 64}{RESET}")
+            print(f"{BOLD}{RED}  ✘  NAMED FAILURE: {finfo.name}{RESET}")
+            print(f"  Fault category : {finfo.fault_category}")
+            if finfo.description:
+                print(f"  Description    : {finfo.description}")
+            print(f"  Formula        : {mon.formula}")
+            if len(triggered_failures) > 1:
+                extras = ", ".join(f.name for _, f in triggered_failures[1:])
+                print(f"  Also triggered : {extras}")
+            print(f"{BOLD}{'─' * 64}{RESET}")
+            self.get_logger().error(
+                f"Named failure [{finfo.fault_category}] '{finfo.name}': {finfo.description}"
             )
+            _print_summary(self.multi)
+            self._halt(f"[{finfo.fault_category}] {finfo.name}: {finfo.description}")
+            return
+
+        # ── Phase failure ─────────────────────────────────────────
+        if phase_fail_reason is not None:
+            _print_summary(self.multi)
+            if phase_recoverable:
+                self._enter_idle(phase_fail_reason)
+            else:
+                self._halt(f"[{phase_fault_cat}] {phase_fail_reason}")
             return
 
         # Log current states to ROS logs
         for mon in self.multi.monitors:
             prev_s = prev_states[mon.name]
             curr_s = mon.current_state
+            suffix = ""
+            if mon.failure_mode and mon.status is MonitorStatus.VIOLATED:
+                suffix = f" ← NAMED FAILURE [{mon.failure_mode.fault_category}]"
             self.get_logger().info(
-                f"[{mon.name}] {prev_s} ──► {curr_s}{_state_label(mon, curr_s)} | {mon.status.name}"
+                f"[{mon.name}] {prev_s} ──► {curr_s}{_state_label(mon, curr_s)} | {mon.status.name}{suffix}"
             )
         self.get_logger().info(f"Phase: {self.current_phase}")
 
@@ -689,19 +1024,25 @@ class LtlMonitorNode(Node):
         aps_msg.data = json.dumps(list(required_aps))
         self.aps_pub.publish(aps_msg)
 
-        # Build phase_info for the LLM client (current phase's conditions + transitions)
+        # Build phase_info for the LLM client (full per-phase constraint set)
         phases = self.spec.execution_phases
         phase_info: dict = {}
         if 0 <= self.phase_idx < len(phases):
             p = phases[self.phase_idx]
             next_name = phases[self.phase_idx + 1]["phase"] if self.phase_idx + 1 < len(phases) else "Done"
+            timing    = p.get("timing_bounds", {})
             phase_info = {
                 "enter_condition":      p.get("enter_condition") or p.get("condition", ""),
+                "precondition":         p.get("precondition", ""),
+                "invariant":            p.get("invariant", ""),
+                "invariant_fault_category": p.get("invariant_fault_category", "INVARIANT"),
                 "progress_condition":   p.get("progress_condition", "True"),
                 "exit_condition":       p.get("exit_condition", "False"),
                 "next_phase":           next_name,
                 "violation_count":      self.phase_violation_count,
                 "violation_limit":      p.get("progress_violation_limit", _PHASE_VIOLATION_LIMIT),
+                "step_count":           self.phase_step_count,
+                "timing_bounds":        timing,
             }
 
         state_desc = {
@@ -720,6 +1061,16 @@ class LtlMonitorNode(Node):
                 "description": self.spec.terminal_failure_description,
                 "aps": list(self.spec.terminal_failure_aps),
             },
+            "named_failure_modes": [
+                {
+                    "name":           m.failure_mode.name,
+                    "fault_category": m.failure_mode.fault_category,
+                    "description":    m.failure_mode.description,
+                    "formula":        m.formula,
+                    "status":         m.status.name,
+                }
+                for m in self.multi.get_failure_mode_monitors()
+            ],
         }
         desc_msg = String()
         desc_msg.data = json.dumps(state_desc)
@@ -760,13 +1111,17 @@ def main(args=None) -> None:
     _print_skill_header(spec)
 
     try:
-        multi = MultiMonitor(spec.formulas, names=spec.names)
+        multi = MultiMonitor(
+            spec.all_formulas,
+            names=spec.all_names,
+            failure_modes=spec.build_failure_mode_infos(),
+        )
     except Exception as exc:
         print(f"\nError building automaton: {exc}", file=sys.stderr)
         sys.exit(1)
 
     output_dir = parsed_args.output_dir
-    _print_formula_table(multi, output_dir)
+    _print_formula_table(multi, spec, output_dir)
 
     node = LtlMonitorNode(spec, multi, parsed_args)
 
