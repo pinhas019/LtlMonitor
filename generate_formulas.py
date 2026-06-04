@@ -136,157 +136,276 @@ def _sanitize_bool_expr(expr: str) -> str:
 
 
 def _validate_and_fix(spec: dict) -> tuple[dict, list[str]]:
-    """Sanitize terminal/phase conditions and report problems."""
+    """Sanitize all Python boolean conditions and report problems."""
     warnings = []
     ap_names = set(spec.get("atomic_propositions", {}).keys())
 
-    for key in ("terminal_success", "terminal_failure"):
-        entry = spec.get(key, {})
-        if not entry:
-            continue
-        raw = entry.get("condition", "")
+    def _check_condition(raw: str, label: str) -> str:
         fixed = _sanitize_bool_expr(raw)
         if fixed != raw:
-            warnings.append(f"[{key}] Sanitized: '{raw}' → '{fixed}'")
-        spec[key]["condition"] = fixed
+            warnings.append(f"[{label}] Sanitized: '{raw}' → '{fixed}'")
+        if fixed and fixed not in ("True", "False", "true", "false"):
+            try:
+                tree = ast.parse(fixed, mode="eval")
+                used = {
+                    n.id for n in ast.walk(tree)
+                    if isinstance(n, ast.Name) and not keyword.iskeyword(n.id)
+                }
+                missing = used - ap_names
+                if missing:
+                    warnings.append(f"[{label}] References undefined APs: {missing}")
+            except SyntaxError as e:
+                warnings.append(f"[{label}] Syntax error after sanitization: {e}")
+        return fixed
 
-        try:
-            tree = ast.parse(fixed, mode="eval")
-            used = {
-                n.id for n in ast.walk(tree)
-                if isinstance(n, ast.Name) and not keyword.iskeyword(n.id)
-            }
-            missing = used - ap_names
-            if missing:
-                warnings.append(
-                    f"[{key}] Condition references undefined APs: {missing}"
-                )
-        except SyntaxError as e:
-            warnings.append(f"[{key}] Syntax error after sanitization: {e}")
+    # Terminal conditions
+    for key in ("terminal_success", "terminal_failure"):
+        entry = spec.get(key, {})
+        if entry:
+            spec[key]["condition"] = _check_condition(
+                entry.get("condition", ""), key
+            )
 
+    # Phase conditions — all five boolean fields + legacy "condition"
     for phase in spec.get("execution_phases", []):
-        phase["condition"] = _sanitize_bool_expr(phase.get("condition", ""))
+        name = phase.get("phase", "?")
+        for field in ("condition", "enter_condition", "precondition",
+                      "invariant", "progress_condition", "exit_condition"):
+            if phase.get(field):
+                phase[field] = _check_condition(phase[field], f"phase.{name}.{field}")
 
     return spec, warnings
 
 
 # ---------------------------------------------------------------------------
-# Narrative description generator (second LLM call)
+# Structured skill description formatter (deterministic — no LLM call)
 # ---------------------------------------------------------------------------
 
-def generate_skill_description(api_url: str, model: str, spec: dict) -> str:
-    """Generate a structured per-phase skill description document."""
-    phases = spec.get("execution_phases", [])
+def _collect_phase_aps(phase: dict, all_aps: dict) -> dict:
+    """Return {ap_name: description} for every AP referenced in any phase condition."""
+    used: set[str] = set()
+    for field in ("enter_condition", "condition", "precondition",
+                  "invariant", "progress_condition", "exit_condition"):
+        raw = phase.get(field, "")
+        if not raw:
+            continue
+        try:
+            sanitized = re.sub(r'\b(G|F|X)\s*\(', '(', raw)
+            sanitized = sanitized.replace('&&', ' and ').replace('||', ' or ')
+            sanitized = re.sub(r'!(?!=)', 'not ', sanitized)
+            tree = ast.parse(sanitized, mode='eval')
+            used |= {
+                n.id for n in ast.walk(tree)
+                if isinstance(n, ast.Name) and not keyword.iskeyword(n.id)
+            }
+        except Exception:
+            pass
+    return {n: all_aps[n] for n in sorted(used) if n in all_aps}
 
-    # Build a detailed per-phase context block for the LLM
-    phase_details = []
+
+def _nested_f_chain(formula: str) -> list[str]:
+    """
+    Extract the AP at each nesting level of a formula like
+    F(p1 && F(p2 && F(p3 && F(p4)))).
+    Returns ['p1', 'p2', 'p3', 'p4'].
+    """
+    return re.findall(r'F\s*\(\s*(\w+)', formula)
+
+
+def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
+    """
+    Build a Markdown per-phase reference document from the spec dict.
+    Deterministic — no LLM call. Every field is taken directly from formulas.json.
+    """
+    lines: list[str] = []
+
+    skill_name = spec.get("skill_name", "UnknownSkill")
+    all_aps    = spec.get("atomic_propositions", {})
+    formulas   = spec.get("ltl_formulas", [])
+    named_fms  = spec.get("named_failure_modes", [])
+    phases     = spec.get("execution_phases", [])
+    ts         = spec.get("terminal_success", {})
+    tf         = spec.get("terminal_failure", {})
+
+    def _ap_method(desc: str) -> str:
+        return "⚡ Rule" if re.search(r'[Tt]rue when', desc) else "🤖 LLM"
+
+    # ── Title ─────────────────────────────────────────────────────
+    lines += [f"# Skill Monitor Documentation: {skill_name}", ""]
+    if spec.get("description"):
+        lines += [f"> {spec['description']}", ""]
+    lines.append("---")
+
+    # ── LTL formulas ──────────────────────────────────────────────
+    lines += ["", "## LTL Formulas (Mission Specification)", ""]
+    if formulas:
+        lines.append("| Name | Formula | Automaton milestone chain |")
+        lines.append("|---|---|---|")
+        for f in formulas:
+            chain = _nested_f_chain(f.get("formula", ""))
+            chain_str = " → ".join(f"`{ap}`" for ap in chain) if chain else "—"
+            lines.append(f"| `{f.get('name', '')}` | `{f['formula']}` | {chain_str} |")
+    else:
+        lines.append("*(no formulas defined)*")
+
+    # ── Named failure modes ───────────────────────────────────────
+    lines += ["", "---", "", "## Named Failure Modes", "",
+              "> LTL formulas whose **VIOLATED** status triggers an immediate named halt.", ""]
+    if named_fms:
+        lines.append("| Fault Category | Name | Formula | Description |")
+        lines.append("|---|---|---|---|")
+        for fm in named_fms:
+            cat  = fm.get("fault_category", "?")
+            desc = fm.get("description", "")
+            lines.append(f"| `{cat}` | `{fm['name']}` | `{fm['formula']}` | {desc} |")
+    else:
+        lines.append("*(no named failure modes defined)*")
+
+    # ── Terminal conditions ───────────────────────────────────────
+    lines += ["", "---", "", "## Terminal Conditions", ""]
+    if ts:
+        lines += [
+            f"**✅ SUCCESS** — `{ts.get('condition', '(none)')}`",
+            f"> {ts.get('description', '')}",
+            "",
+        ]
+    if tf:
+        lines += [
+            f"**❌ FAILURE** — `{tf.get('condition', '(none)')}`",
+            f"> {tf.get('description', '')}",
+            "",
+        ]
+
+    # ── All atomic propositions ───────────────────────────────────
+    lines += ["---", "", "## Atomic Propositions", ""]
+    if all_aps:
+        lines.append("| Name | Eval | Rule / Description |")
+        lines.append("|---|---|---|")
+        for name, desc in all_aps.items():
+            lines.append(f"| `{name}` | {_ap_method(desc)} | {desc} |")
+    else:
+        lines.append("*(none)*")
+
+    # ── Per-phase sections ────────────────────────────────────────
     for i, p in enumerate(phases):
-        enter    = p.get("enter_condition") or p.get("condition", "—")
-        progress = p.get("progress_condition", "True")
-        exit_c   = p.get("exit_condition", "False")
-        limit    = p.get("progress_violation_limit", 3)
-        from_p   = phases[i - 1]["phase"] if i > 0 else "Idle"
-        to_p     = phases[i + 1]["phase"] if i + 1 < len(phases) else "Done"
-        phase_details.append(
-            f"Phase {i+1}: {p['phase']}\n"
-            f"  Description : {p.get('description', '')}\n"
-            f"  Entered from: {from_p}\n"
-            f"  Enter when  : {enter}\n"
-            f"  Progress    : {progress}  (fail after {limit} consecutive violations)\n"
-            f"  Exit when   : {exit_c}\n"
-            f"  Exits to    : {to_p}"
-        )
+        prev_phase = phases[i - 1]["phase"] if i > 0 else "Idle"
+        next_phase = phases[i + 1]["phase"] if i + 1 < len(phases) else "Done"
+        phase_aps  = _collect_phase_aps(p, all_aps)
 
-    ap_block = "\n".join(
-        f"  {name}: {desc}"
-        for name, desc in spec.get("atomic_propositions", {}).items()
-    )
-    formula_block = "\n".join(
-        f"  {f['name']}: {f['formula']}"
-        for f in spec.get("ltl_formulas", [])
-    )
-    ts = spec.get("terminal_success", {})
-    tf = spec.get("terminal_failure", {})
+        lines += [
+            "", "---", "",
+            f"## Phase {i+1}/{len(phases)} — {p['phase']}", "",
+        ]
+        if p.get("description"):
+            lines += [f"> {p['description']}", ""]
 
-    prompt = f"""You are writing operator documentation for a robot skill runtime monitor.
+        # ── Entry ──────────────────────────────────────────────────
+        lines += ["### Entry", ""]
+        lines.append(f"- **From:** {prev_phase}")
+        enter = p.get("enter_condition") or p.get("condition") or "—"
+        lines.append(f"- **Condition:** `{enter}`")
 
-The document must follow this EXACT structure and use these EXACT section headings.
-Each section and sub-section must appear even if content is minimal.
+        precond = p.get("precondition", "")
+        if precond and precond.strip().lower() not in ("true", ""):
+            cat = p.get("precondition_fault_category", "PRECONDITION")
+            lines += [
+                "",
+                f"**Precondition** *(checked once on entry)*",
+                "",
+                f"```",
+                precond,
+                f"```",
+                f"> `[{cat}]` halt if not satisfied",
+            ]
+        lines.append("")
 
-Skill: {spec.get("skill_name", "")}
-Description: {spec.get("description", "")}
+        # ── In Progress ────────────────────────────────────────────
+        lines += ["### In Progress", ""]
 
----
-FORMAL SPEC (do NOT copy verbatim — translate into clear technical prose):
+        invariant = p.get("invariant", "")
+        if invariant:
+            cat = p.get("invariant_fault_category", "INVARIANT")
+            lines += [
+                "#### Invariant *(every step — immediate halt if violated)*",
+                "",
+                "```",
+                invariant,
+                "```",
+                f"> **`[{cat}]`** halt on violation",
+                "",
+            ]
 
-LTL formulas:
-{formula_block}
+        progress = p.get("progress_condition", "")
+        if progress:
+            limit = p.get("progress_violation_limit", 3)
+            lines += [
+                "#### Progress *(counted soft violations)*",
+                "",
+                "```",
+                progress,
+                "```",
+                f"> **`[PROGRESS]`** enter IDLE after **{limit}** consecutive violations",
+                "",
+            ]
 
-Execution phases:
-{chr(10).join(phase_details)}
+        timing = p.get("timing_bounds", {})
+        if timing:
+            min_s = timing.get("min_steps")
+            max_s = timing.get("max_steps")
+            lines += ["#### Timing", ""]
+            if min_s is not None:
+                lines.append(f"- **`min_steps`: {min_s}** — exit blocked until this many steps have elapsed")
+            if max_s is not None:
+                lines.append(f"- **`max_steps`: {max_s}** — `[TIMEOUT]` halt if exceeded")
+            lines.append("")
 
-Terminal success: {ts.get("condition", "")} — {ts.get("description", "")}
-Terminal failure: {tf.get("condition", "")} — {tf.get("description", "")}
+        # ── Exit ───────────────────────────────────────────────────
+        lines += ["### Exit", ""]
+        lines.append(f"- **To:** {next_phase}")
+        lines.append(f"- **Condition:** `{p.get('exit_condition', '—')}`")
+        lines.append("")
 
-Atomic propositions:
-{ap_block}
+        # ── APs used in this phase ─────────────────────────────────
+        if phase_aps:
+            lines += ["### Atomic Propositions Used in This Phase", ""]
+            lines.append("| Name | Eval | Rule / Description |")
+            lines.append("|---|---|---|")
+            for ap_name, ap_desc in phase_aps.items():
+                lines.append(f"| `{ap_name}` | {_ap_method(ap_desc)} | {ap_desc} |")
+            lines.append("")
 
----
-REQUIRED OUTPUT FORMAT (reproduce these exact headings):
+        # ── Related formulas ───────────────────────────────────────
+        lines += ["### Related Formulas", ""]
 
-# Skill Monitor Documentation: {spec.get("skill_name", "")}
+        for f in formulas:
+            formula_str = f.get("formula", "")
+            chain = _nested_f_chain(formula_str)
+            lines += [
+                f"**LTL:** `{f.get('name', '')}`",
+                "",
+                "```",
+                formula_str,
+                "```",
+                "",
+            ]
+            if i < len(chain):
+                lines.append(
+                    f"> Automaton **state {i}**: waiting for `{chain[i]}` to advance to state {i+1}"
+                )
+            elif chain:
+                lines.append("> Automaton **accepting state** — all milestones satisfied")
+            lines.append("")
 
-## Overview
-(3-4 sentences: what the skill does, its goal, what failure looks like)
+        if named_fms:
+            lines += ["**Named failure modes active in this phase:**", ""]
+            lines.append("| Fault Category | Name | Formula |")
+            lines.append("|---|---|---|")
+            for fm in named_fms:
+                cat = fm.get("fault_category", "?")
+                lines.append(f"| `{cat}` | `{fm['name']}` | `{fm['formula']}` |")
+            lines.append("")
 
-## Monitored LTL Properties
-(For each formula: name, what safety/liveness property it enforces, why it matters)
-
-## Execution Phases
-
-(Repeat this block for EVERY phase in order:)
-
-### Phase: <PhaseName>
-**Description**
-(1-2 sentences on what the robot is doing in this phase)
-
-**Enter Conditions**
-Entered from: <previous phase or Idle>
-When: <plain-English explanation of enter_condition>
-
-**Progress Conditions**
-(Plain-English explanation of progress_condition — what must remain True)
-If violated for <N> consecutive steps, the skill is declared failed.
-
-**Exit Conditions**
-Exits to: <next phase or Done>
-When: <plain-English explanation of exit_condition>
-
-**Possible Transitions**
-- Advance → <next phase>: when <exit condition plain English>
-- Failure: when progress conditions are violated <N> consecutive times
-
----
-
-## Terminal Conditions
-
-### Success
-Condition: <plain English>
-(Description of what this means operationally)
-
-### Failure
-Condition: <plain English>
-(Description of what this means operationally)
-
-## Atomic Propositions
-(Table or list: AP name | evaluation rule | plain-English meaning)
-
----
-Write only the document. No preamble, no JSON, no code fences.
-"""
-
-    print("[*] Generating structured skill description...")
-    return query_llm_text(api_url, model, prompt)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +420,8 @@ def main():
                         help="Natural language description of the robot skill.")
     parser.add_argument("--output", "-o", default="formulas.json",
                         help="Output path for formulas JSON (default: formulas.json).")
-    parser.add_argument("--desc-output", "-t", default="skill_description.txt",
-                        help="Output path for skill description text (default: skill_description.txt).")
+    parser.add_argument("--desc-output", "-t", default="skill_description.md",
+                        help="Output path for skill description (default: skill_description.md).")
     parser.add_argument("--api-url", "--ollama-url", dest="api_url",
                         default="http://192.168.140.111/developer-api/v1",
                         help="LLM API base URL.")
@@ -348,33 +467,54 @@ CRITICAL RULES:
 2. terminal_success.condition and terminal_failure.condition MUST be plain Python boolean
    expressions using only: and, or, not, ==, !=, <, >, <=, >=, parentheses, and AP names.
    DO NOT use LTL operators (G, F, X, U) or C-style operators (&&, ||, !) in these fields.
-   GOOD: "nav_status_success and near_target"
-   BAD:  "G(nav_status_success) && near_target"
 
-3. execution_phases[].enter_condition, progress_condition, exit_condition must all use plain Python boolean syntax (and/or/not).
+3. All execution_phases conditions (enter_condition, precondition, invariant, progress_condition,
+   exit_condition) must use plain Python boolean syntax (and/or/not).
 
 4. ltl_formulas[].formula MUST use LTL syntax (G, F, X, U, ->, &&, ||, !) valid for the Spot library.
+   For skills with sequential phases, use nested F operators to produce a richer automaton:
+   GOOD: "F(phase1_ap && F(phase2_ap && F(phase3_ap)))"  — one state per milestone
+   BAD:  "F(final_ap)"  — generates only a 2-state automaton, loses phase tracking
 
 5. Only reference AP names that are defined in atomic_propositions.
 
-6. description must be 2-3 sentences covering the skill's purpose, what it monitors, and its termination criteria.
+6. description must be 2-3 sentences covering the skill's purpose, what it monitors, and
+   its termination criteria.
 
-7. Each execution phase MUST have three conditions:
-   - enter_condition: APs that must be True to enter this phase (checked on transition from previous phase or Idle)
-   - progress_condition: APs that must remain True WHILE in this phase; if violated for progress_violation_limit consecutive steps the skill fails
-   - exit_condition: APs that must be True to leave this phase and advance to the next
+7. Each execution phase MUST have:
+   - enter_condition: APs that must be True to transition into this phase
+   - precondition: Python bool checked ONCE on phase entry; "" if none
+   - precondition_fault_category: fault category string if precondition fails (e.g. "PRECONDITION", "NAVIGATION")
+   - invariant: Python bool checked EVERY step; immediate halt if False; "" if none
+   - invariant_fault_category: fault category string if invariant violated (e.g. "SAFETY", "NAVIGATION")
+   - progress_condition: must remain True while in phase; counted violations
+   - exit_condition: APs that must be True to leave this phase
+   - progress_violation_limit: int (typically 3–5)
+   - timing_bounds: object with "max_steps" (required) and optionally "min_steps"
+
+8. named_failure_modes: one entry per global failure mode that should trigger a named halt
+   anywhere during execution (not just within a phase). Use G(!) formulas for safety properties.
+   Each entry: name, formula (LTL), fault_category (e.g. "SAFETY", "NAVIGATION"), description.
 
 Respond with a single valid JSON object:
 {{
   "skill_name": "CamelCaseSkillName",
-  "description": "2-3 sentence description of purpose, monitored properties, and termination criteria.",
+  "description": "2-3 sentence description.",
   "atomic_propositions": {{
     "ap_name": "True when <sensor rule>. <plain-English meaning>."
   }},
   "ltl_formulas": [
     {{
       "name": "formula_name",
-      "formula": "LTL formula using Spot syntax"
+      "formula": "F(ap1 && F(ap2 && F(ap3)))"
+    }}
+  ],
+  "named_failure_modes": [
+    {{
+      "name": "collision_risk",
+      "formula": "G(!obstacle_detected)",
+      "fault_category": "SAFETY",
+      "description": "Robot must never come within collision range of an obstacle."
     }}
   ],
   "execution_phases": [
@@ -382,9 +522,14 @@ Respond with a single valid JSON object:
       "phase": "PhaseName",
       "description": "What the robot is doing in this phase.",
       "enter_condition": "ap1 and ap2",
+      "precondition": "ap3",
+      "precondition_fault_category": "PRECONDITION",
+      "invariant": "not ap4",
+      "invariant_fault_category": "SAFETY",
       "progress_condition": "ap3 and not ap4",
       "exit_condition": "ap5",
-      "progress_violation_limit": 3
+      "progress_violation_limit": 3,
+      "timing_bounds": {{"max_steps": 60}}
     }}
   ],
   "terminal_success": {{
@@ -417,31 +562,9 @@ Respond ONLY with the JSON object. No markdown, no code fences, no explanation.
     except Exception as e:
         print(f"Error: Failed to write formulas file: {e}", file=sys.stderr)
 
-    # Second call: generate narrative skill description
-    print(f"[*] Step 2/2 — Generating narrative skill description ({args.desc_output})...")
+    # Step 2/2: build structured per-phase reference document (deterministic)
+    print(f"[*] Step 2/2 — Building structured skill description ({args.desc_output})...")
     narrative = generate_skill_description(args.api_url, args.model, formulas_json)
-
-    if not narrative:
-        # Fallback: structured text assembled from JSON fields
-        skill_name = formulas_json.get("skill_name", "UnknownSkill")
-        description = formulas_json.get("description", "")
-        phases = formulas_json.get("execution_phases", [])
-        ts = formulas_json.get("terminal_success", {})
-        tf = formulas_json.get("terminal_failure", {})
-        lines = [
-            f"Skill: {skill_name}", f"Description: {description}",
-            "=" * 60, "Execution Phases:", "=" * 60,
-        ]
-        for entry in phases:
-            lines += [f"\n[{entry.get('phase', '?')}]",
-                      f"  Condition  : {entry.get('condition', '')}",
-                      f"  Description: {entry.get('description', '')}"]
-        lines += ["", "=" * 60, "Terminal Conditions:",
-                  f"  SUCCESS : {ts.get('condition', '')}",
-                  f"            {ts.get('description', '')}",
-                  f"  FAILURE : {tf.get('condition', '')}",
-                  f"            {tf.get('description', '')}"]
-        narrative = "\n".join(lines)
 
     try:
         with open(args.desc_output, "w") as f:

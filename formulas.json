@@ -1,48 +1,59 @@
 {
   "skill_name": "AutonomousNavigation",
-  "description": "This skill manages autonomous navigation to a target location, ensuring collision-free movement throughout the process. It monitors the navigation status and proximity to the goal while actively avoiding obstacles. The skill succeeds upon successful navigation to the target, and fails if navigation is aborted or canceled.",
+  "description": "This skill manages autonomous navigation from a given target location to the goal while ensuring collision avoidance. It monitors the robot's progress towards the target and the status of the navigation system. The mission succeeds upon successful navigation completion, otherwise, it remains in progress until a definitive failure or success state is reached.",
   "atomic_propositions": {
     "target_received": "True when distance_to_target > 100.0. A target location has been set for navigation.",
     "path_planned": "True when nav_status == 'accepted'. The navigation system has accepted the path plan.",
-    "is_moving": "True when linear_vel > 0.05. The robot is actively moving towards the goal.",
-    "near_target": "True when distance_to_target < 0.5. The robot is within close proximity of the target location.",
-    "obstacle_detected": "True when min_range < 0.25. A close obstacle is detected by the laser scanner.",
-    "navigation_succeeded": "True when nav_status == 'succeeded'. The navigation goal was successfully reached.",
-    "navigation_failed": "True when nav_status in ['aborted', 'canceled']. The navigation process was terminated prematurely."
+    "moving_towards_target": "True when nav_status == 'executing'. The robot is actively executing the planned path.",
+    "collision_risk": "True when min_range < 0.25. An obstacle is detected too close to the robot.",
+    "target_reached": "True when distance_to_target < 0.5. The robot is within close proximity of the target location.",
+    "navigation_succeeded": "True when nav_status == 'succeeded'. The navigation goal was successfully achieved.",
+    "navigation_failed": "True when nav_status in ['aborted', 'canceled']. The navigation process was interrupted or failed."
   },
   "ltl_formulas": [
     {
-      "name": "navigation_completes_successfully",
-      "formula": "F (navigation_succeeded)"
+      "name": "full_navigation_sequence",
+      "formula": "F(target_received && F(path_planned && F(moving_towards_target && F(target_reached))))"
+    }
+  ],
+  "named_failure_modes": [
+    {
+      "name": "collision_imminent",
+      "formula": "G(!collision_risk)",
+      "fault_category": "SAFETY",
+      "description": "The robot must never enter a state where an obstacle is too close."
     }
   ],
   "execution_phases": [
     {
-      "phase": "PlanningAndAcceptance",
-      "description": "The robot waits for the target to be set and the navigation system to accept the path.",
+      "phase": "PlanningAndInitiation",
+      "description": "The robot receives the target and initiates the path planning process.",
       "enter_condition": "target_received",
-      "progress_condition": "path_planned",
+      "precondition": "True",
+      "precondition_fault_category": "NONE",
+      "invariant": "not collision_risk",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "not path_planned",
       "exit_condition": "path_planned",
       "progress_violation_limit": 5,
-      "condition": ""
+      "timing_bounds": {
+        "max_steps": 30
+      }
     },
     {
-      "phase": "ExecutingNavigation",
-      "description": "The robot moves towards the target while continuously monitoring for obstacles and maintaining movement.",
-      "enter_condition": "path_planned and is_moving",
-      "progress_condition": "is_moving and not obstacle_detected",
-      "exit_condition": "near_target or navigation_failed",
+      "phase": "ExecutionAndTracking",
+      "description": "The robot moves towards the target while continuously monitoring for obstacles and progress.",
+      "enter_condition": "path_planned",
+      "precondition": "True",
+      "precondition_fault_category": "NONE",
+      "invariant": "not collision_risk",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "moving_towards_target",
+      "exit_condition": "target_reached or navigation_failed",
       "progress_violation_limit": 5,
-      "condition": ""
-    },
-    {
-      "phase": "ReachingTarget",
-      "description": "The robot is in the final approach phase, confirming it is close to the target.",
-      "enter_condition": "near_target and is_moving",
-      "progress_condition": "near_target",
-      "exit_condition": "navigation_succeeded",
-      "progress_violation_limit": 3,
-      "condition": ""
+      "timing_bounds": {
+        "max_steps": 120
+      }
     }
   ],
   "terminal_success": {
@@ -50,7 +61,7 @@
     "description": "The mission is accomplished when the navigation status explicitly reports success."
   },
   "terminal_failure": {
-    "condition": "navigation_failed or (not navigation_succeeded and not near_target and not is_moving)",
-    "description": "The mission fails if navigation is aborted, canceled, or if the robot stops moving before reaching the target without success."
+    "condition": "navigation_failed",
+    "description": "The mission is considered failed if the navigation process is aborted or canceled."
   }
 }
