@@ -311,8 +311,22 @@ class LlmClientNode(Node):
         print(f"  │ {D}nav_status={nav}  close_objects={close}{R}")
         if phase_info:
             print(f"  │ {'─' * 52}")
+            invariant = phase_info.get("invariant", "")
+            if invariant:
+                inv_cat = phase_info.get("invariant_fault_category", "INVARIANT")
+                print(f"  │ {B}\033[31mInvariant:{R}  {invariant}  {D}[{inv_cat}]{R}")
             print(f"  │ {D}Progress :{R}  {phase_info.get('progress_condition','—')}{viol_str}")
             print(f"  │ {D}Exit  →  :{R}  {phase_info.get('next_phase','?')}  when: {phase_info.get('exit_condition','—')}")
+            timing = phase_info.get("timing_bounds", {})
+            step_count = phase_info.get("step_count", 0)
+            max_steps  = timing.get("max_steps")
+            min_steps  = timing.get("min_steps")
+            if max_steps is not None:
+                pct = int(100 * step_count / max_steps) if max_steps else 0
+                bar_filled = pct // 5
+                bar = "█" * bar_filled + "░" * (20 - bar_filled)
+                print(f"  │ {D}Timing   :{R}  step {step_count}/{max_steps}  [{bar}] {pct}%"
+                      + (f"  {D}(min {min_steps}){R}" if min_steps else ""))
 
         # ── Rule-based evaluation (first pass) ──────────────────────────
         rule_evals: dict[str, bool] = {}
@@ -370,20 +384,30 @@ Reply with ONLY a JSON object. No markdown, no explanation.
         for ap in required_aps:
             final_evals.setdefault(ap, False)
 
-        # ── Result display ───────────────────────────────────────────────
+        # ── Result display — separated by evaluation method ─────────────
         print(f"  │ {'─' * 52}")
         G, RE = self._GREEN, self._RED
-        def _ap_tag(ap):
-            tag = "R" if ap in rule_evals else "L"
-            color = G if final_evals[ap] else RE
-            return f"{color}{ap}[{tag}]{R}"
 
-        true_aps  = [ap for ap in required_aps if final_evals[ap]]
-        false_aps = [ap for ap in required_aps if not final_evals[ap]]
-        print(f"  │ {D}TRUE :{R}  {'  '.join(_ap_tag(a) for a in true_aps)  or '—'}")
-        print(f"  │ {D}FALSE:{R}  {'  '.join(_ap_tag(a) for a in false_aps) or '—'}")
+        def _ap_colored(ap):
+            color = G if final_evals.get(ap) else RE
+            return f"{color}{ap}{R}"
+
+        # Fast: rule-based results
+        rule_true  = [ap for ap in required_aps if ap in rule_evals and rule_evals[ap]]
+        rule_false = [ap for ap in required_aps if ap in rule_evals and not rule_evals[ap]]
+        if rule_evals:
+            print(f"  │ {B}⚡ Rule-based (instant){R}")
+            print(f"  │   {D}TRUE :{R}  {'  '.join(_ap_colored(a) for a in rule_true)  or '—'}")
+            print(f"  │   {D}FALSE:{R}  {'  '.join(_ap_colored(a) for a in rule_false) or '—'}")
+
+        # Slow: LLM-evaluated results
         if llm_aps:
-            print(f"  │ {D}(rule:{len(rule_evals)}  llm:{len(llm_evals)}){R}")
+            llm_true  = [ap for ap in llm_aps if final_evals.get(ap)]
+            llm_false = [ap for ap in llm_aps if not final_evals.get(ap)]
+            print(f"  │ {B}🤖 LLM-evaluated (queried){R}")
+            print(f"  │   {D}TRUE :{R}  {'  '.join(_ap_colored(a) for a in llm_true)  or '—'}")
+            print(f"  │   {D}FALSE:{R}  {'  '.join(_ap_colored(a) for a in llm_false) or '—'}")
+
         print(f"  {B}└{'─' * 50}{R}")
         print()
 
