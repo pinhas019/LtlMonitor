@@ -1,0 +1,152 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1.0in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{microtype}
+\usepackage{float}
+\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+
+% Define custom colors
+\definecolor{primary}{HTML}{1A365D}
+\definecolor{secondary}{HTML}{2B6CB0}
+\definecolor{codebg}{HTML}{F7FAFC}
+
+\title{\color{primary}\textbf{LTL Runtime Monitoring and Simulation System \\ Technical Overview and Specifications} \\ \vspace{0.2cm} \large \href{https://github.com/pinhas019/LtlMonitor}{github@pinhas019/LtlMonitor}}
+\author{\textbf{Formal Verification \& Robotics Team}}
+\date{June 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document provides a simple, high-level overview of the \textbf{Linear Temporal Logic (LTL) Runtime Monitor and Simulation System}. The system verifies that a robot behaves correctly and safely while executing tasks. It uses formal temporal logic formulas along with a hybrid evaluator that combines quick numerical rules with Large Language Model (LLM) reasoning to assess sensor data.
+\end{abstract}
+
+\section{System Architecture}
+
+The system is split into two main parts:
+\begin{enumerate}
+    \item \textbf{LTL State Monitor}: Tracks the formal mathematical states and rules to ensure the task is progressing correctly.
+    \item \textbf{Observation Evaluator}: Translates raw robot sensors (like laser scans and GPS coordinates) into simple true/false statements.
+\end{enumerate}
+
+All components run inside isolated Docker containers, communicating automatically using ROS~2.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\linewidth]{output/component_architecture.png}
+    \caption{Overview of the System Architecture and Component Connections.}
+    \label{fig:arch}
+\end{figure}
+
+The system consists of six core parts:
+\begin{itemize}
+    \item \textbf{ltl-monitor}: The central brain. It compiles logic formulas into state transition diagrams (Büchi automata) and tracks execution phases.
+    \item \textbf{ltl-llm-client}: The translator. It reads raw sensor topics and determines if conditions like ``is moving'' or ``obstacle nearby'' are true.
+    \item \textbf{ltl-mujoco-sim}: The simulator. It models the Unitree G1 humanoid robot and generates simulated sensor data (like LiDAR laser scans).
+    \item \textbf{ltl-nav2}: The navigator. It handles planning paths and driving the robot around obstacles.
+    \item \textbf{ltl-foxglove-bridge}: The visualizer. Streams live data to Foxglove Studio for easy 3D visualization.
+    \item \textbf{ltl-dozzle}: The log aggregator. Displays all system logs in a simple web interface.
+\end{itemize}
+
+\section{Two-Way Communication Flow}
+
+Instead of constantly checking every sensor and logic rule, the system uses a simple, directed two-way communication loop:
+
+\begin{enumerate}
+    \item \textbf{Request Active Propositions}: At each step, the \textbf{Monitor} looks at its current logic state and figures out exactly which true/false statements (atomic propositions) it needs to evaluate. It publishes this list to the evaluator.
+    \item \textbf{Provide Context}: Along with the required list, the \textbf{Monitor} sends a description of the current task phase, terminal goals, and potential failure modes to help the evaluator.
+    \item \textbf{Evaluate Sensors}: The \textbf{Evaluator} catches the raw sensor data, evaluates the requested statements using quick math rules first, and uses the LLM as a backup for complex concepts.
+    \item \textbf{Transition States}: The \textbf{Evaluator} sends the true/false results back. The \textbf{Monitor} updates its logic automata and moves to the next state.
+\end{enumerate}
+
+\section{Logic Properties and Phase Tracking}
+
+The system checks two types of logic rules: \textbf{system properties} (goals that must be met) and \textbf{named failure modes} (specific errors like crashing).
+
+\subsection{System Properties and Named Failure Modes}
+At runtime, the system monitors two distinct categories of LTL formulas:
+\begin{itemize}
+    \item \textbf{System Properties (Goals to Meet)}: These are safety or liveness requirements that define task success. For example, a liveness property like $G(\text{active} \rightarrow F(\text{near\_target}))$ ensures that whenever the navigation skill is active, the robot will eventually reach the target.
+    \item \textbf{Named Failure Modes (Specific Errors)}: These are parallel safety properties that monitor for specific faults (e.g., crashing or planning failures). For example, a safety property like $G(\neg\text{collision})$ or $G(\neg\text{navigation\_failed})$ is compiled into a separate automaton. If violated, it raises a named fault (such as \texttt{SAFETY} or \texttt{NAVIGATION}) to trigger an immediate halt, rather than a generic logic violation.
+\end{itemize}
+
+\subsection{Formula Monitor Status}
+Each logic rule tracks a simple state machine to determine if it is satisfied:
+\begin{itemize}
+    \item \textbf{Inconclusive} (Yellow $\bullet$): The robot has not finished the task, so we don't know the final outcome yet.
+    \item \textbf{Accepted} (Green $\boldsymbol{\checkmark}$): The task constraints are currently met.
+    \item \textbf{Violated} (Red $\boldsymbol{\times}$): A safety rule has been broken. The system permanently halts.
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.6\linewidth]{output/formula_status_state_machine.png}
+    \caption{Simple Status Flow of a Monitored LTL Formula.}
+    \label{fig:status}
+\end{figure}
+
+\subsection{Phase Engine and Constraints}
+To track multi-step tasks (like driving, then picking up an object, then returning), the system splits execution into sequential \textbf{phases}. Each phase can enforce four types of checks:
+\begin{itemize}
+    \item \textbf{Precondition}: Checked once when entering the phase. If not met, the system halts.
+    \item \textbf{Invariant}: Checked at every single step. If broken, the system halts immediately.
+    \item \textbf{Progress}: Soft constraints. If the robot stops making progress, it registers a violation. If it exceeds a limit, the system goes into \texttt{IDLE} to recover.
+    \item \textbf{Timing Bounds}: Enforces minimum steps and maximum step limits (timeouts).
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.6\linewidth]{output/phase_state_machine.png}
+    \caption{State Machine showing Transitions between Execution Phases.}
+    \label{fig:phase_sm}
+\end{figure}
+
+\subsection{Example Generated Automaton}
+Figure~\ref{fig:automaton} shows an example of a generated Büchi automaton compiled directly by the monitor from LTL properties. This automaton represents a phase-based navigation sequence milestone tracker.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{output/full_navigation_sequence.png}
+    \caption{Example of a Compiled Phase Transition Sequence Automaton.}
+    \label{fig:automaton}
+\end{figure}
+
+\section{Hybrid Evaluation Model}
+
+To keep the system fast and responsive, the evaluator node splits its decisions into two paths: a rule-based fast path and an LLM-based slow path.
+
+\subsection{Fast Path (Rule-Based Evaluation)}
+When the client receives the active list of Atomic Propositions (APs), it performs a regular expression search on each AP's description for the pattern \texttt{True when <expression>}.
+If matched, the expression is extracted and evaluated directly against a local dictionary of mapped sensor telemetry (such as \texttt{distance\_to\_target}, \texttt{min\_range}, and \texttt{linear\_vel}). This evaluation is run in a sandboxed Python \texttt{eval()} environment where all standard built-in functions are removed to prevent arbitrary code execution. It evaluates in a fraction of a millisecond, completely bypassing the LLM.
+
+\subsection{Slow Path (LLM Fallback)}
+If an AP's description cannot be parsed numerically (e.g., subjective concepts like ``the robot is oscillating or stuck''), it falls back to the local Large Language Model. The client builds a structured text prompt including the phase context and sensor values. To avoid blocking the main ROS~2 callback loop, the query is placed into an asynchronous queue and processed by a background worker thread.
+
+\section{Core Classes and Code Flow}
+
+Behind the scenes, the code is structured around three key concepts:
+\begin{itemize}
+    \item \textbf{LTLMonitor}: Represents a single logic rule. It loads a compiled automaton and keeps track of its current status.
+    \item \textbf{MultiMonitor}: Coordinates multiple monitors running at the same time, merging their lists of required variables.
+    \item \textbf{SkillSpec}: Parses the main specification file (\texttt{formulas.json}) which defines all the phases, rules, and success/failure conditions.
+\end{itemize}
+
+When sensor updates arrive, the \textbf{MultiMonitor} updates all active rule automata. If a critical safety invariant is violated, or a named failure automaton detects an issue, the system alerts the robot to halt immediately. If the success condition is met, the monitoring session completes successfully.
+
+\section{Example Walkthrough: GoToTarget}
+
+Consider a simple navigation task where the robot drives to a coordinate:
+\begin{enumerate}
+    \item \textbf{Idle}: The robot awaits a goal.
+    \item \textbf{Initialization}: A goal is received. The system checks preconditions and transitions to active monitoring.
+    \item \textbf{Navigation}: The robot drives. The system verifies safety rules (no obstacles) and checks progress at every step.
+    \item \textbf{GoalReached}: The robot arrives within range, triggers success, and enters the idle state.
+\end{enumerate}
+
+\end{document}
