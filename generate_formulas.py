@@ -29,6 +29,13 @@ Available sensor fields (provided to the evaluator at each step):
     nav_status                       — one of: "accepted", "executing", "canceling",
                                        "succeeded", "canceled", "aborted"
 
+  Humanoid base state (G1, derived from /odom orientation + height):
+    base_roll, base_pitch            — base tilt in radians (0 = level)
+    base_height                      — pelvis height in metres (drops when fallen)
+    upright_flag                     — 1.0 when standing (level + tall enough), else 0.0
+                                       (precomputed; the evaluator applies the tilt/height
+                                       thresholds, so APs just compare upright_flag)
+
 Evaluation rule examples (the evaluator applies these literally):
   "True when linear_vel > 0.05"
   "True when distance_to_target < 0.5"
@@ -36,16 +43,24 @@ Evaluation rule examples (the evaluator applies these literally):
   "True when nav_status == 'succeeded'"
   "True when nav_status in ['aborted', 'canceled']"
   "True when nav_status in ['accepted', 'executing']"
+  "True when upright_flag > 0.5"
 """
 
 # ---------------------------------------------------------------------------
 # LLM helpers
 # ---------------------------------------------------------------------------
 
-def _build_request(api_url: str, model: str, prompt: str, json_mode: bool) -> urllib.request.Request:
+
+def _build_request(
+    api_url: str, model: str, prompt: str, json_mode: bool
+) -> urllib.request.Request:
     is_openai = "/v1" in api_url or "openai" in api_url
     if is_openai:
-        endpoint = api_url if api_url.endswith("/chat/completions") else f"{api_url.rstrip('/')}/chat/completions"
+        endpoint = (
+            api_url
+            if api_url.endswith("/chat/completions")
+            else f"{api_url.rstrip('/')}/chat/completions"
+        )
         data: dict = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -148,7 +163,8 @@ def _validate_and_fix(spec: dict) -> tuple[dict, list[str]]:
             try:
                 tree = ast.parse(fixed, mode="eval")
                 used = {
-                    n.id for n in ast.walk(tree)
+                    n.id
+                    for n in ast.walk(tree)
                     if isinstance(n, ast.Name) and not keyword.iskeyword(n.id)
                 }
                 missing = used - ap_names
@@ -162,15 +178,19 @@ def _validate_and_fix(spec: dict) -> tuple[dict, list[str]]:
     for key in ("terminal_success", "terminal_failure"):
         entry = spec.get(key, {})
         if entry:
-            spec[key]["condition"] = _check_condition(
-                entry.get("condition", ""), key
-            )
+            spec[key]["condition"] = _check_condition(entry.get("condition", ""), key)
 
     # Phase conditions — all five boolean fields + legacy "condition"
     for phase in spec.get("execution_phases", []):
         name = phase.get("phase", "?")
-        for field in ("condition", "enter_condition", "precondition",
-                      "invariant", "progress_condition", "exit_condition"):
+        for field in (
+            "condition",
+            "enter_condition",
+            "precondition",
+            "invariant",
+            "progress_condition",
+            "exit_condition",
+        ):
             if phase.get(field):
                 phase[field] = _check_condition(phase[field], f"phase.{name}.{field}")
 
@@ -181,21 +201,29 @@ def _validate_and_fix(spec: dict) -> tuple[dict, list[str]]:
 # Structured skill description formatter (deterministic — no LLM call)
 # ---------------------------------------------------------------------------
 
+
 def _collect_phase_aps(phase: dict, all_aps: dict) -> dict:
     """Return {ap_name: description} for every AP referenced in any phase condition."""
     used: set[str] = set()
-    for field in ("enter_condition", "condition", "precondition",
-                  "invariant", "progress_condition", "exit_condition"):
+    for field in (
+        "enter_condition",
+        "condition",
+        "precondition",
+        "invariant",
+        "progress_condition",
+        "exit_condition",
+    ):
         raw = phase.get(field, "")
         if not raw:
             continue
         try:
-            sanitized = re.sub(r'\b(G|F|X)\s*\(', '(', raw)
-            sanitized = sanitized.replace('&&', ' and ').replace('||', ' or ')
-            sanitized = re.sub(r'!(?!=)', 'not ', sanitized)
-            tree = ast.parse(sanitized, mode='eval')
+            sanitized = re.sub(r"\b(G|F|X)\s*\(", "(", raw)
+            sanitized = sanitized.replace("&&", " and ").replace("||", " or ")
+            sanitized = re.sub(r"!(?!=)", "not ", sanitized)
+            tree = ast.parse(sanitized, mode="eval")
             used |= {
-                n.id for n in ast.walk(tree)
+                n.id
+                for n in ast.walk(tree)
                 if isinstance(n, ast.Name) and not keyword.iskeyword(n.id)
             }
         except Exception:
@@ -209,7 +237,7 @@ def _nested_f_chain(formula: str) -> list[str]:
     F(p1 && F(p2 && F(p3 && F(p4)))).
     Returns ['p1', 'p2', 'p3', 'p4'].
     """
-    return re.findall(r'F\s*\(\s*(\w+)', formula)
+    return re.findall(r"F\s*\(\s*(\w+)", formula)
 
 
 def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
@@ -220,15 +248,15 @@ def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
     lines: list[str] = []
 
     skill_name = spec.get("skill_name", "UnknownSkill")
-    all_aps    = spec.get("atomic_propositions", {})
-    formulas   = spec.get("ltl_formulas", [])
-    named_fms  = spec.get("named_failure_modes", [])
-    phases     = spec.get("execution_phases", [])
-    ts         = spec.get("terminal_success", {})
-    tf         = spec.get("terminal_failure", {})
+    all_aps = spec.get("atomic_propositions", {})
+    formulas = spec.get("ltl_formulas", [])
+    named_fms = spec.get("named_failure_modes", [])
+    phases = spec.get("execution_phases", [])
+    ts = spec.get("terminal_success", {})
+    tf = spec.get("terminal_failure", {})
 
     def _ap_method(desc: str) -> str:
-        return "⚡ Rule" if re.search(r'[Tt]rue when', desc) else "🤖 LLM"
+        return "⚡ Rule" if re.search(r"[Tt]rue when", desc) else "🤖 LLM"
 
     # ── Title ─────────────────────────────────────────────────────
     lines += [f"# Skill Monitor Documentation: {skill_name}", ""]
@@ -249,13 +277,20 @@ def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
         lines.append("*(no formulas defined)*")
 
     # ── Named failure modes ───────────────────────────────────────
-    lines += ["", "---", "", "## Named Failure Modes", "",
-              "> LTL formulas whose **VIOLATED** status triggers an immediate named halt.", ""]
+    lines += [
+        "",
+        "---",
+        "",
+        "## Named Failure Modes",
+        "",
+        "> LTL formulas whose **VIOLATED** status triggers an immediate named halt.",
+        "",
+    ]
     if named_fms:
         lines.append("| Fault Category | Name | Formula | Description |")
         lines.append("|---|---|---|---|")
         for fm in named_fms:
-            cat  = fm.get("fault_category", "?")
+            cat = fm.get("fault_category", "?")
             desc = fm.get("description", "")
             lines.append(f"| `{cat}` | `{fm['name']}` | `{fm['formula']}` | {desc} |")
     else:
@@ -290,11 +325,14 @@ def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
     for i, p in enumerate(phases):
         prev_phase = phases[i - 1]["phase"] if i > 0 else "Idle"
         next_phase = phases[i + 1]["phase"] if i + 1 < len(phases) else "Done"
-        phase_aps  = _collect_phase_aps(p, all_aps)
+        phase_aps = _collect_phase_aps(p, all_aps)
 
         lines += [
-            "", "---", "",
-            f"## Phase {i+1}/{len(phases)} — {p['phase']}", "",
+            "",
+            "---",
+            "",
+            f"## Phase {i + 1}/{len(phases)} — {p['phase']}",
+            "",
         ]
         if p.get("description"):
             lines += [f"> {p['description']}", ""]
@@ -310,11 +348,11 @@ def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
             cat = p.get("precondition_fault_category", "PRECONDITION")
             lines += [
                 "",
-                f"**Precondition** *(checked once on entry)*",
+                "**Precondition** *(checked once on entry)*",
                 "",
-                f"```",
+                "```",
                 precond,
-                f"```",
+                "```",
                 f"> `[{cat}]` halt if not satisfied",
             ]
         lines.append("")
@@ -354,9 +392,13 @@ def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
             max_s = timing.get("max_steps")
             lines += ["#### Timing", ""]
             if min_s is not None:
-                lines.append(f"- **`min_steps`: {min_s}** — exit blocked until this many steps have elapsed")
+                lines.append(
+                    f"- **`min_steps`: {min_s}** — exit blocked until this many steps have elapsed"
+                )
             if max_s is not None:
-                lines.append(f"- **`max_steps`: {max_s}** — `[TIMEOUT]` halt if exceeded")
+                lines.append(
+                    f"- **`max_steps`: {max_s}** — `[TIMEOUT]` halt if exceeded"
+                )
             lines.append("")
 
         # ── Exit ───────────────────────────────────────────────────
@@ -390,10 +432,12 @@ def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
             ]
             if i < len(chain):
                 lines.append(
-                    f"> Automaton **state {i}**: waiting for `{chain[i]}` to advance to state {i+1}"
+                    f"> Automaton **state {i}**: waiting for `{chain[i]}` to advance to state {i + 1}"
                 )
             elif chain:
-                lines.append("> Automaton **accepting state** — all milestones satisfied")
+                lines.append(
+                    "> Automaton **accepting state** — all milestones satisfied"
+                )
             lines.append("")
 
         if named_fms:
@@ -412,21 +456,39 @@ def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate LTL formulas and skill description from natural language."
     )
-    parser.add_argument("--description", "-d", type=str,
-                        help="Natural language description of the robot skill.")
-    parser.add_argument("--output", "-o", default="formulas.json",
-                        help="Output path for formulas JSON (default: formulas.json).")
-    parser.add_argument("--desc-output", "-t", default="skill_description.md",
-                        help="Output path for skill description (default: skill_description.md).")
-    parser.add_argument("--api-url", "--ollama-url", dest="api_url",
-                        default="http://192.168.140.111/developer-api/v1",
-                        help="LLM API base URL.")
-    parser.add_argument("--model", default="Gemma4",
-                        help="LLM model name (default: Gemma4).")
+    parser.add_argument(
+        "--description",
+        "-d",
+        type=str,
+        help="Natural language description of the robot skill.",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        default="formulas.json",
+        help="Output path for formulas JSON (default: formulas.json).",
+    )
+    parser.add_argument(
+        "--desc-output",
+        "-t",
+        default="skill_description.md",
+        help="Output path for skill description (default: skill_description.md).",
+    )
+    parser.add_argument(
+        "--api-url",
+        "--ollama-url",
+        dest="api_url",
+        default="http://192.168.140.111/developer-api/v1",
+        help="LLM API base URL.",
+    )
+    parser.add_argument(
+        "--model", default="Gemma4", help="LLM model name (default: Gemma4)."
+    )
     args = parser.parse_args()
 
     skill_desc = args.description
@@ -439,7 +501,10 @@ def main():
                 print("\nExiting.")
                 sys.exit(0)
         else:
-            print("Error: No description provided and input is not interactive.", file=sys.stderr)
+            print(
+                "Error: No description provided and input is not interactive.",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     if not skill_desc:
@@ -563,7 +628,9 @@ Respond ONLY with the JSON object. No markdown, no code fences, no explanation.
         print(f"Error: Failed to write formulas file: {e}", file=sys.stderr)
 
     # Step 2/2: build structured per-phase reference document (deterministic)
-    print(f"[*] Step 2/2 — Building structured skill description ({args.desc_output})...")
+    print(
+        f"[*] Step 2/2 — Building structured skill description ({args.desc_output})..."
+    )
     narrative = generate_skill_description(args.api_url, args.model, formulas_json)
 
     try:

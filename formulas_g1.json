@@ -1,0 +1,74 @@
+{
+  "skill_name": "G1HumanoidNavigation",
+  "description": "The G1 humanoid navigates from a start pose to a goal while avoiding collisions AND staying upright (not falling). Extends the wheeled-robot navigation spec with humanoid balance: an 'upright' invariant and a 'fell_over' safety failure mode. APs are all rule-based over the sensor schema (odometry + laser + Nav2 status + base pose).",
+  "atomic_propositions": {
+    "target_received": "True when distance_to_target > 100.0. A target location has been set for navigation.",
+    "path_planned": "True when nav_status == 'accepted'. Nav2 accepted the path plan.",
+    "moving_towards_target": "True when nav_status == 'executing'. The robot is executing the planned path.",
+    "collision_risk": "True when min_range < 0.25. An obstacle is too close to the robot.",
+    "target_reached": "True when distance_to_target < 0.5. The robot is within close proximity of the goal.",
+    "navigation_succeeded": "True when nav_status == 'succeeded'. The navigation goal was achieved.",
+    "navigation_failed": "True when nav_status in ['aborted', 'canceled']. Navigation was interrupted or failed.",
+    "upright": "True when upright_flag > 0.5. The G1 base is level and standing (not fallen)."
+  },
+  "ltl_formulas": [
+    {
+      "name": "full_navigation_sequence",
+      "formula": "F(target_received && F(path_planned && F(moving_towards_target && F(target_reached))))"
+    }
+  ],
+  "named_failure_modes": [
+    {
+      "name": "collision_imminent",
+      "formula": "G(!collision_risk)",
+      "fault_category": "SAFETY",
+      "description": "The robot must never enter a state where an obstacle is too close."
+    },
+    {
+      "name": "fell_over",
+      "formula": "G(upright)",
+      "fault_category": "SAFETY",
+      "description": "The G1 must never fall — the base must stay level and above the fallen-height threshold throughout."
+    }
+  ],
+  "execution_phases": [
+    {
+      "phase": "PlanningAndInitiation",
+      "description": "The robot receives the target and Nav2 plans a path.",
+      "enter_condition": "target_received",
+      "precondition": "True",
+      "precondition_fault_category": "NONE",
+      "invariant": "upright and not collision_risk",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "not path_planned",
+      "exit_condition": "path_planned",
+      "progress_violation_limit": 5,
+      "timing_bounds": {
+        "max_steps": 30
+      }
+    },
+    {
+      "phase": "ExecutionAndTracking",
+      "description": "The G1 walks towards the target, staying upright and clear of obstacles.",
+      "enter_condition": "path_planned",
+      "precondition": "True",
+      "precondition_fault_category": "NONE",
+      "invariant": "upright and not collision_risk",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "moving_towards_target",
+      "exit_condition": "target_reached or navigation_failed",
+      "progress_violation_limit": 5,
+      "timing_bounds": {
+        "max_steps": 120
+      }
+    }
+  ],
+  "terminal_success": {
+    "condition": "navigation_succeeded",
+    "description": "The mission is accomplished when Nav2 reports success (and the robot never fell/collided)."
+  },
+  "terminal_failure": {
+    "condition": "navigation_failed",
+    "description": "The mission failed if navigation was aborted or canceled."
+  }
+}
