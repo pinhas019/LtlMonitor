@@ -12,6 +12,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from action_msgs.msg import GoalStatusArray
 from geometry_msgs.msg import PoseStamped
+import g1_sensors  # base-pose math (quat->euler, upright)
 
 class LlmClientNode(Node):
     def __init__(self, api_url: str, model: str):
@@ -115,11 +116,19 @@ class LlmClientNode(Node):
     def odom_callback(self, msg: Odometry):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
+        z = msg.pose.pose.position.z
+        q = msg.pose.pose.orientation
+        roll, pitch, _yaw = g1_sensors.quat_to_euler(q.x, q.y, q.z, q.w)
+        upright = g1_sensors.base_upright(roll, pitch, z)
         self.odom_data = {
             "position": {"x": round(x, 2), "y": round(y, 2)},
             "linear_vel": round(msg.twist.twist.linear.x, 2),
             "angular_vel": round(msg.twist.twist.angular.z, 2),
-            "distance_to_target": round(((self.target_x - x)**2 + (self.target_y - y)**2)**0.5, 2)
+            "distance_to_target": round(((self.target_x - x)**2 + (self.target_y - y)**2)**0.5, 2),
+            "base_roll": round(roll, 3),
+            "base_pitch": round(pitch, 3),
+            "base_height": round(z, 3),
+            "upright_flag": 1.0 if upright else 0.0,
         }
 
     def goal_callback(self, msg: PoseStamped):
@@ -295,6 +304,10 @@ class LlmClientNode(Node):
             "mean_range":        scan_data.get("mean_range",        10.0),
             "close_objects":     int(scan_data.get("close_objects", 0)),
             "nav_status":        nav_status or "",
+            "base_roll":         odom_data.get("base_roll",    0.0),
+            "base_pitch":        odom_data.get("base_pitch",   0.0),
+            "base_height":       odom_data.get("base_height",  1.0),
+            "upright_flag":      odom_data.get("upright_flag", 1.0),
         }
 
         skill = state_desc.get("skill_name", "?")
