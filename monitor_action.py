@@ -5,11 +5,13 @@ The monitor emits a fault category (SAFETY / INVARIANT / TIMEOUT / PROGRESS), an
 `confidence` in the triggering signal. `grade_action` maps those to one rung of an
 ordered ladder so a supervisor can respond proportionally instead of a single halt:
 
-    CONTINUE < WARN < SLOW < HALT < REPLAN < ABORT
+    CONTINUE < WARN < SLOW < REPLAN < HALT < ABORT
 
-Actuation stays actor-specific (MiniGrid re-plan vs G1 /cmd_vel halt); only the
-decision lives here. Safety is the one thing never softened: a confident safety
-signal always halts (or aborts if the breach already happened).
+Ordered by how drastic the response is: re-planning (try another way) is softer than
+HALT (stop the robot), so a supervisor can treat ``action >= HALT`` as "stop actuating".
+Actuation stays actor-specific (MiniGrid re-plan vs G1 /cmd_vel halt); only the decision
+lives here. Safety is the one thing never softened: a confident safety signal always
+halts (or aborts if the breach already happened).
 """
 
 from __future__ import annotations
@@ -21,8 +23,10 @@ class Action(IntEnum):
     CONTINUE = 0  # nothing to do
     WARN = 1  # log/flag only — signal is weak or not yet imminent
     SLOW = 2  # ease off (pre-emptive, recoverable stalling)
-    HALT = 3  # stop now to avoid an imminent safety breach
-    REPLAN = 4  # the current plan won't make it — get a new one
+    REPLAN = (
+        3  # the current plan won't make it — get a new one (does not stop the robot)
+    )
+    HALT = 4  # stop now to avoid an imminent safety breach
     ABORT = 5  # unrecoverable — stop and fail the mission
 
 

@@ -1045,8 +1045,26 @@ class LtlMonitorNode(Node):
                 "timing_bounds":        timing,
             }
 
+        # Predictive imminence for the intervention supervisor (pre-emptive rung before
+        # the hard fault). G1 nav APs are rule-based, so trigger_confidence is 1.0.
+        risk: dict = {}
+        if 0 <= self.phase_idx < len(phases):
+            _max_steps = phase_info["timing_bounds"].get("max_steps")
+            _sto = (_max_steps - self.phase_step_count) if _max_steps is not None else None
+            _vtf = phase_info["violation_limit"] - self.phase_violation_count
+            _warn_t = _sto is not None and _sto <= 3
+            _warn_p = self.phase_violation_count > 0 and _vtf <= 3
+            risk = {
+                "steps_to_timeout": _sto,
+                "violations_to_fault": _vtf,
+                "trigger_confidence": 1.0,
+                "warn": bool(_warn_t or _warn_p),
+                "severity": "TIMEOUT" if _warn_t else ("PROGRESS" if _warn_p else None),
+            }
+
         state_desc = {
             "phase": self.current_phase,
+            "risk": risk,
             "skill_name": self.spec.skill_name,
             "description": self.spec.description,
             "ap_descriptions": self.spec.atomic_propositions,

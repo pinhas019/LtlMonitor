@@ -1,5 +1,6 @@
 """Unit tests for supervisor_logic — pure, no ROS. Run: python3 -m pytest test_supervisor_logic.py"""
 
+from monitor_action import Action
 from supervisor_logic import decide_intervention
 
 
@@ -42,3 +43,47 @@ def test_first_violated_safety_wins():
         ]
     }
     assert decide_intervention(state).reason == "collision_imminent"
+
+
+def test_violated_safety_action_is_hard_stop():
+    state = {"named_failure_modes": [_fm("fell_over", "SAFETY", "VIOLATED")]}
+    d = decide_intervention(state)
+    assert d.halt is True and d.action is Action.ABORT  # already breached => abort
+
+
+def test_risk_block_replans_before_timeout():
+    # No breach yet; predictive risk block warns of an imminent, confident timeout.
+    state = {
+        "risk": {
+            "severity": "TIMEOUT",
+            "steps_to_timeout": 2,
+            "trigger_confidence": 0.9,
+            "warn": True,
+        }
+    }
+    d = decide_intervention(state)
+    assert d.halt is False and d.action is Action.REPLAN and d.category == "TIMEOUT"
+
+
+def test_risk_block_low_confidence_only_warns():
+    state = {
+        "risk": {
+            "severity": "TIMEOUT",
+            "steps_to_timeout": 2,
+            "trigger_confidence": 0.2,
+        }
+    }
+    d = decide_intervention(state)
+    assert d.halt is False and d.action is Action.WARN
+
+
+def test_violated_mode_takes_priority_over_risk():
+    state = {
+        "named_failure_modes": [_fm("fell_over", "SAFETY", "VIOLATED")],
+        "risk": {
+            "severity": "TIMEOUT",
+            "steps_to_timeout": 2,
+            "trigger_confidence": 0.9,
+        },
+    }
+    assert decide_intervention(state).action is Action.ABORT

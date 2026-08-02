@@ -41,8 +41,8 @@ def test_ladder_is_ordered():
         Action.CONTINUE
         < Action.WARN
         < Action.SLOW
-        < Action.HALT
         < Action.REPLAN
+        < Action.HALT
         < Action.ABORT
     )
 
