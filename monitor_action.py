@@ -62,6 +62,10 @@ def grade_action(
             return Action.REPLAN if sure else Action.WARN
         return Action.CONTINUE
     if cat == "PROGRESS":
+        if overdue:
+            return (
+                Action.REPLAN
+            )  # confirmed stall: the plan isn't working, get a new one
         if imminent:
             return Action.SLOW if sure else Action.WARN
         return Action.CONTINUE

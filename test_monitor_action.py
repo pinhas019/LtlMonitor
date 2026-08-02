@@ -29,6 +29,8 @@ def test_progress_slows_when_imminent_and_sure():
     assert grade_action("PROGRESS", imminence=1, confidence=0.9) is Action.SLOW
     assert grade_action("PROGRESS", imminence=1, confidence=0.2) is Action.WARN
     assert grade_action("PROGRESS", imminence=10, confidence=0.9) is Action.CONTINUE
+    # a confirmed stall (overdue) re-plans rather than merely slowing
+    assert grade_action("PROGRESS", imminence=0, confidence=0.9) is Action.REPLAN
 
 
 def test_unknown_category():
