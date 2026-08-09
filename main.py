@@ -6,6 +6,15 @@ Formulas are supplied via -f flags or a --formulas-file JSON file.
 Usage examples:
     python3 main.py -f "F(goal)" -f "G(!obstacle)"
     python3 main.py --formulas-file formulas.json
+
+Skill-type agnosticism: --formulas-file is just the default/initial spec. If something
+publishes a skill label on /active_skill (std_msgs/String), and a matching
+formulas_<label>.json exists beside --formulas-file, this node swaps to it -- the same
+formulas_<skill>.json convention minigrid/skill_monitor/ltl_skill_monitor.py already
+uses for MiniGrid/CoopBoxPush skills, generalized here so a G1 skill executor could use
+it too. No publisher exists for G1 yet (only one skill, navigation); this is inert
+future-proofing, not a behavior change -- with nothing publishing /active_skill,
+--formulas-file remains the spec for the whole run, exactly as before.
 """
 
 from __future__ import annotations
@@ -573,6 +582,20 @@ class LtlMonitorNode(Node):
         if self.formulas_file and os.path.exists(self.formulas_file):
             self.last_mtime = os.path.getmtime(self.formulas_file)
 
+        # Skill-type agnosticism: an external skill executor may publish its active
+        # skill's label on /active_skill (e.g. "explore", "cooperate_push", matching
+        # the formulas_<skill>.json convention ltl_skill_monitor.py already uses for
+        # MiniGrid/CoopBoxPush). No publisher exists for G1 yet -- this is inert until
+        # one does, and behavior is unchanged: falls back to --formulas-file/-f, same
+        # as today, whenever no matching formulas_<label>.json is found.
+        self.skills_dir = (
+            os.path.dirname(os.path.abspath(self.formulas_file)) if self.formulas_file else "."
+        )
+        self.active_skill_label: str | None = None
+        self.active_skill_sub = self.create_subscription(
+            String, '/active_skill', self.active_skill_callback, 10
+        )
+
         self.aps_pub = self.create_publisher(String, '/ltl/required_aps', 10)
         self.state_desc_pub = self.create_publisher(String, '/ltl/state_description', 10)
         self.eval_sub = self.create_subscription(String, '/ltl/evaluations', self.eval_callback, 10)
@@ -628,9 +651,28 @@ class LtlMonitorNode(Node):
 
         return False
 
-    def reload_specs(self):
-        self.get_logger().info("Reloading formulas and AP specs from formulas.json...")
-        spec = load_formulas_from_file(self.formulas_file)
+    def active_skill_callback(self, msg: String):
+        label = msg.data.strip()
+        if not label or label == self.active_skill_label:
+            return
+        skill_path = Path(self.skills_dir) / f"formulas_{label}.json"
+        if not skill_path.exists():
+            self.get_logger().warn(
+                f"No spec file for active skill '{label}' (expected {skill_path}) — "
+                f"continuing with the current spec ('{self.spec.skill_name}')."
+            )
+            return
+        self.get_logger().info(f"Active skill changed → '{label}', loading {skill_path}")
+        self.active_skill_label = label
+        self.reload_specs(skill_path)
+
+    def reload_specs(self, formulas_path: str | None = None):
+        path = formulas_path or self.formulas_file
+        self.get_logger().info(f"Reloading formulas and AP specs from {path}...")
+        spec = load_formulas_from_file(path)
+        self.formulas_file = path
+        if os.path.exists(path):
+            self.last_mtime = os.path.getmtime(path)
         self.spec = spec
         self.has_phases = bool(spec.execution_phases)
         try:
