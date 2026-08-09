@@ -1,0 +1,139 @@
+version: '3.8'
+
+# M3 (plan §4a): verifies g1_real_client.py + formulas_g1_real.json end-to-end against
+# the existing MuJoCo+Nav2 sim harness, via two sim-only shims that bridge topic shapes
+# (see scan_to_pointcloud.py / nav2_status_to_path_manager_status.py docstrings). This is
+# a SEPARATE compose file from docker-compose.sim.yml (the old formulas.json/llm_client.py
+# stack) -- both would otherwise fight over the same /ltl/required_aps, /ltl/evaluations,
+# /ltl/state_description topics if run together. Different ROS_DOMAIN_ID (1, not 0) as a
+# second layer of protection against accidentally running both stacks at once.
+#
+# Usage:
+#   docker compose -f docker-compose.sim.real.yml up --build
+# Drive it with the same send_goal.py the nav2 service already runs on a timer, and watch
+# the ltl-monitor-real service's console for phase transitions
+# (PlanningAndInitiation -> ExecutionAndTracking -> VisualGoalConfirmation -> Done).
+# VisualGoalConfirmation needs a manually-published /vision/goal_similarity (Float32) --
+# MuJoCo has no camera; see the plan's static-check stage for that in isolation. Publish
+# it via `docker exec -d <any running service, e.g. nav2-status-shim> bash -c "source
+# /opt/ros/humble/setup.bash && ros2 topic pub -r 2 /vision/goal_similarity
+# std_msgs/msg/Float32 'data: 0.9'"` BEFORE the mission finishes (VisualGoalConfirmation
+# only holds for 10 steps/~10s) -- a standalone `docker run --network host` publisher
+# was observed to NOT reach this stack's DDS graph even with matching QoS and successful
+# endpoint discovery (verified via `ros2 topic info -v`), while `docker exec`-ing into an
+# already-running compose service works reliably. Root cause not pinned down (compose
+# network setup quirk, not a code issue -- every topic *within* this stack, e.g.
+# /odom -> /t265/odom/sample and /path_manager/status, flows fine); publishing from
+# inside an existing service sidesteps it.
+
+services:
+  mujoco-sim:
+    container_name: ltl-mujoco-sim-real
+    build:
+      context: .
+      dockerfile: Dockerfile.sim
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./sim_config.json:/app/sim_config.json
+      - ./mujoco_ros_bridge.py:/app/mujoco_ros_bridge.py
+      - ./arena.xml:/app/arena.xml
+
+  nav2:
+    container_name: ltl-nav2-real
+    build:
+      context: .
+      dockerfile: Dockerfile.nav2
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - mujoco-sim
+    volumes:
+      - ./sim_config.json:/app/sim_config.json
+      - ./send_goal.py:/app/send_goal.py
+      - ./generate_map.py:/app/generate_map.py
+      - ./arena.xml:/app/arena.xml
+      - ./nav2_params.yaml:/app/nav2_params.yaml
+
+  scan-to-pointcloud:
+    container_name: ltl-scan-to-pointcloud-shim
+    build:
+      context: .
+      dockerfile: Dockerfile.shims
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+    command: ["scan_to_pointcloud.py"]
+    depends_on:
+      - mujoco-sim
+
+  nav2-status-shim:
+    container_name: ltl-nav2-status-shim
+    build:
+      context: .
+      dockerfile: Dockerfile.shims
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+    command: ["nav2_status_to_path_manager_status.py"]
+    depends_on:
+      - nav2
+
+  ltl-monitor-real:
+    container_name: ltl-monitor-real
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ../formulas_g1_real.json:/app/formulas_g1_real.json
+      - ../output:/app/output
+      - ../main.py:/app/main.py
+      - ../monitor.py:/app/monitor.py
+    command: ["--formulas-file", "formulas_g1_real.json"]
+
+  ltl-g1-real-client:
+    container_name: ltl-g1-real-client
+    build:
+      context: ..
+      dockerfile: Dockerfile.g1_real
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=1
+      - PYTHONUNBUFFERED=1
+    # /t265/odom/sample and /odom are the same message type (nav_msgs/Odometry) --
+    # remap is all that's needed, no odom shim script required.
+    command: ["--ros-args", "-r", "/t265/odom/sample:=/odom"]
+    volumes:
+      - ../g1_real_client.py:/app/g1_real_client.py
+      - ../g1_real_frame.py:/app/g1_real_frame.py
+    depends_on:
+      - ltl-monitor-real
+      - mujoco-sim
+      - scan-to-pointcloud
+      - nav2-status-shim
+
+  foxglove-bridge:
+    container_name: ltl-foxglove-bridge-real
+    build:
+      context: .
+      dockerfile: Dockerfile.foxglove
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=1

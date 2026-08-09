@@ -1,0 +1,16 @@
+FROM ros:humble
+
+# laser_geometry: LaserScan -> PointCloud2 projection for scan_to_pointcloud.py.
+# action_msgs (GoalStatusArray) ships with ros-humble-ros-base, already in this image.
+RUN apt-get update && apt-get install -y ros-humble-laser-geometry && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY scan_to_pointcloud.py nav2_status_map.py nav2_status_to_path_manager_status.py ./
+
+ENV PYTHONUNBUFFERED=1
+
+# Sim-only shims bridging MuJoCo+Nav2's native topics to the shapes g1_real_client.py
+# expects (see each script's module docstring) -- never deployed to the real robot.
+# docker-compose selects which shim runs via `command: ["scan_to_pointcloud.py"]` etc.
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 \"$0\""]

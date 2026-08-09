@@ -12,6 +12,7 @@ See formulas_g1_real.json for the atomic propositions this feeds.
 
 import json
 import re
+import sys
 import urllib.request
 import argparse
 import queue
@@ -446,14 +447,18 @@ Reply with ONLY a JSON object. No markdown, no explanation.
 
 
 def main():
+    # remove_ros_args strips rclpy-consumed tokens (e.g. `--ros-args -r from:=to`, used
+    # to remap topics against the MuJoCo sim in M3) before argparse ever sees them.
+    from rclpy.utilities import remove_ros_args
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--api-url', '--ollama-url', dest='api_url', default='http://192.168.140.111/developer-api/v1')
     parser.add_argument('--model', default='Gemma4')
     parser.add_argument('--stuck-ticks', type=int, default=10,
                          help='Consecutive no_traversable/unreachable/no_path_found ticks before nav_stuck fires (default: 10 @ ~1Hz evaluation timer)')
-    args = parser.parse_args()
+    args = parser.parse_args(args=remove_ros_args(args=sys.argv)[1:])
 
-    rclpy.init()
+    rclpy.init(args=sys.argv)
     node = G1RealClientNode(args.api_url, args.model, stuck_ticks=args.stuck_ticks)
 
     try:
