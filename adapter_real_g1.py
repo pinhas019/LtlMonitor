@@ -13,28 +13,29 @@ from __future__ import annotations
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import String, Float32
+from std_msgs.msg import String
 from rclpy.node import Node
 
 import g1_sensors
 from g1_real_frame import remap_optical_to_body
 from sensor_adapter import SensorAdapter
 from stuck_detector import StuckStreak
+from vision_mixin import VisionScoreMixin
 
 
-class RealG1Adapter(SensorAdapter):
+class RealG1Adapter(SensorAdapter, VisionScoreMixin):
     def __init__(self, stuck_ticks: int = 10):
+        VisionScoreMixin.__init__(self)
         self.odom_data: dict = {}
         self.scan_data: dict = {}
         self.nav_data: dict = {}
-        self.vision_data: dict = {}
         self._streak = StuckStreak(threshold=stuck_ticks)
 
     def register_subscriptions(self, node: Node) -> None:
         node.create_subscription(Odometry, "/t265/odom/sample", self._odom_cb, 10)
         node.create_subscription(PointCloud2, "/depth_anything/points", self._points_cb, 10)
         node.create_subscription(String, "/path_manager/status", self._status_cb, 10)
-        node.create_subscription(Float32, "/vision/goal_similarity", self._vision_cb, 10)
+        self._register_vision_subscription(node)
 
     def _odom_cb(self, msg: Odometry):
         x, y, z = msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z
@@ -77,9 +78,6 @@ class RealG1Adapter(SensorAdapter):
             "current_target_idx": int(data.get("current_target_idx", 0)),
         }
 
-    def _vision_cb(self, msg: Float32):
-        self.vision_data = {"image_similarity_to_goal": round(float(msg.data), 3)}
-
     def get_sensor_eval(self) -> dict:
         return {
             "min_range": self.scan_data.get("min_range", 10.0),
@@ -95,7 +93,7 @@ class RealG1Adapter(SensorAdapter):
             "current_target_idx": self.nav_data.get("current_target_idx", 0),
             "mission_finished": self.nav_data.get("finished", False),
             "nav_stuck": self._streak.is_stuck,
-            "image_similarity_to_goal": self.vision_data.get("image_similarity_to_goal", 0.0),
+            "image_similarity_to_goal": self.vision_score,
         }
 
     def describe(self) -> dict:
@@ -106,5 +104,5 @@ class RealG1Adapter(SensorAdapter):
             "nav_mode": self.nav_data.get("mode", "N/A"),
             "nav_state": self.nav_data.get("state", "N/A"),
             "blocked_streak": f"{self._streak.count}/{self._streak.threshold}",
-            "goal_similarity": self.vision_data.get("image_similarity_to_goal", "N/A"),
+            "goal_similarity": self.vision_score,
         }
