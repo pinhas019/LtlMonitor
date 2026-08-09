@@ -19,7 +19,7 @@ import threading
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
@@ -40,6 +40,7 @@ class G1RealClientNode(Node):
         self.odom_data = {}
         self.scan_data = {}
         self.nav_data = {}
+        self.vision_data = {}
         self._blocked_streak = 0
         self.idle = True  # start idle until monitor sends APs
 
@@ -61,6 +62,9 @@ class G1RealClientNode(Node):
         self.create_subscription(Odometry, '/t265/odom/sample', self.odom_callback, 10)
         self.create_subscription(PointCloud2, '/depth_anything/points', self.points_callback, 10)
         self.create_subscription(String, '/path_manager/status', self.status_callback, 10)
+        # Published by run_visual_goal_matcher.py (runs in the TRAV perception container,
+        # not here — this evaluator stays free of any torch/CLIP dependency).
+        self.create_subscription(Float32, '/vision/goal_similarity', self.vision_callback, 10)
 
         # Evaluation timer
         self.timer = self.create_timer(1.0, self.evaluate_and_publish)
@@ -182,6 +186,9 @@ class G1RealClientNode(Node):
             "current_target_idx": int(data.get("current_target_idx", 0)),
         }
 
+    def vision_callback(self, msg: Float32):
+        self.vision_data = {"image_similarity_to_goal": round(float(msg.data), 3)}
+
     def _query_llm(self, prompt: str) -> dict:
         is_openai = "/v1" in self.api_url or "openai" in self.api_url
         if is_openai:
@@ -241,6 +248,7 @@ class G1RealClientNode(Node):
             "odom_data": dict(self.odom_data),
             "scan_data": dict(self.scan_data),
             "nav_data": dict(self.nav_data),
+            "vision_data": dict(self.vision_data),
             "blocked_streak": self._blocked_streak,
         }
         self.query_queue.put(snapshot)
@@ -290,6 +298,7 @@ class G1RealClientNode(Node):
         odom_data    = task["odom_data"]
         scan_data    = task["scan_data"]
         nav_data     = task["nav_data"]
+        vision_data  = task["vision_data"]
         blocked_streak = task["blocked_streak"]
 
         ap_descriptions  = state_desc.get("ap_descriptions", {})
@@ -304,6 +313,7 @@ class G1RealClientNode(Node):
         rng = scan_data.get("min_range", "N/A")
         mode = nav_data.get("mode", "N/A")
         state = nav_data.get("state", "N/A")
+        vis_sim = vision_data.get("image_similarity_to_goal", "N/A")
 
         # Numeric dict for Python rule evaluation — safe defaults keep APs false
         # when sensors haven't published yet.
@@ -321,6 +331,7 @@ class G1RealClientNode(Node):
             "current_target_idx": nav_data.get("current_target_idx", 0),
             "mission_finished":   nav_data.get("finished", False),
             "nav_stuck":          blocked_streak >= self.stuck_ticks,
+            "image_similarity_to_goal": vision_data.get("image_similarity_to_goal", 0.0),
         }
 
         skill = state_desc.get("skill_name", "?")
@@ -333,7 +344,7 @@ class G1RealClientNode(Node):
 
         print(f"  {B}┌── Eval  [{C}{skill}{R}{B}]  phase: {C}{phase}{R}{B}  {'─' * 22}{R}")
         print(f"  │ {D}pos=({px}, {py}) m  vel={vel} m/s  min_range={rng} m{R}")
-        print(f"  │ {D}nav_mode={mode}  nav_state={state}  blocked_streak={blocked_streak}/{self.stuck_ticks}{R}")
+        print(f"  │ {D}nav_mode={mode}  nav_state={state}  blocked_streak={blocked_streak}/{self.stuck_ticks}  goal_similarity={vis_sim}{R}")
         if phase_info:
             print(f"  │ {'─' * 52}")
             invariant = phase_info.get("invariant", "")

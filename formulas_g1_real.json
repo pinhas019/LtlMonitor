@@ -8,7 +8,8 @@
     "nav_stuck": "True when nav_stuck == True. The planner has reported no_traversable/unreachable/no_path_found for 10+ consecutive ticks (debounced in the evaluator).",
     "collision_risk": "True when min_range < 0.25. An obstacle is too close to the robot.",
     "mission_finished": "True when mission_finished == True. path_manager has marked every waypoint passed.",
-    "upright": "True when upright_flag > 0.5. The G1 base is level and standing (not fallen)."
+    "upright": "True when upright_flag > 0.5. The G1 base is level and standing (not fallen).",
+    "visually_at_goal": "True when image_similarity_to_goal > 0.75. The current camera frame's embedding closely matches the curated reference photos of the goal location."
   },
   "ltl_formulas": [
     {
@@ -60,11 +61,26 @@
       "timing_bounds": {
         "max_steps": 120
       }
+    },
+    {
+      "phase": "VisualGoalConfirmation",
+      "description": "path_manager reports the mission finished; hold here until the final frame visually matches the goal location's reference images before declaring success.",
+      "enter_condition": "mission_finished",
+      "precondition": "True",
+      "precondition_fault_category": "NONE",
+      "invariant": "upright and not collision_risk",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "True",
+      "exit_condition": "visually_at_goal",
+      "progress_violation_limit": 999,
+      "timing_bounds": {
+        "max_steps": 10
+      }
     }
   ],
   "terminal_success": {
-    "condition": "mission_finished",
-    "description": "The mission is accomplished when path_manager reports every waypoint passed (and the robot never fell/collided)."
+    "condition": "mission_finished and visually_at_goal",
+    "description": "The mission is accomplished when path_manager reports every waypoint passed AND the final camera frame visually matches the goal location's reference images (and the robot never fell/collided)."
   },
   "terminal_failure": {
     "condition": "nav_stuck",
