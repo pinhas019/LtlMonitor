@@ -17,6 +17,7 @@ from abc import abstractmethod
 from action_msgs.msg import GoalStatusArray
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from rclpy.qos import qos_profile_action_status_default
 
 import g1_sensors
 from sensor_adapter import SensorAdapter
@@ -36,8 +37,14 @@ class Nav2BackedAdapter(SensorAdapter, VisionScoreMixin):
 
     def register_subscriptions(self, node: Node) -> None:
         node.create_subscription(Odometry, "/odom", self._odom_cb, 10)
+        # Action status topics publish TRANSIENT_LOCAL by convention (so a subscriber
+        # that connects after a status was already published still gets it) -- a bare
+        # int here defaults to VOLATILE, which can silently miss every status update
+        # depending on subscribe/publish timing. qos_profile_action_status_default is
+        # the same profile rclpy's own ActionClient uses internally to query status.
         node.create_subscription(
-            GoalStatusArray, "/navigate_to_pose/_action/status", self._nav2_status_cb, 10
+            GoalStatusArray, "/navigate_to_pose/_action/status", self._nav2_status_cb,
+            qos_profile_action_status_default,
         )
         self._register_range_subscription(node)
         self._register_vision_subscription(node)
