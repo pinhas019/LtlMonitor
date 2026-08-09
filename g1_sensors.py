@@ -1,9 +1,9 @@
 """Pure sensor math for the G1 humanoid actor — no ROS/Isaac imports, so it is unit-testable.
 
-Used by ``llm_client.py`` (the evaluator, to derive base orientation/height AP fields from
-/odom) and by the PointCloud2 -> LaserScan bridge (obstacle range). The G1 navigation spec's
-rule APs reference the fields these produce (``base_roll``, ``base_pitch``, ``base_height``,
-``min_range``).
+Used by every sensor adapter (adapter_real_g1.py, adapter_nav2_common.py) to derive base
+orientation/height AP fields from odom, and to derive obstacle range from a point cloud.
+formulas_g1.json's rule APs reference the fields these produce (``base_roll``,
+``base_pitch``, ``base_height``, ``min_range``).
 """
 
 from __future__ import annotations

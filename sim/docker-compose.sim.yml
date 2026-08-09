@@ -1,5 +1,20 @@
 version: '3.8'
 
+# Sim verification for the G1 navigation skill (formulas_g1.json) against the MuJoCo+
+# Nav2 harness, using the SAME generic_client.py + formulas_g1.json that run against
+# the real robot -- only ltl-client's --adapter flag changes. No topic-translation
+# shim containers: adapter_mujoco.py maps MuJoCo/Nav2's native topics straight to the
+# canonical sensor_eval schema in-process.
+#
+#   docker compose -f docker-compose.sim.yml up --build
+#
+# VisualGoalConfirmation needs a manually-published /vision/goal_similarity (Float32)
+# -- MuJoCo has no camera. Publish it via `docker exec -d ltl-nav2 bash -c "source
+# /opt/ros/humble/setup.bash && ros2 topic pub -r 2 /vision/goal_similarity
+# std_msgs/msg/Float32 'data: 0.9'"` BEFORE the mission finishes (that phase only
+# holds for 10 steps/~10s) -- publish from inside an already-running compose service,
+# not a standalone `docker run`, which was observed to not reliably reach this
+# stack's DDS graph in dev-sandbox testing despite matching QoS and discovery.
 services:
   mujoco-sim:
     container_name: ltl-mujoco-sim
@@ -46,27 +61,48 @@ services:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
     volumes:
+      # Both mounted: default command runs the generic formulas.json (what
+      # run_pipeline.py generates/validates for an arbitrary skill description --
+      # unrelated to G1). To exercise the G1 nav skill specifically, override at
+      # `docker compose run`: `docker compose run ltl-monitor --formulas-file formulas_g1.json`.
       - ../formulas.json:/app/formulas.json
+      - ../formulas_g1.json:/app/formulas_g1.json
       - ../output:/app/output
       - ../main.py:/app/main.py
       - ../monitor.py:/app/monitor.py
     command: ["--formulas-file", "formulas.json"]
 
-  llm-client:
-    container_name: ltl-llm-client
+  # Agnostic to environment (this file drives it against MuJoCo+Nav2 via --adapter
+  # mujoco) and to skill type (formulas_g1.json above is just the currently-active
+  # spec; see main.py's --skills-dir for swapping skills without touching this stack).
+  # --adapter real_g1 / isaac_lab select the other environments generic_client.py
+  # supports -- same image, same formulas_g1.json, no shim containers needed.
+  ltl-client:
+    container_name: ltl-client
     build:
       context: ..
-      dockerfile: Dockerfile.llm
+      dockerfile: Dockerfile.client
     network_mode: host
     ipc: host
     environment:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
-    command: ["--model", "${LLM_MODEL:-Gemma4}", "--api-url", "${LLM_API_URL:-http://192.168.140.111/developer-api/v1}"]
+    command: ["--adapter", "mujoco", "--model", "${LLM_MODEL:-Gemma4}", "--api-url", "${LLM_API_URL:-http://192.168.140.111/developer-api/v1}"]
     volumes:
-      - ../llm_client.py:/app/llm_client.py
+      - ../sensor_adapter.py:/app/sensor_adapter.py
+      - ../vision_mixin.py:/app/vision_mixin.py
+      - ../stuck_detector.py:/app/stuck_detector.py
+      - ../nav2_status_map.py:/app/nav2_status_map.py
+      - ../g1_sensors.py:/app/g1_sensors.py
+      - ../g1_real_frame.py:/app/g1_real_frame.py
+      - ../adapter_real_g1.py:/app/adapter_real_g1.py
+      - ../adapter_nav2_common.py:/app/adapter_nav2_common.py
+      - ../adapter_mujoco.py:/app/adapter_mujoco.py
+      - ../adapter_isaac_lab.py:/app/adapter_isaac_lab.py
+      - ../generic_client.py:/app/generic_client.py
     depends_on:
       - ltl-monitor
+      - nav2
 
   foxglove-bridge:
     container_name: ltl-foxglove-bridge

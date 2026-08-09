@@ -72,7 +72,7 @@ class Nav2BackedAdapter(SensorAdapter, VisionScoreMixin):
         self._streak.update(self._nav_state)
 
     def get_sensor_eval(self) -> dict:
-        return {
+        return self.validate_sensor_eval({
             "min_range": self.range_data.get("min_range", 10.0),
             "base_roll": self.odom_data.get("base_roll", 0.0),
             "base_pitch": self.odom_data.get("base_pitch", 0.0),
@@ -83,14 +83,13 @@ class Nav2BackedAdapter(SensorAdapter, VisionScoreMixin):
             "nav_mode": "AUTOMATIC" if self._started else "MANUAL",
             "nav_state": self._nav_state,
             # Sim missions here are single-goal (send_goal.py sends one /goal_pose),
-            # so there's no real waypoint list to report -- matches the convention
-            # nav2_status_to_path_manager_status.py (the old sim-only shim) used.
+            # so there's no real waypoint list to report.
             "num_waypoints": 1,
             "current_target_idx": 0,
             "mission_finished": self._nav_state == "finished",
             "nav_stuck": self._streak.is_stuck,
             "image_similarity_to_goal": self.vision_score,
-        }
+        })
 
     def describe(self) -> dict:
         return {

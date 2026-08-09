@@ -8,7 +8,7 @@ import argparse
 import sys
 
 # ---------------------------------------------------------------------------
-# Sensor schema — ground truth for what the evaluator (llm_client.py) can read.
+# Sensor schema — ground truth for what the evaluator (generic_client.py) can read.
 # AP descriptions MUST reference these exact field names and thresholds.
 # ---------------------------------------------------------------------------
 

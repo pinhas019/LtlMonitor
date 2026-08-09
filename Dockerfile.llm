@@ -1,9 +1,0 @@
-FROM ros:humble
-
-WORKDIR /app
-
-COPY g1_sensors.py llm_client.py ./
-
-ENV PYTHONUNBUFFERED=1
-
-ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 llm_client.py \"$@\"", "--"]

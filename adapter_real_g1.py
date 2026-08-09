@@ -79,7 +79,7 @@ class RealG1Adapter(SensorAdapter, VisionScoreMixin):
         }
 
     def get_sensor_eval(self) -> dict:
-        return {
+        return self.validate_sensor_eval({
             "min_range": self.scan_data.get("min_range", 10.0),
             "base_roll": self.odom_data.get("base_roll", 0.0),
             "base_pitch": self.odom_data.get("base_pitch", 0.0),
@@ -94,7 +94,7 @@ class RealG1Adapter(SensorAdapter, VisionScoreMixin):
             "mission_finished": self.nav_data.get("finished", False),
             "nav_stuck": self._streak.is_stuck,
             "image_similarity_to_goal": self.vision_score,
-        }
+        })
 
     def describe(self) -> dict:
         pos = self.odom_data.get("position", {})

@@ -1,4 +1,4 @@
-"""Pure frame-convention math for g1_real_client.py — no ROS imports, unit-testable.
+"""Pure frame-convention math for adapter_real_g1.py — no ROS imports, unit-testable.
 
 Isolated because it's the highest-risk piece of the real-robot evaluator (a silent
 axis mismatch here makes min_range report plausible-looking garbage instead of
