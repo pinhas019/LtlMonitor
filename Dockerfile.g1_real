@@ -1,0 +1,15 @@
+FROM ros:humble
+
+WORKDIR /app
+
+# ros-humble-sensor-msgs-py: sensor_msgs_py.point_cloud2, for decoding /depth_anything/points.
+RUN apt-get update && apt-get install -y ros-humble-sensor-msgs-py && \
+    rm -rf /var/lib/apt/lists/*
+
+# g1_sensors.py + g1_real_frame.py are both imported by g1_real_client.py — Dockerfile.llm
+# omits its own equivalent import (g1_sensors.py) for llm_client.py; don't repeat that gap here.
+COPY g1_sensors.py g1_real_frame.py g1_real_client.py ./
+
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 g1_real_client.py \"$@\"", "--"]
