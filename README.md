@@ -2,13 +2,19 @@
 
 A runtime monitoring tool that verifies **Linear Temporal Logic (LTL)** properties over a stream of observations using **ROS 2 topics**. Built on the [Spot](https://spot.lrde.epita.fr/) library and containerized with Docker.
 
-The monitor **publishes which atomic propositions to evaluate** to a ROS 2 topic, and an LLM evaluator node **subscribes, evaluates them against live sensor data, and publishes boolean results back**. This separates **state progression monitoring** (monitor side) from **observation evaluation** (LLM/robot side).
+The monitor **publishes which atomic propositions to evaluate** to a ROS 2 topic, and an **evaluator node** subscribes, evaluates them against live sensor data (rule-based first, LLM fallback for anything without a rule), and publishes boolean results back. This separates **state progression monitoring** (monitor side, `main.py`/`monitor.py` — never changes) from **observation evaluation** (evaluator side, environment-specific).
+
+There are two evaluator paths, covering two different use cases:
+
+1. **`generic_client.py` + sensor adapters** (current, recommended) — the G1 humanoid navigation skill, monitored identically whether it's running on the real robot, MuJoCo sim, or Isaac Lab sim. One evaluator, one canonical spec (`formulas_g1.json`), environment selected with `--adapter`. See [The Sensor-Adapter System](#the-sensor-adapter-system-sim--real--skill-type-agnostic) below — this is the actively-developed path.
+2. **`run_pipeline.py` natural-language pipeline** (legacy, generation/validation only right now) — describe *any* robot skill in plain English, get back a generated `formulas.json` + `skill_description.md`. Formula generation and structural validation still work standalone. **Running the generated spec against a live evaluator does not currently work** — the evaluator that used to fill this role (`llm_client.py`) was retired in favor of the G1-specific adapters above, which only expose a fixed G1-navigation sensor schema, not an arbitrary one. See [Known Gaps / What To Do](#known-gaps--what-to-do).
 
 ---
 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [The Sensor-Adapter System (sim / real / skill-type agnostic)](#the-sensor-adapter-system-sim--real--skill-type-agnostic)
 - [Architecture](#architecture)
 - [System UML](#system-uml)
   - [Component Architecture](#1-component-architecture)
@@ -34,9 +40,10 @@ The monitor **publishes which atomic propositions to evaluate** to a ROS 2 topic
 - [API Reference](#api-reference)
   - [monitor.py](#monitorpy)
   - [main.py](#mainpy)
-  - [llm_client.py](#llm_clientpy)
+  - [generic_client.py + adapters](#generic_clientpy--adapters)
   - [generate_formulas.py](#generate_formulaspy)
   - [run_pipeline.py](#run_pipelinepy)
+- [Known Gaps / What To Do](#known-gaps--what-to-do)
 
 ---
 
@@ -45,14 +52,33 @@ The monitor **publishes which atomic propositions to evaluate** to a ROS 2 topic
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) (v20+) with Compose
-- [Ollama](https://ollama.ai/) running locally (for the LLM evaluator)
+- [Ollama](https://ollama.ai/) running locally (only needed for atomic propositions without a `"True when <expr>"` rule — the G1 nav spec is 100% rule-based, so this is optional for it)
 
-### 🚀 Running the Integrated Pipeline (Recommended)
-
-You can run the entire pipeline—from natural language skill specification to execution monitoring—using the `run_pipeline.py` script:
+### 🚀 Running the G1 Navigation Skill (sim, recommended starting point)
 
 ```bash
-# Full pipeline: generate spec → validate → run stack (logs stream in the foreground)
+cd sim/
+
+# 1. Start the sim + Nav2 (first build takes ~12 min total, mostly Spot compilation
+#    for ltl-monitor and ros-humble-navigation2 for nav2)
+docker compose -f docker-compose.sim.yml up -d --build mujoco-sim nav2
+
+# 2. Run the monitor with the G1 spec (--no-deps: don't let compose also auto-start
+#    ltl-monitor with ITS default command — see the warning below)
+docker compose -f docker-compose.sim.yml run --rm --no-deps ltl-monitor --formulas-file formulas_g1.json
+
+# 3. In another terminal: run the evaluator, --no-deps for the same reason
+docker compose -f docker-compose.sim.yml up --no-deps ltl-client
+```
+
+⚠️ **`ltl-client` declares `depends_on: [ltl-monitor, nav2]`.** A plain `docker compose up ltl-client` (without `--no-deps`) will auto-start a *second* `ltl-monitor` using its **default** command (the generic `formulas.json`, not `formulas_g1.json`) — racing the one you started in step 2 on the same `/ltl/*` topics. Always pass `--no-deps` when running these two services independently. Also note: `docker compose run --rm` does not reliably self-remove if the process is backgrounded/piped — check `docker ps -a` for stray `sim-ltl-monitor-run-*` containers between attempts and `docker rm -f` them.
+
+To run against a different environment, change `ltl-client`'s adapter (see [The Sensor-Adapter System](#the-sensor-adapter-system-sim--real--skill-type-agnostic)) — same spec, same evaluator image, different `--adapter` flag.
+
+### 🚀 Running the Generic Natural-Language Pipeline (formula generation + validation only)
+
+```bash
+# Generate + validate a spec from a plain-English skill description
 python3 run_pipeline.py -d "An autonomous navigation skill where the robot receives a target location, plans a collision-free path, moves to the target while avoiding obstacles, and terminates when close to the target."
 
 # Use existing formulas.json without regenerating (edit formulas.json manually first)
@@ -60,44 +86,90 @@ python3 run_pipeline.py --no-generate
 
 # Just validate and print a summary of the current formulas.json, then exit
 python3 run_pipeline.py --validate-only
-
-# Skip Docker image rebuild (faster restart when only formulas.json changed)
-python3 run_pipeline.py --no-generate --no-build
 ```
 
-The script runs three steps:
 1. **Generate** — calls the LLM to produce `formulas.json` (rich spec: phases, invariants, named failures, timing) and `skill_description.md` (structured per-phase reference document)
 2. **Validate** — parses `formulas.json` and prints a color-coded summary: formula depth warning, named failure modes, per-phase constraint tags (`precondition`, `invariant`, `timing`), AP rule/LLM breakdown
-3. **Run** — stops any running stack, then starts `docker compose up` in the **foreground** so all container logs stream directly to your terminal; `Ctrl+C` prompts whether to shut down
 
-### Manual Build & Run (Full Stack)
+`run_pipeline.py`'s third step (`docker compose up`, driven by `--no-build`/foreground streaming) will start containers, but **there is currently no evaluator that meaningfully evaluates an arbitrary generated skill** — see [Known Gaps / What To Do](#known-gaps--what-to-do). Steps 1 and 2 above (generate, validate) are fully functional standalone tools regardless.
 
-```bash
-# 1. Start the full simulation stack (first build takes ~12 min for Spot compilation)
-cd sim/
-docker compose -f docker-compose.sim.yml up --build
+---
 
-# 2. Check the monitor is running
-docker logs ltl-monitor --tail 20
+## The Sensor-Adapter System (sim / real / skill-type agnostic)
 
-# 3. View all container logs via Dozzle
-# Open browser → http://localhost:8080/dozzle
+`main.py` (the Büchi-automaton + phase engine) has never cared where its atomic-proposition truth values come from — it only ever spoke the generic `/ltl/required_aps` → `/ltl/evaluations` → `/ltl/state_description` protocol. What used to be hard-coded per environment (`llm_client.py` for Isaac-Lab-sim+Nav2, a since-retired `g1_real_client.py` for the real robot) is now **one evaluator, `generic_client.py`, with a pluggable `SensorAdapter`** per environment:
 
-# 4. Visualize in Foxglove Studio
-# Open Foxglove → Connect via WebSocket to ws://localhost:8765
+```
+                    formulas_g1.json (ONE canonical spec, any environment)
+                              │
+                              ▼
+                  ┌───────────────────────┐
+                  │       main.py         │   /ltl/required_aps ──┐
+                  │  (Büchi automaton +   │                       │
+                  │   phase state machine)│   /ltl/state_desc  ───┤
+                  │   -- never changes -- │                       │
+                  └───────────────────────┘   /ltl/evaluations ◀──┘
+                              ▲                                   │
+                              │                                   ▼
+                              │                     ┌───────────────────────────┐
+                              │                     │      generic_client.py    │
+                              │                     │  (rule-eval-first, LLM    │
+                              │                     │   fallback, /ltl/* proto) │
+                              │                     └─────────────┬─────────────┘
+                              │                                   │  get_sensor_eval()
+                              │                     ┌─────────────┴─────────────┐
+                              │                     ▼             ▼             ▼
+                              │            adapter_real_g1  adapter_mujoco  adapter_isaac_lab
+                              │              (real robot)    (sim, shares  (sim, shares
+                              │                               adapter_nav2_ adapter_nav2_
+                              │                               common.py)    common.py)
+                              │                     │             │             │
+                              └─────────────────────┴─────────────┴─────────────┘
+                                    each maps its OWN native ROS topics to the
+                                    SAME canonical sensor_eval schema (below) --
+                                    swapping environments = choosing an adapter,
+                                    not writing new evaluator/shim code.
 ```
 
-The stack starts multiple containers (all named with the `ltl-` prefix for easy identification in Dozzle):
-- **`ltl-mujoco-sim`** — MuJoCo physics sim with Unitree G1 (floating base)
-- **`ltl-nav2`** — ROS 2 Navigation2 for path planning
-- **`ltl-monitor`** — Büchi automaton monitor (publishes `/ltl/required_aps`, `/ltl/state_description`)
-- **`ltl-llm-client`** — LLM evaluator (subscribes to APs, publishes `/ltl/evaluations`)
-- **`ltl-foxglove-bridge`** — WebSocket bridge for Foxglove visualization
-- **`ltl-dozzle`** — Real-time container log viewer at [http://localhost:8080/dozzle](http://localhost:8080/dozzle)
+### Canonical `sensor_eval` schema
+
+Every adapter's `get_sensor_eval()` returns exactly these keys (`sensor_adapter.CANONICAL_SENSOR_EVAL_KEYS`) — `formulas_g1.json`'s rule APs (`"True when <expr>"`) may only reference these, checked statically by `test_adapter_sensor_eval_contract.py` and enforced at runtime by `SensorAdapter.validate_sensor_eval` (a drifted adapter raises immediately instead of silently leaving an AP always-false):
+
+| Key | Meaning | Source (real) | Source (sim, MuJoCo/Isaac Lab) |
+|---|---|---|---|
+| `min_range` | Nearest obstacle distance (m) | `/depth_anything/points` (PointCloud2, camera-optical-frame remap via `g1_real_frame.py`) | `/scan` (LaserScan, direct) or `/g1/lidar/points` (PointCloud2) |
+| `base_roll`/`base_pitch`/`base_height`/`upright_flag` | Base pose, from `g1_sensors.py` (`quat_to_euler`/`base_upright`) | `/t265/odom/sample` | `/odom` |
+| `linear_vel`/`angular_vel` | Base twist | `/t265/odom/sample` | `/odom` |
+| `nav_mode` | `"MANUAL"` \| `"AUTOMATIC"` | `/path_manager/status` (native) | derived: `"AUTOMATIC"` once any Nav2 goal status is seen |
+| `nav_state` | `following`/`unblocking`/`positioning`/`finished`/`no_traversable`/`unreachable`/`no_path_found`/`waiting_inputs` | `/path_manager/status` (native) | Nav2's `GoalStatusArray`, translated via `nav2_status_map.py` |
+| `num_waypoints`/`current_target_idx` | Mission progress | `/path_manager/status` (native) | fixed `1`/`0` — sim missions are single-goal |
+| `mission_finished` | All waypoints passed | `/path_manager/status`'s `finished` field | `nav_state == "finished"` |
+| `nav_stuck` | Blocked for 10+ consecutive ticks | `stuck_detector.StuckStreak`, debounced (a single bad tick self-recovers, doesn't fire) | same |
+| `image_similarity_to_goal` | CLIP cosine similarity to goal reference photos | `/vision/goal_similarity` (`run_visual_goal_matcher.py`, in TRAV-metric-map) | same topic, manually published for sim testing (no camera in MuJoCo/Isaac Lab sim) |
+
+### Operating it
+
+```bash
+# Real robot (from TRAV-metric-map):
+./run_ltl_monitor.sh              # main.py --formulas-file formulas_g1.json
+./run_ltl_evaluator.sh            # generic_client.py --adapter real_g1
+
+# MuJoCo / Isaac Lab sim (from ltl_monitor/sim/):
+docker compose -f docker-compose.sim.yml run --rm --no-deps ltl-monitor --formulas-file formulas_g1.json
+docker compose -f docker-compose.sim.yml up --no-deps ltl-client   # default --adapter mujoco
+```
+
+To add a **new environment**: write one `SensorAdapter` subclass (`sensor_adapter.py`'s ABC — `register_subscriptions(node)` + `get_sensor_eval()`) mapping that environment's native topics to the schema above, register it in `generic_client.py`'s `ADAPTERS` dict, done — `main.py`, `formulas_g1.json`, and every other adapter are untouched.
+
+### Skill-type agnosticism (future-proofed, not yet used)
+
+`main.py` also accepts an `/active_skill` (`std_msgs/String`) topic: if a skill-executor publishes a label and a matching `formulas_<label>.json` exists beside the currently-loaded spec, `main.py` swaps to it — the same `formulas_<skill>.json` + engine-swap convention `minigrid/skill_monitor/ltl_skill_monitor.py` already uses for MiniGrid/CoopBoxPush skills, generalized into this standalone ROS-node architecture. No publisher exists for G1 yet (only one skill, navigation) — this is inert until one does; nothing publishing to `/active_skill` means `--formulas-file` remains the spec for the whole run, exactly as before this feature existed.
 
 ---
 
 ## Architecture
+
+The `sim/docker-compose.sim.yml` view (containers, not data flow — see [The Sensor-Adapter System](#the-sensor-adapter-system-sim--real--skill-type-agnostic) above for that):
 
 ```
  ┌─────────────────────────────────────────────────────────────────┐
@@ -112,12 +184,12 @@ The stack starts multiple containers (all named with the `ltl-` prefix for easy 
  │         │                                                       │
  │         ▼                                                       │
  │  ┌──────────────┐  /ltl/required_aps  ┌──────────────────────┐ │
- │  │  LLM Client  │ ◀───────────────── │   LTL Monitor Node   │ │
- │  │  (Ollama)    │  /ltl/state_desc    │   (Büchi Automaton)  │ │
- │  │              │ ──────────────────▶ │                      │ │
- │  └──────────────┘  /ltl/evaluations   │  formulas.json       │ │
- │                                        │  monitor.py (Spot)   │ │
- │                                        └──────────────────────┘ │
+ │  │  ltl-client  │ ◀───────────────── │     ltl-monitor       │ │
+ │  │ (generic_    │  /ltl/state_desc    │   (Büchi Automaton)  │ │
+ │  │  client.py,  │ ──────────────────▶ │                      │ │
+ │  │  --adapter   │  /ltl/evaluations   │  formulas_g1.json    │ │
+ │  │   mujoco)    │                     │  monitor.py (Spot)   │ │
+ │  └──────────────┘                     └──────────────────────┘ │
  │                                                                 │
  │  ┌──────────────────┐                                          │
  │  │ Foxglove Bridge  │ ── ws://localhost:8765                   │
@@ -128,15 +200,18 @@ The stack starts multiple containers (all named with the `ltl-` prefix for easy 
  └─────────────────────────────────────────────────────────────────┘
 ```
 
+On the real robot, `ltl-monitor` and `ltl-client` (`--adapter real_g1`) run the same way but as two standalone containers on the TRAV-metric-map repo's DDS graph (`run_ltl_monitor.sh`/`run_ltl_evaluator.sh`) — there's no MuJoCo/Nav2/Foxglove/Dozzle, just the real robot's own `path_manager.py`/`sportmode_odom_bridge.py`/etc. publishing the topics `adapter_real_g1.py` subscribes to.
+
 ### Separation of Concerns
 
 | Concern | Component | Where |
 |---|---|---|
-| **State progression monitoring** | `main.py` / `monitor.py` | Docker — tracks Büchi automaton states, publishes required APs and state description |
-| **Observation evaluation** | `llm_client.py` | Docker — subscribes to APs and sensor topics, queries Ollama, publishes boolean evaluations |
+| **State progression monitoring** | `main.py` / `monitor.py` | Docker — tracks Büchi automaton states, publishes required APs and state description. Identical regardless of environment. |
+| **Observation evaluation** | `generic_client.py` | Docker — subscribes to APs, delegates sensor reading to a `SensorAdapter`, publishes boolean evaluations |
+| **Environment-specific sensor mapping** | `adapter_real_g1.py` / `adapter_mujoco.py` / `adapter_isaac_lab.py` | Native ROS topics → the canonical `sensor_eval` schema. This is the ONLY thing that changes between real robot / MuJoCo / Isaac Lab. |
 | **Named failure detection** | `main.py` (formula monitors) | LTL formulas tagged with fault categories — VIOLATED triggers a named halt |
 | **Phase constraint enforcement** | `main.py` (phase state machine) | Preconditions on entry, hard invariants every step, timing bounds, counted progress violations |
-| **Terminal state detection** | `main.py` + `llm_client.py` | APs for success/failure conditions are always included in the LLM query |
+| **Terminal state detection** | `main.py` + `generic_client.py` | APs for success/failure conditions are always included in the evaluation query |
 | **Physics simulation** | `mujoco_ros_bridge.py` | Docker — MuJoCo sim, publishes `/odom`, `/scan`, accepts `/cmd_vel` |
 | **Visualization** | Foxglove Bridge | Docker — exposes all ROS 2 topics via WebSocket |
 | **Log aggregation** | Dozzle | Docker — aggregates all `ltl-*` container logs at `/dozzle` |
@@ -164,11 +239,11 @@ flowchart TB
 
         subgraph mon["ltl-monitor"]
             Monitor["LTL Monitor Node\nBüchi Automata · Phase Engine"]
-            FJ["formulas.json"]
+            FJ["formulas_g1.json"]
         end
 
-        subgraph llm["ltl-llm-client"]
-            LLMClient["LLM Evaluator\nRule-based + Ollama / OpenAI"]
+        subgraph cli["ltl-client"]
+            Evaluator["generic_client.py\nRule-based + Ollama / OpenAI\n--adapter mujoco"]
         end
 
         subgraph viz["Visualization"]
@@ -183,31 +258,33 @@ flowchart TB
 
     MuJoCo <-->|"/cmd_vel"| Nav2
     MuJoCo -->|"/odom  /scan"| Nav2
-    MuJoCo -->|"/odom  /scan"| LLMClient
-    Nav2   -->|"/navigate_to_pose/status\n/goal_pose"| LLMClient
+    MuJoCo -->|"/odom  /scan"| Evaluator
+    Nav2   -->|"GoalStatusArray\n(TRANSIENT_LOCAL QoS)"| Evaluator
 
-    Monitor -->|"/ltl/required_aps"| LLMClient
-    Monitor -->|"/ltl/state_description"| LLMClient
-    LLMClient -->|"/ltl/evaluations"| Monitor
+    Monitor -->|"/ltl/required_aps"| Evaluator
+    Monitor -->|"/ltl/state_description"| Evaluator
+    Evaluator -->|"/ltl/evaluations"| Monitor
 
-    LLMClient <-->|"HTTP POST\nJSON"| Ollama
+    Evaluator <-->|"HTTP POST\nJSON"| Ollama
 
     Monitor -.->|"all ROS 2 topics"| Foxglove
-    LLMClient -.->|"all ROS 2 topics"| Foxglove
+    Evaluator -.->|"all ROS 2 topics"| Foxglove
     Monitor -.->|"stdout logs"| Dozzle
-    LLMClient -.->|"stdout logs"| Dozzle
+    Evaluator -.->|"stdout logs"| Dozzle
 ```
+
+Swap `--adapter mujoco` for `--adapter real_g1` / `--adapter isaac_lab` to point the same evaluator at a different environment — everything else in this diagram (`ltl-monitor`, the `/ltl/*` protocol, Foxglove/Dozzle) is unchanged. On the real robot there's no MuJoCo/Nav2/Foxglove/Dozzle — just `adapter_real_g1.py` subscribing to `/t265/odom/sample`, `/depth_anything/points`, `/path_manager/status`, `/vision/goal_similarity` directly.
 
 ---
 
 ### 2. Monitoring Loop Sequence
 
-One complete step of the request/response cycle between the Monitor, LLM Client, and Büchi Automata.
+One complete step of the request/response cycle between the Monitor, evaluator, and Büchi Automata.
 
 ```mermaid
 sequenceDiagram
-    participant S as Sensors<br/>(/odom /scan nav)
-    participant L as LLM Client
+    participant S as Sensors<br/>(adapter-specific topics)
+    participant L as generic_client.py<br/>(SensorAdapter)
     participant M as Monitor Node
     participant A as Büchi Automata<br/>(MultiMonitor)
 
@@ -215,7 +292,7 @@ sequenceDiagram
         M ->> L: /ltl/required_aps<br/>["is_moving", "near_target", ...]
         M ->> L: /ltl/state_description<br/>{phase, invariant, timing,<br/>named_failure_modes, terminal}
 
-        S -->> L: sensor snapshots cached<br/>(/odom, /scan, nav_status)
+        S -->> L: adapter.get_sensor_eval()<br/>(canonical schema, any environment)
 
         Note over L: ⚡ Rule-based pass<br/>eval True-when-expr instantly
 
@@ -316,7 +393,7 @@ stateDiagram-v2
 
 ### 5. Class Diagram
 
-Key classes, their fields, and relationships across `monitor.py`, `main.py`, and `llm_client.py`.
+Key classes, their fields, and relationships across `monitor.py`, `main.py`, and `generic_client.py` + `sensor_adapter.py`.
 
 ```mermaid
 classDiagram
@@ -389,15 +466,40 @@ classDiagram
         -_reset_phase_state()
     }
 
-    class LlmClientNode {
-        +str api_url
-        +str model
-        +list required_aps
-        +dict state_desc
+    class SensorAdapter {
+        <<abstract>>
+        +register_subscriptions(node)
+        +get_sensor_eval() dict
+        +validate_sensor_eval(sensor_eval) dict
+        +describe() dict
+    }
+
+    class RealG1Adapter {
         +dict odom_data
         +dict scan_data
+        +dict nav_data
+        +StuckStreak _streak
+    }
+
+    class Nav2BackedAdapter {
+        <<abstract>>
+        +dict odom_data
+        +dict range_data
+        +str _nav_state
+        +_register_range_subscription(node)
+    }
+
+    class MujocoAdapter
+    class IsaacLabAdapter
+
+    class GenericClientNode {
+        +str api_url
+        +str model
+        +SensorAdapter adapter
+        +list required_aps
+        +dict state_desc
         +evaluate_and_publish()
-        -_rule_eval(desc, sensor_data) bool
+        -_rule_eval(desc, sensor_eval) bool
         -_query_llm(prompt) dict
         -_process_evaluation(task)
         -_worker_loop()
@@ -413,8 +515,15 @@ classDiagram
     LtlMonitorNode --> MultiMonitor      : multi
     LtlMonitorNode ..> LTLMonitor        : _infer_state_annotations()
 
-    LlmClientNode ..> LtlMonitorNode     : /ltl/evaluations
-    LtlMonitorNode ..> LlmClientNode     : /ltl/required_aps\n/ltl/state_description
+    SensorAdapter <|-- RealG1Adapter
+    SensorAdapter <|-- Nav2BackedAdapter
+    Nav2BackedAdapter <|-- MujocoAdapter
+    Nav2BackedAdapter <|-- IsaacLabAdapter
+
+    GenericClientNode "1" *-- "1" SensorAdapter : adapter
+
+    GenericClientNode ..> LtlMonitorNode     : /ltl/evaluations
+    LtlMonitorNode ..> GenericClientNode     : /ltl/required_aps\n/ltl/state_description
 ```
 
 ---
@@ -501,21 +610,34 @@ Send `{"__reset__": true}` to start a new skill execution after the monitor ente
 ```
 LtlMonitor/
 ├── Dockerfile                 # Monitor container: ros:humble + Spot (compiled from source)
-├── Dockerfile.llm             # LLM evaluator container: ros:humble
+├── Dockerfile.client          # Evaluator container: ros:humble + every adapter baked in
 ├── sim/
-│   ├── docker-compose.sim.yml # Full stack orchestration
+│   ├── docker-compose.sim.yml # Full stack orchestration (ltl-monitor + ltl-client)
 │   ├── Dockerfile.sim         # MuJoCo simulation
 │   ├── Dockerfile.nav2        # ROS 2 Navigation2
 │   └── Dockerfile.foxglove    # Foxglove WebSocket bridge
 │
 ├── monitor.py                 # Core: Büchi automata, FailureModeInfo, BDD introspection
-├── main.py                    # ROS 2 Node: LtlMonitorNode, phase engine, SkillSpec
-├── llm_client.py              # ROS 2 Node: LLM evaluator (Ollama/OpenAI-compatible)
+├── main.py                    # ROS 2 Node: LtlMonitorNode, phase engine, SkillSpec, /active_skill
 ├── generate_formulas.py       # LLM formulas and state descriptions generator
 ├── run_pipeline.py            # Master script to run generation, simulation, and monitoring
 │
-├── formulas.json              # ◀── EDIT: your LTL skill specification
-├── skill_description.md      # Auto-generated structured per-phase reference (deterministic, no LLM)
+├── generic_client.py          # ROS 2 Node: evaluator, delegates to a SensorAdapter
+├── sensor_adapter.py          # SensorAdapter ABC + CANONICAL_SENSOR_EVAL_KEYS
+├── adapter_real_g1.py         # Real TRAV-metric-map robot adapter
+├── adapter_nav2_common.py     # Shared base for sim adapters (odom + Nav2 status)
+├── adapter_mujoco.py          # MuJoCo sim adapter (extends adapter_nav2_common)
+├── adapter_isaac_lab.py       # Isaac Lab sim adapter (extends adapter_nav2_common)
+├── g1_sensors.py              # Pure base-pose/range math, shared by every adapter
+├── g1_real_frame.py           # Camera-optical-frame axis remap (real adapter only)
+├── vision_mixin.py            # Shared /vision/goal_similarity subscription
+├── stuck_detector.py          # nav_stuck debounce (StuckStreak)
+├── nav2_status_map.py         # Nav2 GoalStatusArray -> canonical nav_state
+│
+├── formulas.json              # ◀── EDIT: generic/example skill spec (natural-language pipeline)
+├── formulas_g1.json           # ◀── EDIT: the G1 navigation skill spec (canonical, all environments)
+├── skill_description.md       # Auto-generated structured per-phase reference (deterministic, no LLM)
+├── test_*.py                  # Pure-logic unit tests (no ROS needed to run these)
 └── README.md
 ```
 
@@ -523,8 +645,9 @@ LtlMonitor/
 
 | File | Purpose | Where it runs | Rebuild needed? |
 |---|---|---|---|
-| `formulas.json` | LTL formulas, atomic propositions, execution phases, named failure modes | Monitor (Docker volume) | No |
-| `llm_client.py` | LLM-based AP evaluator using Ollama + sensor data | LLM container | Yes (`docker compose build llm-client`) |
+| `formulas_g1.json` | G1 nav skill's LTL formulas, atomic propositions, phases, named failure modes | Monitor (Docker volume) | No |
+| `formulas.json` | Generic/example spec for the natural-language pipeline | Monitor (Docker volume) | No |
+| `adapter_*.py` | Add/adjust sensor mapping for one environment | Evaluator container | Yes if baked into the image; no if bind-mounted (see `docker-compose.sim.yml`'s `ltl-client` volumes) |
 | `run_pipeline.py` | Master pipeline script: generate → validate → run stack | Host | No |
 | `generate_formulas.py` | LLM-based `formulas.json` generator + deterministic `skill_description.md` formatter | Host | No |
 
@@ -844,74 +967,74 @@ The document header lists the full LTL formula chain, all named failure modes, t
 
 ## LLM-Based Predicate Evaluation
 
-The `llm_client.py` node acts as a bridge between the physical/simulated robot state and the LTL monitor. It replaces hand-coded evaluators with a **local Ollama or OpenAI-compatible LLM** that reasons over raw sensor data.
+`generic_client.py` (see [The Sensor-Adapter System](#the-sensor-adapter-system-sim--real--skill-type-agnostic)) acts as a bridge between the physical/simulated robot state and the LTL monitor. For each AP it first tries **rule-based evaluation**; only APs without a parseable rule fall back to a **local Ollama or OpenAI-compatible LLM** that reasons over the adapter's `sensor_eval` dict. `formulas_g1.json` is 100% rule-based, so the LLM path is dormant for it — it exists for specs (e.g. from the natural-language pipeline) that include APs an author phrased as free text instead of a rule.
 
 ```
- ┌─────────────────┐
- │   /odom topic   │ ──────┐
- └─────────────────┘       │
- ┌─────────────────┐       │   /ltl/required_aps
- │   /scan topic   │ ──────┼───────────────────────┐
- └─────────────────┘       │                       │
- ┌─────────────────┐       ▼                       ▼
- │  nav action     │ ──▶ [ llm_client.py Node ] ◀── [ LTL Monitor Node ]
- └─────────────────┘       │
-                           ▼ Prompt
-                     ┌──────────┐
-                     │  Ollama  │
-                     └────┬─────┘
-                          │ Response
-                          ▼
-                 /ltl/evaluations JSON
+                    ┌──────────────────┐
+ SensorAdapter ────▶│ get_sensor_eval()│
+ (real_g1/mujoco/    └────────┬─────────┘
+  isaac_lab)                  │           /ltl/required_aps
+                              ▼                    │
+                    [ generic_client.py ] ◀─────────┘
+                              │
+                    rule match? ──yes──▶ eval() directly, instant
+                              │no
+                              ▼ Prompt (unmatched APs + full sensor_eval)
+                        ┌──────────┐
+                        │  Ollama  │
+                        └────┬─────┘
+                             │ Response
+                             ▼
+                    /ltl/evaluations JSON
 ```
 
 ### Config & Usage
 
 ```bash
 # Ollama (default)
-python3 llm_client.py --model llama3.2:3b
+python3 generic_client.py --adapter real_g1 --model llama3.2:3b
 
 # OpenAI-compatible endpoint (e.g. vLLM, LMStudio, Gemma via developer API)
-python3 llm_client.py --api-url http://192.168.1.50/developer-api/v1 --model Gemma4
+python3 generic_client.py --adapter mujoco --api-url http://192.168.1.50/developer-api/v1 --model Gemma4
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `Gemma4` | Model name |
+| `--adapter` | *(required)* | `real_g1` \| `mujoco` \| `isaac_lab` — which environment's sensor topics to evaluate against |
+| `--model` | `Gemma4` | Model name (only used if some AP has no rule) |
 | `--api-url` / `--ollama-url` | `http://192.168.140.111/developer-api/v1` | API endpoint (auto-detects `/v1` for OpenAI format) |
 
 ### Rule-Based vs LLM Evaluation
 
-For each AP, the client first tries **rule-based evaluation** — if the AP description contains `"True when <expr>"`, the expression is evaluated directly against numeric sensor values (zero LLM calls, instant). Only APs without a parseable rule fall back to the LLM.
+For each AP, the client first tries **rule-based evaluation** — if the AP description contains `"True when <expr>"`, the expression is evaluated directly against the adapter's `sensor_eval` dict (zero LLM calls, instant). Only APs without a parseable rule fall back to the LLM.
 
 ```
-ap_descriptions:
-  "is_moving": "True when linear_vel > 0.05."   ← ⚡ Rule-based (instant)
-  "nav_complete": "The robot finished its task." ← 🤖 LLM-evaluated
+atomic_propositions in formulas_g1.json:
+  "collision_risk": "True when min_range < 0.25."   ← ⚡ Rule-based (instant)
 ```
 
 The eval block in the console output labels each AP accordingly.
 
-### LLM Client Display (per evaluation step)
+### Evaluator Display (per evaluation step)
+
+Real captured output (`--adapter mujoco`, mid-mission):
 
 ```
-  ┌── Eval  [AutonomousNavigation]  phase: ExecutingNavigation  ──────────────
-  │ pos=(2.14, 1.07) m  vel=0.31 m/s  dist=3.74 m  min_range=0.62 m
-  │ nav_status=executing  close_objects=1
+  ┌── Eval  [G1HumanoidNavigation]  phase: ExecutionAndTracking  ──────────────
+  │ min_range=10.0  nav_state=following  blocked_streak=0/10  goal_similarity=0.0
   │ ────────────────────────────────────────────────────────────────────────
-  │ Invariant:  not obstacle_detected  [SAFETY]
-  │ Progress :  is_moving and not navigation_failed
-  │ Exit  →  : ApproachingTarget  when: near_target
-  │ Timing   :  step 12/120  [████████░░░░░░░░░░░░] 10%  (min 3)
+  │ Invariant:  upright and not collision_risk  [SAFETY]
+  │ Progress :  moving_towards_target or not nav_stuck
+  │ Exit  →  : VisualGoalConfirmation  when: mission_finished or nav_stuck
+  │ Timing   :  step 14/120  [██░░░░░░░░░░░░░░░░░░] 11%
   │ ────────────────────────────────────────────────────────────────────────
   │ ⚡ Rule-based (instant)
-  │   TRUE :  is_moving  path_planned
-  │   FALSE:  obstacle_detected  near_target  navigation_succeeded  navigation_failed
-  │ 🤖 LLM-evaluated (queried)
-  │   TRUE :  —
-  │   FALSE:  —
+  │   TRUE :  upright  mission_started  path_active  moving_towards_target
+  │   FALSE:  visually_at_goal  collision_risk  mission_finished  nav_stuck
   └──────────────────────────────────────────────────────────────────────────
 ```
+
+`describe()` on the adapter controls the debug line (`min_range=... nav_state=...`) — each adapter surfaces whatever fields make sense for it without `generic_client.py` needing to know their names.
 
 ---
 
@@ -1261,14 +1384,35 @@ When used as a **named failure mode** (`"formula": "G(!collision)", "fault_categ
 #### `_extract_aps_from_condition(condition: str) → set[str]`
 - Parses a boolean condition string and returns all identifier names (AP names)
 
-### `llm_client.py`
+### `generic_client.py` + adapters
 
-#### `LlmClientNode` (ROS 2 Node)
-- Subscribes to `/ltl/required_aps`, `/ltl/state_description`, `/odom`, `/scan`, `/navigate_to_pose/_action/status`, `/goal_pose`
+#### `GenericClientNode` (ROS 2 Node)
+- Subscribes to `/ltl/required_aps`, `/ltl/state_description`
 - Publishes `/ltl/evaluations`
-- Rule-based first pass: extracts `"True when <expr>"` from AP descriptions and evaluates directly against numeric sensor values
-- LLM fallback: queries Ollama or any OpenAI-compatible endpoint for remaining APs
-- Console display: shows active phase invariant (red), timing progress bar, and per-AP TRUE/FALSE split by evaluation method
+- Holds one `SensorAdapter` instance (chosen via `--adapter`); calls `adapter.register_subscriptions(self)` once at startup and `adapter.get_sensor_eval()` every evaluation tick
+- Rule-based first pass: extracts `"True when <expr>"` from AP descriptions and evaluates directly against the adapter's `sensor_eval` dict
+- LLM fallback: queries Ollama or any OpenAI-compatible endpoint for remaining APs, with the full `sensor_eval` dict serialized into the prompt
+- Console display: shows active phase invariant (red), timing progress bar, the adapter's `describe()` debug line, and per-AP TRUE/FALSE split by evaluation method
+
+#### `sensor_adapter.SensorAdapter` (ABC)
+- `register_subscriptions(node)` — create whatever subscriptions this environment needs
+- `get_sensor_eval() -> dict` — return the canonical `sensor_eval` dict; implementations call `self.validate_sensor_eval({...})` rather than returning the raw dict, so a missing/extra key raises immediately instead of silently leaving an AP always-false
+- `describe() -> dict` — optional debug snapshot for the console (default: empty)
+- `CANONICAL_SENSOR_EVAL_KEYS` (module-level `frozenset`) — the single source of truth for what every adapter must return and what `formulas_g1.json`'s rule APs may reference
+
+#### `adapter_real_g1.RealG1Adapter`
+- Subscribes `/t265/odom/sample`, `/depth_anything/points`, `/path_manager/status`, `/vision/goal_similarity`
+- Uses `g1_real_frame.remap_optical_to_body` before `g1_sensors.min_range_from_points` (camera-optical-frame → body frame; the one environment-specific axis remap)
+- `stuck_detector.StuckStreak` debounces `path_manager`'s transient blocked states into `nav_stuck`
+
+#### `adapter_nav2_common.Nav2BackedAdapter` (shared base for sim adapters)
+- Subscribes `/odom` (same math as the real adapter) and Nav2's `GoalStatusArray` on `/navigate_to_pose/_action/status` — **must** use `rclpy.qos.qos_profile_action_status_default`, not a bare int (Nav2 publishes action status TRANSIENT_LOCAL; a VOLATILE subscriber can silently miss updates depending on subscribe/publish timing — this was a real bug, fixed after being caught in live sim testing)
+- Translates status via `nav2_status_map.nav2_status_to_state`
+- Subclasses implement `_register_range_subscription(node)` only
+
+#### `adapter_mujoco.MujocoAdapter` / `adapter_isaac_lab.IsaacLabAdapter`
+- MuJoCo: `/scan` (LaserScan) → `min(finite ranges)` directly, no point-cloud round-trip
+- Isaac Lab: `/g1/lidar/points` (PointCloud2) → `g1_sensors.min_range_from_points` (assumed already Z-up/body-planar — verify against real Isaac Lab data before trusting it, see `adapter_isaac_lab.py`'s docstring)
 
 ### `generate_formulas.py`
 
@@ -1298,6 +1442,19 @@ Three-step master script: **generate → validate → run**.
 | 1b — Validate | Parses `formulas.json` and prints a color-coded summary. Warns on shallow formulas, missing named failures, and bare phases. Exits here with `--validate-only`. |
 | 2 — Stop | `docker compose down` to clean up any running stack. |
 | 3 — Run | `docker compose up [--build]` in the **foreground** — all container logs stream directly. `Ctrl+C` prompts to shut down. |
+
+---
+
+## Known Gaps / What To Do
+
+Ranked by what's actually next, not by severity:
+
+1. **M4 — real-robot verification (next up).** Everything below has been live-verified in sim (MuJoCo+Nav2) but never against the real G1. See `/home/humanoid/TRAV-metric-map/RESUME.md` for the exact bag-replay-then-live-observation-only plan. Two things need real-data calibration that sim can't provide: `g1_real_frame.py`'s optical-frame axis remap (sim adapters never exercise it — MuJoCo uses LaserScan directly, Isaac Lab's lidar cloud is assumed already body-frame), and the `0.75` `image_similarity_to_goal` threshold (needs real "near goal" vs "not near goal" photos).
+2. **The natural-language pipeline (`run_pipeline.py -d "..."`) has no working evaluator.** Its generate/validate steps are fully functional standalone tools, but the evaluator that used to close the loop for an *arbitrary* generated skill (`llm_client.py`) was retired in favor of `generic_client.py`'s adapters, which only expose the fixed G1-navigation `sensor_eval` schema — not whatever fields an arbitrarily-generated spec might reference. To revive this path: either write a truly generic adapter (parses whatever sensor schema the generated spec implies and sources it from wherever, likely LLM-only evaluation with no rule fast-path), or accept this pipeline as generation/validation-only going forward and update its docs/CLI help accordingly.
+3. **Isaac Lab adapter's lidar frame convention is unverified.** `adapter_isaac_lab.py` assumes `/g1/lidar/points` is already Z-up/body-planar; if the real Isaac Lab bridge's cloud turns out to need a remap (like the real robot's camera-optical-frame cloud does), add it there, not in `g1_sensors.py`.
+4. **Actuation/intervention is not wired up, anywhere.** This project is sensor-ingestion + monitoring only. `intervention_supervisor.py` publishes `Twist` directly on `/cmd_vel`, which would race with `control_layer.py`'s sole-publisher role on the real robot (see the plan's out-of-scope note). `control_layer.py` already declares a `nav_cmd_vel_topic` param (`/trav/cmd_vel`) as a distinct arbitrated input — likely the right hook when this is tackled.
+5. **Skill-type switching (`/active_skill`) has no publisher yet.** The mechanism in `main.py` is tested-by-construction (backward compatible, inert without a publisher) but has never been exercised end-to-end because there's only one G1 skill today. When a second skill/skill-executor exists, this is where to wire it in — no new architecture needed, just a `formulas_<label>.json` and something publishing that label.
+6. **`main.py`'s phase-machine display can lag one tick behind the real terminal condition in a very fast sim.** The phase state machine only advances one phase per evaluation tick; the global terminal-success/failure check has no such limit and is evaluated every tick regardless of phase. Seen when MuJoCo+Nav2 reaches a near goal faster than the 1 Hz evaluator samples — cosmetically the phase display looks "stuck" one step behind while the underlying Büchi automaton (which has no such limit) still tracks the true temporal order correctly. Not a correctness bug; not expected to matter at real-robot speeds. Only worth touching if it becomes confusing in practice.
 
 ---
 

@@ -4,6 +4,8 @@ This document provides a comprehensive technical overview and operational manual
 
 The system is designed to verify high-level robot skills and safety properties at runtime by combining formal temporal logic specification with local LLM-based and rule-based observation evaluation.
 
+> **Evaluator note (read this first):** the sections below use a generic hypothetical `GoToTarget` example to explain the *mechanism* — that part is accurate regardless of environment. But the actual evaluator implementation changed: what used to be a single hard-coded `llm_client.py` node is now `generic_client.py` plus a pluggable `SensorAdapter` per environment (real G1 robot / MuJoCo sim / Isaac Lab sim). See `README.md`'s [The Sensor-Adapter System](README.md#the-sensor-adapter-system-sim--real--skill-type-agnostic) for the current, concrete schema and operating instructions — this document has been updated to name the current files/containers, but doesn't duplicate that full reference.
+
 ---
 
 ## 1. System Architecture
@@ -18,7 +20,7 @@ graph TD
         Mujoco["Mujoco Sim<br>(G1 Humanoid)"]
         Nav2["Nav2 Stack<br>(Path Planning)"]
         Monitor["LTL Monitor Node<br>(Spot Automaton)"]
-        LLMClient["LLM/Rule Client Node<br>(Hybrid Evaluator)"]
+        Evaluator["generic_client.py<br>(--adapter mujoco)"]
         Foxglove["Foxglove Bridge<br>(WebSockets)"]
         Dozzle["Dozzle Log Viewer<br>(Log Aggregator)"]
     end
@@ -29,13 +31,13 @@ graph TD
     Nav2 -->|"/cmd_vel (Control)"| Mujoco
     
     %% Sensor streaming to Evaluator
-    Mujoco -->|"/odom, /scan"| LLMClient
-    Nav2 -->|"/navigate_to_pose/_action/status"| LLMClient
+    Mujoco -->|"/odom, /scan"| Evaluator
+    Nav2 -->|"GoalStatusArray"| Evaluator
     
     %% LTL Two-Way Protocol
-    Monitor -->|"/ltl/required_aps (JSON)"| LLMClient
-    Monitor -->|"/ltl/state_description (JSON)"| LLMClient
-    LLMClient -->|"/ltl/evaluations (JSON)"| Monitor
+    Monitor -->|"/ltl/required_aps (JSON)"| Evaluator
+    Monitor -->|"/ltl/state_description (JSON)"| Evaluator
+    Evaluator -->|"/ltl/evaluations (JSON)"| Monitor
     
     %% External Visualization
     Mujoco -.->|Websocket| Foxglove
@@ -44,9 +46,11 @@ graph TD
     
     classDef primary fill:#4CAF50,stroke:#388E3C,color:#fff;
     classDef secondary fill:#2196F3,stroke:#1976D2,color:#fff;
-    class Monitor,LLMClient primary;
+    class Monitor,Evaluator primary;
     class Mujoco,Nav2 secondary;
 ```
+
+Swap `--adapter mujoco` for `--adapter real_g1` (real robot, no Mujoco/Nav2/Foxglove/Dozzle) or `--adapter isaac_lab` — same `Monitor` node, same `/ltl/*` protocol, same `formulas_g1.json`.
 
 ### Component Breakdown
 
@@ -54,8 +58,9 @@ graph TD
 | :--- | :--- | :--- | :--- | :--- |
 | **Pipeline Manager** | `run_pipeline.py` | Run on Host | Master CLI orchestrator to generate specs, start/stop containers, and stream logs. | Ollama, Docker Compose |
 | **Formula Spec Generator** | `generate_formulas.py` | Run on Host | LLM-based translator converting natural language descriptions into formal temporal specs. | Ollama API |
-| **LTL Monitor Node** | `main.py` & `monitor.py` | `ltl-monitor` | Formulates Büchi automata using **Spot**, tracks state transitions, evaluates phase logic, and detects termination. | ROS 2, `spot` library |
-| **LLM/Rule Evaluator** | `llm_client.py` | `ltl-llm-client` | Evaluates active Atomic Propositions (APs) against real-time sensors via a Fast-Path (rules) / Slow-Path (LLM) model. | ROS 2, Ollama API |
+| **LTL Monitor Node** | `main.py` & `monitor.py` | `ltl-monitor` | Formulates Büchi automata using **Spot**, tracks state transitions, evaluates phase logic, and detects termination. Environment-agnostic — never changes between real robot / MuJoCo / Isaac Lab. | ROS 2, `spot` library |
+| **Evaluator** | `generic_client.py` | `ltl-client` | Evaluates active Atomic Propositions (APs) against real-time sensors via a Fast-Path (rules) / Slow-Path (LLM) model. Delegates all sensor reading to a `SensorAdapter`, chosen with `--adapter`. | ROS 2, Ollama API |
+| **Sensor Adapters** | `adapter_real_g1.py`, `adapter_mujoco.py`, `adapter_isaac_lab.py` | (inside `ltl-client`) | Map ONE environment's native ROS topics to the canonical `sensor_eval` schema. This is the only thing that differs between environments. | `sensor_adapter.py`, `g1_sensors.py` |
 | **MuJoCo Simulation Bridge** | `sim/mujoco_ros_bridge.py` | `ltl-mujoco-sim` | Kinematic simulation of Unitree G1 humanoid base, obstacle mapping, and synthetic LiDAR generation. | MuJoCo, `transforms3d` |
 | **Navigation Server** | Custom Config | `ltl-nav2` | Standard ROS 2 Navigation stack for planning collision-free paths. | Nav2, Map |
 | **Websocket Bridge** | ROS 2 Bridge | `ltl-foxglove-bridge` | Streams simulation state and monitor signals to Foxglove Studio. | `foxglove_bridge` |
@@ -65,19 +70,19 @@ graph TD
 
 ## 2. Two-Way ROS 2 Communication Protocol
 
-At each execution step (default: 1.0s interval), the LTL Monitor and LLM/Rule Client engage in a request-response cycle to evaluate the system state.
+At each execution step (default: 1.0s interval), the LTL Monitor and evaluator engage in a request-response cycle to evaluate the system state.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant M as LTL Monitor Node
-    participant C as LLM/Rule Client Node
+    participant C as generic_client.py<br/>(SensorAdapter)
     participant LLM as Ollama / OpenAI API
 
     Note over M: 1. Read current automaton states<br/>2. Extract required APs (active edges + terminal conditions)
     M->>C: Publish "/ltl/required_aps" (JSON Array)
     M->>C: Publish "/ltl/state_description" (JSON Map with phase, terminal, and AP context)
-    Note over C: 3. Capture cached sensors (/odom, /scan, TF)<br/>4. Run fast-path rule checks
+    Note over C: 3. adapter.get_sensor_eval() (cached sensors, any environment)<br/>4. Run fast-path rule checks
     alt All required APs resolved by rules
         Note over C: Skip LLM query
     else Any required AP is complex (fails rule extraction)
@@ -167,9 +172,9 @@ If the user edits the `formulas.json` file, the monitor detects the modified tim
 
 ---
 
-### 3.2 Hybrid Predicate Evaluator (`llm_client.py`)
+### 3.2 Hybrid Predicate Evaluator (`generic_client.py`)
 
-Evaluating physical robot state using LLMs introduces latency (0.5s - 2.0s per query). To make evaluation responsive, `llm_client.py` uses a **hybrid evaluation architecture** combining a fast-path rule evaluator with a slow-path LLM fallback.
+Evaluating physical robot state using LLMs introduces latency (0.5s - 2.0s per query). To make evaluation responsive, `generic_client.py` uses a **hybrid evaluation architecture** combining a fast-path rule evaluator with a slow-path LLM fallback. All environment-specific sensor reading is delegated to a `SensorAdapter` (see `sensor_adapter.py`, and `README.md`'s adapter section) — this node itself never changes between real robot / MuJoCo / Isaac Lab.
 
 ```mermaid
 flowchart TD
@@ -199,12 +204,7 @@ flowchart TD
 
 #### The Fast-Path (Rule-Based Evaluation)
 The evaluator inspects the atomic proposition description using a regular expression: `[Tt]rue when\s+(.+?)(?:\.|$)`.
-If the description has a rule matching this pattern (e.g. `"True when distance_to_target < 0.5"`), it maps the fields to numeric sensor parameters:
-* `linear_vel`, `angular_vel`
-* `position_x`, `position_y`
-* `distance_to_target`
-* `min_range`, `mean_range`, `close_objects`
-* `nav_status`
+If the description has a rule matching this pattern (e.g. `"True when min_range < 0.25"`), it maps the fields against the active adapter's `sensor_eval` dict — the exact key set is `sensor_adapter.CANONICAL_SENSOR_EVAL_KEYS` (`min_range`, `base_roll`/`pitch`/`height`, `upright_flag`, `linear_vel`, `angular_vel`, `nav_mode`, `nav_state`, `num_waypoints`, `current_target_idx`, `mission_finished`, `nav_stuck`, `image_similarity_to_goal` — see `README.md`'s adapter section for what each means and which topic it comes from per environment).
 
 It then executes a safe `eval()` call using a restricted environment containing only the sensor values. This executes in under a millisecond, completely bypassing the LLM.
 
@@ -457,29 +457,40 @@ The robot moves around the obstacle, speeds back up, and arrives at the goal coo
 
 ## 6. How to Run the System
 
-### 6.1 Running the Full Interactive Pipeline
-The easiest way to run the stack is with `run_pipeline.py` using a natural language description.
+### 6.1 Running the G1 Navigation Skill (current, recommended)
 
 ```bash
-# Generate specs, launch containers, and stream logs
+cd sim/
+docker compose -f docker-compose.sim.yml up -d --build mujoco-sim nav2
+docker compose -f docker-compose.sim.yml run --rm --no-deps ltl-monitor --formulas-file formulas_g1.json
+docker compose -f docker-compose.sim.yml up --no-deps ltl-client   # --adapter mujoco by default
+```
+
+`--no-deps` matters: `ltl-client` declares `depends_on: [ltl-monitor, nav2]`, so a plain `up ltl-client` would auto-start a *second* `ltl-monitor` on its default (generic, non-G1) command, racing the one started above on the same `/ltl/*` topics. See `README.md`'s Quick Start for the full explanation and the real-robot equivalent (`run_ltl_monitor.sh`/`run_ltl_evaluator.sh`).
+
+### 6.2 Running the Generic Natural-Language Pipeline (generation/validation only)
+
+```bash
+# Generate + validate a spec from a plain-English skill description
 python3 run_pipeline.py -d "The robot should navigate to the target at (3,2). It must never crash. It should stop when it is close to the target."
 ```
 
-### 6.2 Manual Container Execution
-To spin up the containers individually:
+This still fully works for generating and validating `formulas.json` + `skill_description.md`. Running the generated spec against a live evaluator does not currently work — see `README.md`'s [Known Gaps / What To Do](README.md#known-gaps--what-to-do).
+
+### 6.3 Manual Container Execution
 
 ```bash
 # 1. Start the simulation stack
 cd sim/
-docker compose -f docker-compose.sim.yml up -d --build
+docker compose -f docker-compose.sim.yml up -d --build mujoco-sim nav2
 
 # 2. Run the monitor (using a configuration file)
 docker run --rm -it \
-  -v $(pwd)/formulas.json:/app/formulas.json \
-  -v $(pwd)/output:/app/output \
-  ltl-monitor:latest --formulas-file /app/formulas.json
+  -v $(pwd)/../formulas_g1.json:/app/formulas_g1.json \
+  -v $(pwd)/../output:/app/output \
+  ltl-monitor:latest --formulas-file /app/formulas_g1.json
 
-# 3. Inject a navigation goal from the host
+# 3. Inject a navigation goal from the host (docker execs send_goal.py inside ltl-nav2)
 python3 inject_goal.py 4.0 -1.0
 ```
 
