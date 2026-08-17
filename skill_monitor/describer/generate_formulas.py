@@ -7,44 +7,54 @@ import urllib.request
 import argparse
 import sys
 
+from skill_monitor.core import spec_contract
+
+DEFAULT_API_URL = "http://192.168.140.101/developer-api/v1"
+DEFAULT_MODEL = "Gemma4"
+
 # ---------------------------------------------------------------------------
 # Sensor schema — ground truth for what the evaluator (generic_client.py) can read.
 # AP descriptions MUST reference these exact field names and thresholds.
 # ---------------------------------------------------------------------------
 
-SENSOR_SCHEMA = """
-Available sensor fields (provided to the evaluator at each step):
-  Odometry (/odom):
-    position.x, position.y          — robot position in metres
-    linear_vel                       — forward speed in m/s  (moving if > 0.05)
-    angular_vel                      — rotation speed in rad/s
-    distance_to_target               — Euclidean distance to current goal in metres
+def schema_prompt(schema) -> str:
+    """The 'here is what this robot can observe' block of the prompt, built from a
+    live adapter schema rather than hardcoded.
 
-  Laser scan (/scan):
-    min_range                        — closest obstacle distance in metres
-    mean_range                       — average obstacle distance in metres
-    close_objects                    — number of laser rays < 1.0 m
+    This function is why generation is schema-agnostic: the schema comes from the
+    adapter descriptor (or from an adapter's /ltl/adapter manifest), so a manipulation
+    robot gets manipulation fields with no change here. It used to be a hardcoded
+    string listing fields no adapter ever provided (distance_to_target, nav_status,
+    mean_range, close_objects) -- every spec generated from it referenced sensors that
+    do not exist, and spec_contract.validate rejects exactly those.
 
-  Nav2 action status (/navigate_to_pose/_action/status):
-    nav_status                       — one of: "accepted", "executing", "canceling",
-                                       "succeeded", "canceled", "aborted"
+    `schema` may be {key: "prose"} or the manifest form {key: {"doc": "prose"}}.
+    """
+    lines = []
+    for key, meta in sorted(_docs(schema).items()):
+        lines.append(f"  {key:<28} - {meta}")
+    return (
+        "Available sensor fields (the evaluator reads exactly these, nothing else):\n"
+        + "\n".join(lines)
+        + "\n\nEvaluation rule examples (the evaluator applies these literally):\n"
+        '  "True when linear_vel > 0.05"\n'
+        "  \"True when nav_state == 'following'\"\n"
+        "  \"True when nav_state in ['aborted', 'canceled']\"\n"
+        '  "True when min_range < 0.25"\n'
+    )
 
-  Humanoid base state (G1, derived from /odom orientation + height):
-    base_roll, base_pitch            — base tilt in radians (0 = level)
-    base_height                      — pelvis height in metres (drops when fallen)
-    upright_flag                     — 1.0 when standing (level + tall enough), else 0.0
-                                       (precomputed; the evaluator applies the tilt/height
-                                       thresholds, so APs just compare upright_flag)
 
-Evaluation rule examples (the evaluator applies these literally):
-  "True when linear_vel > 0.05"
-  "True when distance_to_target < 0.5"
-  "True when min_range < 0.25"
-  "True when nav_status == 'succeeded'"
-  "True when nav_status in ['aborted', 'canceled']"
-  "True when nav_status in ['accepted', 'executing']"
-  "True when upright_flag > 0.5"
-"""
+def _docs(schema) -> dict:
+    return {
+        k: (v.get("doc", "") if isinstance(v, dict) else v) for k, v in (schema or {}).items()
+    }
+
+
+def default_schema() -> dict:
+    """The bundled navigation schema, for a run with no adapter on the graph."""
+    from skill_monitor.core import adapter_spec
+    return adapter_spec.load("real_g1").docs()
+
 
 # ---------------------------------------------------------------------------
 # LLM helpers
@@ -452,76 +462,22 @@ def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
     return "\n".join(lines)
 
 
+
+
 # ---------------------------------------------------------------------------
-# Main
+# Prompting + the generate -> validate -> repair loop
 # ---------------------------------------------------------------------------
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Generate LTL formulas and skill description from natural language."
-    )
-    parser.add_argument(
-        "--description",
-        "-d",
-        type=str,
-        help="Natural language description of the robot skill.",
-    )
-    parser.add_argument(
-        "--output",
-        "-o",
-        default="formulas.json",
-        help="Output path for formulas JSON (default: formulas.json).",
-    )
-    parser.add_argument(
-        "--desc-output",
-        "-t",
-        default="skill_description.md",
-        help="Output path for skill description (default: skill_description.md).",
-    )
-    parser.add_argument(
-        "--api-url",
-        "--ollama-url",
-        dest="api_url",
-        default="http://192.168.140.101/developer-api/v1",
-        help="LLM API base URL.",
-    )
-    parser.add_argument(
-        "--model", default="Gemma4", help="LLM model name (default: Gemma4)."
-    )
-    args = parser.parse_args()
-
-    skill_desc = args.description
-    if not skill_desc:
-        if sys.stdin.isatty():
-            print("Enter the natural language robot skill description:")
-            try:
-                skill_desc = input("> ").strip()
-            except KeyboardInterrupt:
-                print("\nExiting.")
-                sys.exit(0)
-        else:
-            print(
-                "Error: No description provided and input is not interactive.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    if not skill_desc:
-        print("Error: Skill description cannot be empty.", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[*] Connecting to {args.api_url} using model {args.model}...")
-    print("[*] Step 1/2 — Generating formal skill specification (formulas.json)...")
-
-    formulas_prompt = f"""You are an expert in robotics, Linear Temporal Logic (LTL), formal verification, and runtime monitoring.
+def formulas_prompt(skill_desc: str, schema) -> str:
+    return f"""You are an expert in robotics, Linear Temporal Logic (LTL), formal verification, and runtime monitoring.
 
 Your task: convert the robot skill description below into a formal monitoring specification.
 
 Skill Description:
 "{skill_desc}"
 
-{SENSOR_SCHEMA}
+{schema_prompt(schema)}
 
 CRITICAL RULES:
 1. Every atomic proposition description MUST include a concrete, sensor-measurable evaluation rule
@@ -610,7 +566,130 @@ Respond with a single valid JSON object:
 Respond ONLY with the JSON object. No markdown, no code fences, no explanation.
 """
 
-    formulas_json = query_llm(args.api_url, args.model, formulas_prompt)
+
+REPAIR_PROMPT = """The specification you produced cannot run on this robot. Each
+problem below was found by a mechanical check, not an opinion:
+
+{problems}
+
+{schema}
+
+Return the SAME specification with only those problems fixed, as a single valid JSON
+object. Keep every atomic proposition, formula and phase that was not named above
+exactly as it was. Respond ONLY with the JSON object."""
+
+
+def generate(skill_desc: str, schema=None, api_url: str = DEFAULT_API_URL,
+             model: str = DEFAULT_MODEL, llm=None, attempts: int = 2):
+    """Free-language description -> (spec, remaining problems).
+
+    Generate, check the result against the robot's schema, and hand the failures back
+    to the model to repair. `llm` is injected (signature llm(api_url, model, prompt)
+    -> dict) so this whole loop is testable against a scripted model with no live run.
+
+    Returns the best spec produced and the problems that survived; a caller decides
+    whether to push it. Never raises on a bad model reply -- an empty spec with the
+    problems attached is more useful to a GUI than a traceback.
+    """
+    schema = schema if schema is not None else default_schema()
+    llm = llm or query_llm
+    keys = list(_docs(schema))
+    spec, problems = {}, ["model returned nothing"]
+
+    for attempt in range(max(1, attempts)):
+        prompt = (
+            formulas_prompt(skill_desc, schema) if attempt == 0 else
+            REPAIR_PROMPT.format(problems="\n".join(f"  - {p}" for p in problems),
+                                 schema=schema_prompt(schema))
+            + "\n\nThe specification:\n" + json.dumps(spec, indent=2)
+        )
+        try:
+            candidate = llm(api_url, model, prompt)
+        except Exception as exc:
+            return spec, [f"LLM query failed: {exc}"]
+        if not isinstance(candidate, dict) or not candidate:
+            return spec, ["model did not return a JSON object"]
+
+        candidate, warnings = _validate_and_fix(candidate)
+        problems = spec_contract.validate(candidate, keys)
+        spec = candidate
+        if not problems:
+            return spec, []
+
+    return spec, problems
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate LTL formulas and skill description from natural language."
+    )
+    parser.add_argument(
+        "--description",
+        "-d",
+        type=str,
+        help="Natural language description of the robot skill.",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        default="formulas.json",
+        help="Output path for formulas JSON (default: formulas.json).",
+    )
+    parser.add_argument(
+        "--desc-output",
+        "-t",
+        default="skill_description.md",
+        help="Output path for skill description (default: skill_description.md).",
+    )
+    parser.add_argument(
+        "--api-url",
+        "--ollama-url",
+        dest="api_url",
+        default=DEFAULT_API_URL,
+        help="LLM API base URL.",
+    )
+    parser.add_argument(
+        "--model", default=DEFAULT_MODEL, help=f"LLM model name (default: {DEFAULT_MODEL})."
+    )
+    parser.add_argument(
+        "--adapter", default="real_g1",
+        help="Adapter descriptor whose sensor schema the rules must be written over.",
+    )
+    args = parser.parse_args()
+
+    skill_desc = args.description
+    if not skill_desc:
+        if sys.stdin.isatty():
+            print("Enter the natural language robot skill description:")
+            try:
+                skill_desc = input("> ").strip()
+            except KeyboardInterrupt:
+                print("\nExiting.")
+                sys.exit(0)
+        else:
+            print(
+                "Error: No description provided and input is not interactive.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if not skill_desc:
+        print("Error: Skill description cannot be empty.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[*] Connecting to {args.api_url} using model {args.model}...")
+    print("[*] Step 1/2 — Generating formal skill specification (formulas.json)...")
+
+    from skill_monitor.core import adapter_spec
+    schema = adapter_spec.load(args.adapter).docs()
+    prompt = formulas_prompt(skill_desc, schema)
+
+    formulas_json = query_llm(args.api_url, args.model, prompt)
 
     # Sanitize and validate
     formulas_json, warnings = _validate_and_fix(formulas_json)
