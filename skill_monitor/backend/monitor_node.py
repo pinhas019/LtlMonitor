@@ -30,10 +30,22 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
+import skill_monitor.core.manifest as manifest_mod
 import skill_monitor.core.spec_contract as spec_contract
 from skill_monitor.core.automata import FailureModeInfo, MonitorStatus, MultiMonitor, LTLMonitor
+
+# Latched: the spec and the adapter description change rarely and matter to every
+# late-joining client, so they are published TRANSIENT_LOCAL rather than repeated on
+# a timer. Anyone subscribing after the fact still receives the last value.
+_LATCHED = QoSProfile(
+    depth=1,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+)
 
 # ---------------------------------------------------------------------------
 # ANSI helpers
@@ -104,7 +116,11 @@ class SkillSpec:
         terminal_success: dict | None = None,
         terminal_failure: dict | None = None,
         named_failure_modes: list[dict] | None = None,
+        raw: dict | None = None,
     ) -> None:
+        # The spec exactly as authored. Kept so the monitor can hand the whole thing
+        # to clients on /ltl/manifest without reconstructing it from parsed pieces.
+        self.raw                 = raw or {}
         self.formulas            = formulas
         self.names               = names
         self.skill_name          = skill_name
@@ -172,9 +188,15 @@ def load_formulas_from_file(path: Path) -> SkillSpec:
     except Exception as exc:
         print(f"Error reading formulas file: {exc}", file=sys.stderr)
         sys.exit(1)
+    return spec_from_dict(data)
 
+
+def spec_from_dict(data) -> SkillSpec:
+    """A spec from already-parsed JSON -- the same code path whether it came off disk
+    or off /ltl/load_spec, so a pushed spec can never be interpreted differently from
+    a loaded one."""
     if isinstance(data, list):
-        return SkillSpec(formulas=data, names=data)
+        return SkillSpec(formulas=data, names=data, raw={"ltl_formulas": data})
 
     raw_formulas = data.get("ltl_formulas", [])
     formulas, names = [], []
@@ -192,6 +214,7 @@ def load_formulas_from_file(path: Path) -> SkillSpec:
         terminal_success     = data.get("terminal_success"),
         terminal_failure     = data.get("terminal_failure"),
         named_failure_modes  = data.get("named_failure_modes", []),
+        raw                  = data,
     )
 
 
@@ -608,12 +631,78 @@ class LtlMonitorNode(Node):
         self.state_desc_pub = self.create_publisher(String, '/ltl/state_description', 10)
         self.eval_sub = self.create_subscription(String, '/ltl/evaluations', self.eval_callback, 10)
 
+        # The manifest is the whole spec, latched: a GUI or any other client that
+        # connects mid-mission gets it immediately instead of having to find the file
+        # on a disk it may not share, and needs no import of this package to read it.
+        self.manifest_pub = self.create_publisher(String, '/ltl/manifest', _LATCHED)
+        self.spec_status_pub = self.create_publisher(String, '/ltl/spec_status', _LATCHED)
+
+        # A spec can also arrive over the wire. Same code path as a file load, and
+        # validated against the adapter's schema first -- a spec whose rules mention
+        # fields this robot does not publish would otherwise run as silently-false APs.
+        self.create_subscription(String, '/ltl/load_spec', self.load_spec_callback, 10)
+        self.adapter_manifest: dict = {}
+        self.create_subscription(String, '/ltl/adapter', self.adapter_callback, _LATCHED)
+
+        # Latest sensor_eval and AP truth values from the evaluator, passed through to
+        # state_description so a client sees the numbers the APs were computed from,
+        # not just the APs' names.
+        self.sensors: dict = {}
+        self.last_observation: dict = {}
+
         self.timer = self.create_timer(1.0, self.publish_current_state)
 
         self.get_logger().info('LTL Monitor ROS 2 Node started.')
 
         # Publish initial state
+        self.publish_manifest()
         self.publish_current_state()
+
+    # -- manifest / spec push -------------------------------------------------
+
+    def publish_manifest(self, source: str | None = None) -> None:
+        self.manifest_pub.publish(String(data=json.dumps(self.manifest(source))))
+
+    def manifest(self, source: str | None = None) -> dict:
+        return manifest_mod.skill_manifest(
+            self.spec.raw,
+            source or (str(self.formulas_file) if self.formulas_file else "inline"),
+        )
+
+    def adapter_callback(self, msg: String) -> None:
+        try:
+            self.adapter_manifest = json.loads(msg.data)
+        except Exception as exc:
+            self.get_logger().warn(f"Unparseable adapter manifest: {exc}")
+
+    def load_spec_callback(self, msg: String) -> None:
+        try:
+            data = json.loads(msg.data)
+        except Exception as exc:
+            self._spec_status(False, [f"not valid JSON: {exc}"])
+            return
+        problems = self.validate_spec(data)
+        if problems:
+            self.get_logger().warn(f"Rejected pushed spec: {problems}")
+            self._spec_status(False, problems, data.get("skill_name", ""))
+            return
+        self.get_logger().info(f"Accepted pushed spec '{data.get('skill_name','')}'")
+        self.reload_specs(spec_data=data)
+        self._spec_status(True, [], data.get("skill_name", ""))
+
+    def validate_spec(self, data: dict) -> list[str]:
+        """Problems that make a spec unrunnable here. Schema checks only happen once
+        an adapter has announced itself -- with no adapter on the graph we cannot tell
+        an unknown sensor field from an unseen one, and refusing every spec until then
+        would make the monitor unusable in replay/offline setups."""
+        schema_keys = (self.adapter_manifest.get("schema") or {}).keys()
+        if not schema_keys:
+            return spec_contract.validate_structure(data)
+        return spec_contract.validate(data, schema_keys)
+
+    def _spec_status(self, ok: bool, problems: list, skill_name: str = "") -> None:
+        self.spec_status_pub.publish(String(data=json.dumps(
+            {"ok": ok, "problems": problems, "skill_name": skill_name})))
 
     def check_formulas_file_changed(self) -> bool:
         if not self.formulas_file or not os.path.exists(self.formulas_file):
@@ -674,13 +763,20 @@ class LtlMonitorNode(Node):
         self.active_skill_label = label
         self.reload_specs(skill_path)
 
-    def reload_specs(self, formulas_path: str | None = None):
-        path = formulas_path or self.formulas_file
-        self.get_logger().info(f"Reloading formulas and AP specs from {path}...")
-        spec = load_formulas_from_file(path)
-        self.formulas_file = path
-        if os.path.exists(path):
-            self.last_mtime = os.path.getmtime(path)
+    def reload_specs(self, formulas_path: str | None = None, spec_data: dict | None = None):
+        if spec_data is not None:
+            # Pushed over /ltl/load_spec: there is no file, and adopting one would
+            # make the file watcher immediately reload over the top of it.
+            self.get_logger().info("Reloading from pushed spec...")
+            spec = spec_from_dict(spec_data)
+            self.formulas_file = None
+        else:
+            path = formulas_path or self.formulas_file
+            self.get_logger().info(f"Reloading formulas and AP specs from {path}...")
+            spec = load_formulas_from_file(path)
+            self.formulas_file = path
+            if os.path.exists(path):
+                self.last_mtime = os.path.getmtime(path)
         self.spec = spec
         self.has_phases = bool(spec.execution_phases)
         try:
@@ -707,6 +803,7 @@ class LtlMonitorNode(Node):
         print(f"{BOLD}{'─' * 64}{RESET}")
 
         _print_step_block("init", self.multi, {}, "Idle")
+        self.publish_manifest("pushed" if spec_data is not None else None)
         self.get_logger().info("Monitor reset successfully with new specs.")
 
     def _update_phase_state(
@@ -972,6 +1069,8 @@ class LtlMonitorNode(Node):
         # them before stepping so they can never reach a guard's eval namespace.
         self._confidence = float(observation.pop("__confidence__", 1.0))
         self._stale_sources = list(observation.pop("__stale__", []))
+        self.sensors = dict(observation.pop("__sensors__", {}) or {})
+        self.last_observation = dict(observation)
 
         # Capture current automaton states before stepping
         prev_states = {m.name: m.current_state for m in self.multi.monitors}
@@ -1132,6 +1231,14 @@ class LtlMonitorNode(Node):
 
         state_desc = {
             "phase": self.current_phase,
+            "phase_index": self.phase_idx,
+            "phases": manifest_mod.phase_names(phases),
+            "step": self.step_idx,
+            # The numbers the APs were computed from, forwarded from the evaluator's
+            # reserved __sensors__ key so a client sees observation and conclusion
+            # together rather than having to subscribe to the robot's raw topics.
+            "sensors": self.sensors,
+            "ap_values": self.last_observation,
             "risk": risk,
             "skill_name": self.spec.skill_name,
             "description": self.spec.description,

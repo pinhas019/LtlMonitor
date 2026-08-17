@@ -180,3 +180,14 @@ class SensorAdapter(ABC):
     def confidence(self) -> float:
         """Confidence in this tick's sensor_eval, 0.0-1.0. Default 1.0."""
         return 1.0
+
+    def manifest(self) -> dict:
+        """What this adapter announces on /ltl/adapter. A declarative adapter
+        overrides this with its descriptor's topic list; a hand-written one has no
+        machine-readable topic map, so it publishes just the schema."""
+        return {
+            "adapter": type(self).__name__,
+            "doc": (type(self).__doc__ or "").strip().split("\n")[0],
+            "schema": {k: {"doc": v} for k, v in self.schema().items()},
+            "sources": [],
+        }

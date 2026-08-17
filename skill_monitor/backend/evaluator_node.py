@@ -24,6 +24,7 @@ import threading
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 import skill_monitor.core.spec_contract as spec_contract
 from skill_monitor.core import adapter_spec
@@ -44,6 +45,12 @@ ADAPTERS: dict[str, str] = {
 
 def adapter_choices() -> list[str]:
     return sorted(set(adapter_spec.available()) | set(ADAPTERS))
+
+
+def _jsonable(v):
+    if isinstance(v, (str, bool, int, float)) or v is None:
+        return v
+    return float(v) if hasattr(v, "__float__") else str(v)
 
 
 def _load_adapter(name: str, **kwargs) -> SensorAdapter:
@@ -84,6 +91,15 @@ class GenericClientNode(Node):
         self.create_subscription(String, "/ltl/required_aps", self.aps_callback, 10)
         self.create_subscription(String, "/ltl/state_description", self.desc_callback, 10)
         self.eval_pub = self.create_publisher(String, "/ltl/evaluations", 10)
+
+        # What this robot can observe, announced once and latched. The monitor uses it
+        # to reject a spec written over fields this embodiment does not have; the GUI
+        # uses it to show the schema. Neither has to import the adapter to get it.
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                             reliability=ReliabilityPolicy.RELIABLE,
+                             history=HistoryPolicy.KEEP_LAST)
+        self.adapter_pub = self.create_publisher(String, "/ltl/adapter", latched)
+        self.adapter_pub.publish(String(data=json.dumps(self.adapter.manifest())))
 
         # Everything environment-specific lives behind this one call.
         self.adapter.register_subscriptions(self)
@@ -368,6 +384,9 @@ Reply with ONLY a JSON object. No markdown, no explanation.
         # inert for evaluation; main.py reads it for the risk block.
         payload = dict(final_evals)
         payload["__confidence__"] = task.get("confidence", 1.0)
+        # The observation the APs were derived from, so the monitor can forward it to
+        # operators. JSON-safe: an adapter may hand back numpy scalars.
+        payload["__sensors__"] = {k: _jsonable(v) for k, v in sensor_eval.items()}
         stale = task.get("stale") or []
         if stale:
             payload["__stale__"] = stale

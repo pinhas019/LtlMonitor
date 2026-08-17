@@ -96,6 +96,24 @@ def undeclared_aps(spec: dict) -> set[str]:
     return {u for u in used - declared if u not in {"G", "F", "X", "U", "R", "W", "M"}}
 
 
+def validate_structure(spec: dict) -> list[str]:
+    """Problems that need no schema: a spec is internally incoherent regardless of
+    which robot runs it. Split out because a monitor may have to judge a pushed spec
+    before any adapter has announced its schema."""
+    problems: list[str] = []
+
+    for ap in sorted(undeclared_aps(spec)):
+        problems.append(
+            f"'{ap}' is used in a formula/phase/terminal condition but is not declared "
+            f"in atomic_propositions"
+        )
+
+    if not (spec.get("atomic_propositions") or {}):
+        problems.append("spec declares no atomic propositions")
+
+    return problems
+
+
 def validate(spec: dict, schema_keys) -> list[str]:
     """Human-readable problems, empty if the spec is executable. This list is what the
     repair loop feeds back to the LLM, so each message names the offending AP and the
@@ -109,13 +127,4 @@ def validate(spec: dict, schema_keys) -> list[str]:
             f"available fields are: {sorted(schema_keys)}"
         )
 
-    for ap in sorted(undeclared_aps(spec)):
-        problems.append(
-            f"'{ap}' is used in a formula/phase/terminal condition but is not declared "
-            f"in atomic_propositions"
-        )
-
-    if not (spec.get("atomic_propositions") or {}):
-        problems.append("spec declares no atomic propositions")
-
-    return problems
+    return problems + validate_structure(spec)
