@@ -9,7 +9,7 @@ branch `ltl-skill-monitor` (revision 4).
 
 | path | what | tip | pushed? |
 |---|---|---|---|
-| `~/skillMonitor` | **the monitor** — standalone layered package (was the MiniGrid submodule) | `e550c3b` | **NO** — 6 ahead of `origin/dev` |
+| `~/skillMonitor` | **the monitor** — standalone layered package (was the MiniGrid submodule) | `dev` | **NO** — unpushed, see `git status -sb` |
 | `~/TRAV-metric-map` @ `pinhas-remote-control` | robot's branch; TRAV nav stack + the passive logger | `1573498` | **NO** — 1 ahead |
 | `~/TRAV-metric-map` @ `ltl-skill-monitor` | LTL launch scripts, THESIS_PLAN.md, CLIP goal matcher | `35b80a4` | **diverged** — rebased after the last push |
 | `~/TRAV-metric-map` @ `image-fusion` | 1 unmerged commit | `a40055b` | yes |
@@ -121,8 +121,9 @@ renders are all that survive there).
 
 # Session 2 — branch `gui-and-manifest` (2026-08-17)
 
-Branched from `dev`, 4 commits, **not pushed**. `dev` itself is still 6 ahead of
-`origin/dev`. Run `python3 -m pytest` (105 pass, no ROS needed) and
+Merged into `dev` (fast-forward) along with `docs: branching and commit
+conventions`; both branches deleted. **`dev` is unpushed** — `git status -sb` for
+the count. Run `python3 -m pytest` (105 pass, no ROS needed) and
 `python3 -m skill_monitor.frontend.skill_center --mock --mock-llm` to see the panel
 without a robot.
 
@@ -167,4 +168,5 @@ without a robot.
   robot; until then they are the fallback.
 - `--adapter` names: `real_g1` is now the JSON descriptor, `real_g1_py` the class.
   Any launch script passing `--adapter real_g1` gets the declarative one.
-- Push: `dev` (6) and `gui-and-manifest` (4) are both unpushed.
+- Push `dev`. See `CONTRIBUTING.md` for the branching convention
+  adopted this session: `<layer>/<type>-<topic>`, one branch per coherent change.
