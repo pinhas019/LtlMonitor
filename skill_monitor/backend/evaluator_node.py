@@ -13,6 +13,7 @@ Usage:
 """
 
 import json
+import importlib
 import inspect
 import re
 import sys
@@ -25,6 +26,7 @@ import rclpy
 from rclpy.node import Node
 
 import skill_monitor.core.spec_contract as spec_contract
+from skill_monitor.core import adapter_spec
 from std_msgs.msg import String
 
 from skill_monitor.backend.adapters.base import SensorAdapter
@@ -32,18 +34,28 @@ from skill_monitor.backend.adapters.base import SensorAdapter
 ADAPTERS: dict[str, str] = {
     # name -> "module:ClassName", imported lazily in _load_adapter so choosing one
     # adapter doesn't require every adapter's dependencies to be importable.
-    "real_g1": "adapter_real_g1:RealG1Adapter",
-    "mujoco": "adapter_mujoco:MujocoAdapter",
-    "isaac_lab": "adapter_isaac_lab:IsaacLabAdapter",
+    # Only for embodiments whose plumbing genuinely needs code; the normal case is a
+    # JSON descriptor in skill_monitor/adapters/, which needs no entry here.
+    "real_g1_py": "skill_monitor.backend.adapters.real_g1:RealG1Adapter",
+    "mujoco_py": "skill_monitor.backend.adapters.mujoco:MujocoAdapter",
+    "isaac_lab_py": "skill_monitor.backend.adapters.isaac_lab:IsaacLabAdapter",
 }
 
 
+def adapter_choices() -> list[str]:
+    return sorted(set(adapter_spec.available()) | set(ADAPTERS))
+
+
 def _load_adapter(name: str, **kwargs) -> SensorAdapter:
-    if name not in ADAPTERS:
-        raise SystemExit(f"Unknown --adapter '{name}'. Choices: {sorted(ADAPTERS)}")
-    module_name, class_name = ADAPTERS[name].split(":")
-    module = __import__(module_name)
-    cls = getattr(module, class_name)
+    """A JSON descriptor by preference, a Python class only where one exists."""
+    if name in adapter_spec.available():
+        from skill_monitor.backend.adapters.declarative import DeclarativeAdapter
+        cls, kwargs = DeclarativeAdapter, {"descriptor": name, **kwargs}
+    elif name in ADAPTERS:
+        module_name, class_name = ADAPTERS[name].split(":")
+        cls = getattr(importlib.import_module(module_name), class_name)
+    else:
+        raise SystemExit(f"Unknown --adapter '{name}'. Choices: {adapter_choices()}")
     # Only forward tuning knobs the chosen adapter actually accepts, so a knob that
     # is meaningful for one environment does not break construction of the others.
     accepted = inspect.signature(cls).parameters
@@ -373,7 +385,7 @@ def main():
     from rclpy.utilities import remove_ros_args
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--adapter", required=True, choices=sorted(ADAPTERS),
+    parser.add_argument("--adapter", required=True, choices=adapter_choices(),
                          help="Which environment's sensor topics to evaluate against.")
     parser.add_argument("--api-url", "--ollama-url", dest="api_url",
                         default="http://192.168.140.101/developer-api/v1")

@@ -1,0 +1,61 @@
+{
+  "name": "nav",
+  "keys": {
+    "min_range": {
+      "doc": "float, metres. Distance to the nearest obstacle ahead within the 0.1-1.5 m height band. 10.0 means nothing was detected.",
+      "default": 10.0
+    },
+    "base_roll": {
+      "doc": "float, radians. Roll of the robot base. 0.0 is level.",
+      "default": 0.0
+    },
+    "base_pitch": {
+      "doc": "float, radians. Pitch of the robot base. 0.0 is level.",
+      "default": 0.0
+    },
+    "base_height": {
+      "doc": "float, metres. Height of the robot base above the odometry origin plane. Drops sharply if the robot falls or collapses.",
+      "default": 1.0
+    },
+    "upright_flag": {
+      "doc": "float, 1.0 if the base is within tilt and height limits, else 0.0.",
+      "default": 1.0
+    },
+    "linear_vel": {
+      "doc": "float, m/s. Forward velocity of the base.",
+      "default": 0.0
+    },
+    "angular_vel": {
+      "doc": "float, rad/s. Yaw rate of the base.",
+      "default": 0.0
+    },
+    "nav_mode": {
+      "doc": "string, one of 'MANUAL' or 'AUTOMATIC'. AUTOMATIC means the planner, not a human operator, is driving.",
+      "default": "MANUAL"
+    },
+    "nav_state": {
+      "doc": "string, the planner's current state: 'manual', 'waiting_inputs', 'following', 'positioning', 'unblocking', 'no_traversable', 'unreachable', 'no_path_found', 'finished'.",
+      "default": "waiting_inputs"
+    },
+    "num_waypoints": {
+      "doc": "int, how many waypoints the current mission has. 0 means no goal has been set.",
+      "default": 0
+    },
+    "current_target_idx": {
+      "doc": "int, index of the waypoint currently being driven to. Increases as waypoints are passed.",
+      "default": 0
+    },
+    "mission_finished": {
+      "doc": "bool, True once every waypoint has been reached.",
+      "default": false
+    },
+    "nav_stuck": {
+      "doc": "bool, True when the planner has reported a blocked state continuously for a debounce window (not a single bad tick).",
+      "default": false
+    },
+    "image_similarity_to_goal": {
+      "doc": "float, 0.0-1.0. Visual similarity between the current camera view and a reference photo of the goal.",
+      "default": 0.0
+    }
+  }
+}

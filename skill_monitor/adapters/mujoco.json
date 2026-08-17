@@ -1,0 +1,60 @@
+{
+  "name": "mujoco",
+  "doc": "MuJoCo sim harness (sim/mujoco_ros_bridge.py) behind Nav2. LaserScan gives range directly -- no PointCloud2 decode or axis remap.",
+  "schema": "nav_schema.json",
+  "describe": ["min_range", "nav_state", "image_similarity_to_goal"],
+  "defaults": {"num_waypoints": 1},
+  "sources": [
+    {
+      "id": "odom",
+      "topic": "/odom",
+      "type": "nav_msgs/msg/Odometry",
+      "tracked": true,
+      "steps": [
+        {"key": "linear_vel", "field": "twist.twist.linear.x", "round": 2},
+        {"key": "angular_vel", "field": "twist.twist.angular.z", "round": 2},
+        {"key": "base_height", "field": "pose.pose.position.z", "round": 3},
+        {"keys": ["base_roll", "base_pitch"], "fn": "quat_to_roll_pitch",
+         "field": "pose.pose.orientation", "round": 3},
+        {"key": "upright_flag", "fn": "upright",
+         "inputs": ["base_roll", "base_pitch", "base_height"],
+         "args": {"tilt_max": 0.5, "height_min": 0.5}}
+      ]
+    },
+    {
+      "id": "range",
+      "topic": "/scan",
+      "type": "sensor_msgs/msg/LaserScan",
+      "decode": "laserscan_ranges",
+      "tracked": true,
+      "steps": [
+        {"key": "min_range", "fn": "min_range_scan", "round": 2, "args": {"default": 10.0}}
+      ]
+    },
+    {
+      "id": "nav2",
+      "topic": "/navigate_to_pose/_action/status",
+      "type": "action_msgs/msg/GoalStatusArray",
+      "decode": "goal_status",
+      "qos": "action_status",
+      "tracked": false,
+      "steps": [
+        {"key": "nav_state", "fn": "nav2_status"},
+        {"key": "nav_mode", "fn": "const", "args": {"value": "AUTOMATIC"}},
+        {"key": "mission_finished", "fn": "eq", "inputs": ["nav_state"],
+         "args": {"to": "finished"}},
+        {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
+         "args": {"threshold": 10}}
+      ]
+    },
+    {
+      "id": "vision",
+      "topic": "/vision/goal_similarity",
+      "type": "std_msgs/msg/Float32",
+      "tracked": false,
+      "steps": [
+        {"key": "image_similarity_to_goal", "field": "data", "round": 3}
+      ]
+    }
+  ]
+}

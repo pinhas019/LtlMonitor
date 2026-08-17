@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -86,31 +87,20 @@ class Freshness:
 # the generator runs on a host with no ROS, so it must be able to read a schema
 # without importing the adapter module that implements it.
 
-NAV_SCHEMA = {
-    "min_range": "float, metres. Distance to the nearest obstacle ahead within the "
-                 "0.1-1.5 m height band. 10.0 means nothing was detected.",
-    "base_roll": "float, radians. Roll of the robot base. 0.0 is level.",
-    "base_pitch": "float, radians. Pitch of the robot base. 0.0 is level.",
-    "base_height": "float, metres. Height of the robot base above the odometry origin "
-                   "plane. Drops sharply if the robot falls or collapses.",
-    "upright_flag": "float, 1.0 if the base is within tilt and height limits, else 0.0.",
-    "linear_vel": "float, m/s. Forward velocity of the base.",
-    "angular_vel": "float, rad/s. Yaw rate of the base.",
-    "nav_mode": "string, one of 'MANUAL' or 'AUTOMATIC'. AUTOMATIC means the planner, "
-                "not a human operator, is driving.",
-    "nav_state": "string, the planner's current state: 'manual', 'waiting_inputs', "
-                 "'following', 'positioning', 'unblocking', 'no_traversable', "
-                 "'unreachable', 'no_path_found', 'finished'.",
-    "num_waypoints": "int, how many waypoints the current mission has. 0 means no goal "
-                     "has been set.",
-    "current_target_idx": "int, index of the waypoint currently being driven to. "
-                          "Increases as waypoints are passed.",
-    "mission_finished": "bool, True once every waypoint has been reached.",
-    "nav_stuck": "bool, True when the planner has reported a blocked state continuously "
-                 "for a debounce window (not a single bad tick).",
-    "image_similarity_to_goal": "float, 0.0-1.0. Visual similarity between the current "
-                                "camera view and a reference photo of the goal.",
-}
+# The schemas themselves now live in skill_monitor/adapters/*_schema.json, not here:
+# a schema has to be readable by the GUI and the generator, which do not import this
+# package's ROS layer at all. These names stay as the in-process view of that JSON.
+
+def load_schema(name: str = "nav") -> dict:
+    """key -> prose, read from skill_monitor/adapters/<name>_schema.json."""
+    import json
+    path = _ADAPTERS_DIR / f"{name}_schema.json"
+    return {k: v.get("doc", "") for k, v in json.loads(path.read_text())["keys"].items()}
+
+
+_ADAPTERS_DIR = Path(__file__).resolve().parents[2] / "adapters"
+
+NAV_SCHEMA = load_schema("nav")
 
 # Back-compat alias. Prefer adapter.schema() / adapter.schema_keys().
 CANONICAL_SENSOR_EVAL_KEYS = frozenset(NAV_SCHEMA)
