@@ -375,7 +375,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--adapter", required=True, choices=sorted(ADAPTERS),
                          help="Which environment's sensor topics to evaluate against.")
-    parser.add_argument("--api-url", "--ollama-url", dest="api_url", default="http://192.168.140.111/developer-api/v1")
+    parser.add_argument("--api-url", "--ollama-url", dest="api_url",
+                        default="http://192.168.140.101/developer-api/v1")
     parser.add_argument("--model", default="Gemma4")
     parser.add_argument("--stale-after", type=float, default=2.0,
                         help="Seconds without a message before a sensor source counts "
