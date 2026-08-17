@@ -1,0 +1,56 @@
+{
+  "skill_name": "AutonomousNavigation",
+  "description": "This skill manages autonomous navigation from a target location. It monitors path execution, obstacle avoidance, and progress towards the goal. The skill successfully terminates when the robot is sufficiently close to the target.",
+  "atomic_propositions": {
+    "target_received": "True when nav_status == 'accepted'. The navigation goal has been accepted by the planner.",
+    "path_planning_active": "True when nav_status in ['accepted', 'executing']. The robot is actively engaged in navigation.",
+    "moving_towards_target": "True when linear_vel > 0.05. The robot is currently moving forward.",
+    "obstacle_detected": "True when min_range < 0.25. A close obstacle is detected within the safety threshold.",
+    "close_to_target": "True when distance_to_target < 0.5. The robot is within the final stopping distance of the target."
+  },
+  "ltl_formulas": [
+    {
+      "name": "navigation_completion_sequence",
+      "formula": "F(target_received && F(path_planning_active && F(close_to_target)))"
+    }
+  ],
+  "named_failure_modes": [
+    {
+      "name": "collision_risk",
+      "formula": "G(!obstacle_detected)",
+      "fault_category": "SAFETY",
+      "description": "The robot must never enter a state where a close obstacle is detected."
+    },
+    {
+      "name": "navigation_stuck",
+      "formula": "G(path_planning_active -> F(moving_towards_target))",
+      "fault_category": "NAVIGATION",
+      "description": "If navigation is active, the robot must eventually start moving towards the target."
+    }
+  ],
+  "execution_phases": [
+    {
+      "phase": "PathPlanningAndExecution",
+      "description": "The robot receives the target and begins executing the collision-free path.",
+      "enter_condition": "target_received",
+      "precondition": "True",
+      "precondition_fault_category": "PRECONDITION",
+      "invariant": "not obstacle_detected",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "path_planning_active and not obstacle_detected",
+      "exit_condition": "close_to_target",
+      "progress_violation_limit": 5,
+      "timing_bounds": {
+        "max_steps": 120
+      }
+    }
+  ],
+  "terminal_success": {
+    "condition": "close_to_target",
+    "description": "Success is achieved when the robot's distance to the target is less than 0.5 meters."
+  },
+  "terminal_failure": {
+    "condition": "obstacle_detected",
+    "description": "Failure occurs if a close obstacle is detected at any point during navigation."
+  }
+}
