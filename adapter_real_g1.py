@@ -18,7 +18,7 @@ from rclpy.node import Node
 
 import g1_sensors
 from g1_real_frame import remap_optical_to_body
-from sensor_adapter import Freshness, SensorAdapter
+from sensor_adapter import NAV_SCHEMA, Freshness, SensorAdapter
 from stuck_detector import StuckStreak
 from vision_mixin import VisionScoreMixin
 
@@ -29,6 +29,8 @@ _TRACKED_SOURCES = ("odom", "points", "status")
 
 
 class RealG1Adapter(SensorAdapter, VisionScoreMixin):
+    SCHEMA = NAV_SCHEMA
+
     def __init__(
         self,
         stuck_ticks: int = 10,

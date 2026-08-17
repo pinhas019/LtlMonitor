@@ -17,33 +17,17 @@ import json
 import re
 from pathlib import Path
 
-from sensor_adapter import CANONICAL_SENSOR_EVAL_KEYS
+import spec_contract
+from sensor_adapter import NAV_SCHEMA
 
 SPEC = json.loads((Path(__file__).parent / "formulas_g1.json").read_text())
 
-_TRUE_WHEN_RE = re.compile(r"[Tt]rue when\s+(.+?)(?:\.|$)", re.IGNORECASE)
-_QUOTED = re.compile(r"'[^']*'")
-_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_NON_SENSOR_TOKENS = {"and", "or", "not", "in", "True", "False", "None"}
-
-
-def _sensor_keys_in_rule(desc: str) -> set[str]:
-    m = _TRUE_WHEN_RE.search(desc)
-    if not m:
-        return set()
-    rule = m.group(1)
-    rule = _QUOTED.sub("", rule)  # strip string literals (e.g. 'AUTOMATIC') first --
-    # otherwise their contents get mistaken for bare identifiers by _IDENT below.
-    return {t for t in _IDENT.findall(rule) if t not in _NON_SENSOR_TOKENS}
-
-
 def test_every_rule_ap_only_references_canonical_sensor_keys():
-    referenced: set[str] = set()
-    for desc in SPEC["atomic_propositions"].values():
-        referenced |= _sensor_keys_in_rule(desc)
-    unknown = referenced - CANONICAL_SENSOR_EVAL_KEYS
+    unknown = set()
+    for missing in spec_contract.unknown_keys(SPEC, NAV_SCHEMA).values():
+        unknown |= missing
     assert not unknown, (
         f"formulas_g1.json rule APs reference sensor_eval keys no adapter contract "
-        f"guarantees: {sorted(unknown)} (add to CANONICAL_SENSOR_EVAL_KEYS in "
+        f"guarantees: {sorted(unknown)} (add to NAV_SCHEMA in "
         f"sensor_adapter.py and every adapter's get_sensor_eval(), or fix the typo)"
     )

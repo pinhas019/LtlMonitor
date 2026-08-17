@@ -20,13 +20,15 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_action_status_default
 
 import g1_sensors
-from sensor_adapter import SensorAdapter
+from sensor_adapter import NAV_SCHEMA, SensorAdapter
 from stuck_detector import StuckStreak
 from nav2_status_map import nav2_status_to_state
 from vision_mixin import VisionScoreMixin
 
 
 class Nav2BackedAdapter(SensorAdapter, VisionScoreMixin):
+    SCHEMA = NAV_SCHEMA
+
     def __init__(self, stuck_ticks: int = 10):
         VisionScoreMixin.__init__(self)
         self.odom_data: dict = {}

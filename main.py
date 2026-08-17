@@ -32,6 +32,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+import spec_contract
 from monitor import FailureModeInfo, MonitorStatus, MultiMonitor, LTLMonitor
 
 # ---------------------------------------------------------------------------
@@ -55,7 +56,9 @@ _STATUS_LABELS = {
 # ---------------------------------------------------------------------------
 
 _LTL_OPS = re.compile(r'\b(G|F|X)\s*\(')
-_TRUE_WHEN_RE = re.compile(r'[Tt]rue when\s+(.+?)(?:\.|$)', re.IGNORECASE)
+# Rule extraction is shared with the evaluator and the contract test, so the rule
+# printed in this console table is exactly the rule that gets evaluated.
+_TRUE_WHEN_RE = spec_contract.TRUE_WHEN_RE
 
 def _sanitize_condition(condition: str) -> str:
     """Translate LTL/C-style boolean syntax to Python-eval-compatible syntax.

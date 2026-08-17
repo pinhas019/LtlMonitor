@@ -73,31 +73,75 @@ class Freshness:
             return 1.0
         return 1.0 - len(self.stale_sources()) / len(self._last)
 
-# Single source of truth for what every adapter's get_sensor_eval() must return.
-# formulas_g1.json's rule-AP expressions may only reference these identifiers (checked
-# statically by test_adapter_sensor_eval_contract.py); every concrete adapter's
-# get_sensor_eval() should return exactly this key set (checked at runtime by
-# validate_sensor_eval below, so a drifted adapter fails loudly instead of silently
-# leaving some AP always-false).
-CANONICAL_SENSOR_EVAL_KEYS = frozenset({
-    "min_range",
-    "base_roll",
-    "base_pitch",
-    "base_height",
-    "upright_flag",
-    "linear_vel",
-    "angular_vel",
-    "nav_mode",
-    "nav_state",
-    "num_waypoints",
-    "current_target_idx",
-    "mission_finished",
-    "nav_stuck",
-    "image_similarity_to_goal",
-})
+# A SCHEMA maps each sensor_eval key to a human-readable description of its type,
+# units and meaning. It is the ONE artifact shared by three consumers:
+#   1. validate_sensor_eval()               -- runtime: adapter returns exactly these keys
+#   2. test_adapter_sensor_eval_contract    -- static: rules reference only these keys
+#   3. generate_formulas.py                 -- synthesis: what the LLM may write rules over
+# (3) is why the values are prose and not just types: the generator has to know what
+# `nav_state == 'following'` means to produce a correct rule from a free-language
+# skill description.
+#
+# Schemas live here, in this rclpy-free module, rather than on the adapter classes:
+# the generator runs on a host with no ROS, so it must be able to read a schema
+# without importing the adapter module that implements it.
+
+NAV_SCHEMA = {
+    "min_range": "float, metres. Distance to the nearest obstacle ahead within the "
+                 "0.1-1.5 m height band. 10.0 means nothing was detected.",
+    "base_roll": "float, radians. Roll of the robot base. 0.0 is level.",
+    "base_pitch": "float, radians. Pitch of the robot base. 0.0 is level.",
+    "base_height": "float, metres. Height of the robot base above the odometry origin "
+                   "plane. Drops sharply if the robot falls or collapses.",
+    "upright_flag": "float, 1.0 if the base is within tilt and height limits, else 0.0.",
+    "linear_vel": "float, m/s. Forward velocity of the base.",
+    "angular_vel": "float, rad/s. Yaw rate of the base.",
+    "nav_mode": "string, one of 'MANUAL' or 'AUTOMATIC'. AUTOMATIC means the planner, "
+                "not a human operator, is driving.",
+    "nav_state": "string, the planner's current state: 'manual', 'waiting_inputs', "
+                 "'following', 'positioning', 'unblocking', 'no_traversable', "
+                 "'unreachable', 'no_path_found', 'finished'.",
+    "num_waypoints": "int, how many waypoints the current mission has. 0 means no goal "
+                     "has been set.",
+    "current_target_idx": "int, index of the waypoint currently being driven to. "
+                          "Increases as waypoints are passed.",
+    "mission_finished": "bool, True once every waypoint has been reached.",
+    "nav_stuck": "bool, True when the planner has reported a blocked state continuously "
+                 "for a debounce window (not a single bad tick).",
+    "image_similarity_to_goal": "float, 0.0-1.0. Visual similarity between the current "
+                                "camera view and a reference photo of the goal.",
+}
+
+# Back-compat alias. Prefer adapter.schema() / adapter.schema_keys().
+CANONICAL_SENSOR_EVAL_KEYS = frozenset(NAV_SCHEMA)
+
+SCHEMAS = {
+    "nav": NAV_SCHEMA,
+}
 
 
 class SensorAdapter(ABC):
+    #: What THIS embodiment can observe. Subclasses MUST set it to a schema dict (see
+    #: NAV_SCHEMA). A manipulation adapter declares gripper/object keys instead --
+    #: that per-adapter declaration is what keeps the engine skill-agnostic, rather
+    #: than one global key set that quietly assumes navigation. Deliberately not
+    #: defaulted to NAV_SCHEMA: a manipulation adapter that forgot to declare one
+    #: would then silently inherit navigation fields and fail far downstream.
+    SCHEMA: dict | None = None
+
+    @classmethod
+    def schema(cls) -> dict:
+        if not cls.SCHEMA:
+            raise NotImplementedError(
+                f"{cls.__name__} must declare SCHEMA (a sensor_eval key -> description "
+                f"dict, e.g. sensor_adapter.NAV_SCHEMA)"
+            )
+        return cls.SCHEMA
+
+    @classmethod
+    def schema_keys(cls) -> frozenset:
+        return frozenset(cls.schema())
+
     @abstractmethod
     def register_subscriptions(self, node: "Node") -> None:
         """Create whatever subscriptions this environment needs on `node`."""
@@ -109,18 +153,19 @@ class SensorAdapter(ABC):
         non-upright-penalizing pose) before any messages have arrived.
         """
 
-    @staticmethod
-    def validate_sensor_eval(sensor_eval: dict) -> dict:
+    def validate_sensor_eval(self, sensor_eval: dict) -> dict:
         """Implementations should `return self.validate_sensor_eval({...})` rather than
         the raw dict -- catches a missing/extra key immediately at runtime (any
         environment) instead of silently leaving some atomic proposition always-false.
+
+        Validates against THIS adapter's declared SCHEMA, not a global key set.
         """
+        expected = self.schema_keys()
         actual = set(sensor_eval)
-        if actual != CANONICAL_SENSOR_EVAL_KEYS:
-            missing = CANONICAL_SENSOR_EVAL_KEYS - actual
-            extra = actual - CANONICAL_SENSOR_EVAL_KEYS
+        if actual != expected:
             raise ValueError(
-                f"sensor_eval contract violation: missing={sorted(missing)} extra={sorted(extra)}"
+                f"{type(self).__name__} sensor_eval contract violation: "
+                f"missing={sorted(expected - actual)} extra={sorted(actual - expected)}"
             )
         return sensor_eval
 

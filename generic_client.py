@@ -23,6 +23,8 @@ import threading
 
 import rclpy
 from rclpy.node import Node
+
+import spec_contract
 from std_msgs.msg import String
 
 from sensor_adapter import SensorAdapter
@@ -223,7 +225,10 @@ class GenericClientNode(Node):
     _GREEN = "\033[32m"
     _RED = "\033[31m"
 
-    _TRUE_WHEN_RE = re.compile(r"[Tt]rue when\s+(.+?)(?:\.|$)", re.IGNORECASE)
+    # Shared with spec_contract (and therefore with the contract test and the
+    # generator), so the rule the validator checks is byte-for-byte the rule this
+    # evaluates. Previously a private copy here silently truncated decimals.
+    _TRUE_WHEN_RE = spec_contract.TRUE_WHEN_RE
 
     def _rule_eval(self, desc: str, sensor_eval: dict):
         m = self._TRUE_WHEN_RE.search(desc)
