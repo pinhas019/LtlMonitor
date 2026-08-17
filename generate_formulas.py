@@ -483,7 +483,7 @@ def main():
         "--api-url",
         "--ollama-url",
         dest="api_url",
-        default="http://192.168.140.111/developer-api/v1",
+        default="http://192.168.140.101/developer-api/v1",
         help="LLM API base URL.",
     )
     parser.add_argument(

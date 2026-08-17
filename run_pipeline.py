@@ -163,7 +163,7 @@ Examples:
     parser.add_argument("--description", "-d", type=str,
                         help="Natural language description of the robot skill.")
     parser.add_argument("--api-url", "--ollama-url", dest="api_url",
-                        default="http://192.168.140.111/developer-api/v1",
+                        default="http://192.168.140.101/developer-api/v1",
                         help="LLM API base URL.")
     parser.add_argument("--model", default="Gemma4",
                         help="LLM model name (default: Gemma4).")

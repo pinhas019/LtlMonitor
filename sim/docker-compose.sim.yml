@@ -87,7 +87,7 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
-    command: ["--adapter", "mujoco", "--model", "${LLM_MODEL:-Gemma4}", "--api-url", "${LLM_API_URL:-http://192.168.140.111/developer-api/v1}"]
+    command: ["--adapter", "mujoco", "--model", "${LLM_MODEL:-Gemma4}", "--api-url", "${LLM_API_URL:-http://192.168.140.101/developer-api/v1}"]
     volumes:
       - ../sensor_adapter.py:/app/sensor_adapter.py
       - ../vision_mixin.py:/app/vision_mixin.py
