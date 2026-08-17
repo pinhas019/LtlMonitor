@@ -18,18 +18,41 @@ from rclpy.node import Node
 
 import g1_sensors
 from g1_real_frame import remap_optical_to_body
-from sensor_adapter import SensorAdapter
+from sensor_adapter import Freshness, SensorAdapter
 from stuck_detector import StuckStreak
 from vision_mixin import VisionScoreMixin
 
+# Sources whose silence is unsafe. /vision/goal_similarity is deliberately NOT
+# here: run_visual_goal_matcher.py is optional, so counting it would peg
+# confidence below 1.0 on every run that does not use visual goal confirmation.
+_TRACKED_SOURCES = ("odom", "points", "status")
+
 
 class RealG1Adapter(SensorAdapter, VisionScoreMixin):
-    def __init__(self, stuck_ticks: int = 10):
+    def __init__(
+        self,
+        stuck_ticks: int = 10,
+        stale_after: float = 2.0,
+        upright_tilt_max: float = 0.5,
+        upright_height_min: float = 0.5,
+        clock=None,
+    ):
         VisionScoreMixin.__init__(self)
         self.odom_data: dict = {}
         self.scan_data: dict = {}
         self.nav_data: dict = {}
         self._streak = StuckStreak(threshold=stuck_ticks)
+        # Hardware knobs -- both defaults are the pre-existing hardcoded values and
+        # NEITHER has been checked against the real robot. upright_height_min in
+        # particular is a guess at the G1's standing pelvis height; calibrate from a
+        # recorded run before trusting `upright`/`fell_over`.
+        self.upright_tilt_max = float(upright_tilt_max)
+        self.upright_height_min = float(upright_height_min)
+        self._fresh = Freshness(
+            _TRACKED_SOURCES,
+            stale_after=stale_after,
+            **({"clock": clock} if clock is not None else {}),
+        )
 
     def register_subscriptions(self, node: Node) -> None:
         node.create_subscription(Odometry, "/t265/odom/sample", self._odom_cb, 10)
@@ -41,7 +64,11 @@ class RealG1Adapter(SensorAdapter, VisionScoreMixin):
         x, y, z = msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z
         q = msg.pose.pose.orientation
         roll, pitch, _yaw = g1_sensors.quat_to_euler(q.x, q.y, q.z, q.w)
-        upright = g1_sensors.base_upright(roll, pitch, z)
+        upright = g1_sensors.base_upright(
+            roll, pitch, z,
+            tilt_max=self.upright_tilt_max, height_min=self.upright_height_min,
+        )
+        self._fresh.stamp("odom")
         self.odom_data = {
             "position": {"x": round(x, 2), "y": round(y, 2)},
             "linear_vel": round(msg.twist.twist.linear.x, 2),
@@ -57,6 +84,7 @@ class RealG1Adapter(SensorAdapter, VisionScoreMixin):
         min_range = g1_sensors.min_range_from_points(
             remap_optical_to_body(raw), z_lo=0.1, z_hi=1.5, default=10.0
         )
+        self._fresh.stamp("points")
         self.scan_data = {"min_range": round(min_range, 2)}
 
     def _status_cb(self, msg: String):
@@ -69,6 +97,7 @@ class RealG1Adapter(SensorAdapter, VisionScoreMixin):
 
         state = data.get("state", "waiting_inputs")
         self._streak.update(state)
+        self._fresh.stamp("status")
 
         self.nav_data = {
             "mode": data.get("mode", "MANUAL"),
@@ -96,8 +125,15 @@ class RealG1Adapter(SensorAdapter, VisionScoreMixin):
             "image_similarity_to_goal": self.vision_score,
         })
 
+    def stale_sources(self) -> tuple[str, ...]:
+        return self._fresh.stale_sources()
+
+    def confidence(self) -> float:
+        return self._fresh.confidence()
+
     def describe(self) -> dict:
         pos = self.odom_data.get("position", {})
+        stale = self.stale_sources()
         return {
             "pos": f"({pos.get('x', 'N/A')}, {pos.get('y', 'N/A')})",
             "min_range": self.scan_data.get("min_range", "N/A"),
@@ -105,4 +141,5 @@ class RealG1Adapter(SensorAdapter, VisionScoreMixin):
             "nav_state": self.nav_data.get("state", "N/A"),
             "blocked_streak": f"{self._streak.count}/{self._streak.threshold}",
             "goal_similarity": self.vision_score,
+            "stale": ",".join(stale) if stale else "—",
         }

@@ -13,6 +13,7 @@ Usage:
 """
 
 import json
+import inspect
 import re
 import sys
 import urllib.request
@@ -35,12 +36,16 @@ ADAPTERS: dict[str, str] = {
 }
 
 
-def _load_adapter(name: str) -> SensorAdapter:
+def _load_adapter(name: str, **kwargs) -> SensorAdapter:
     if name not in ADAPTERS:
         raise SystemExit(f"Unknown --adapter '{name}'. Choices: {sorted(ADAPTERS)}")
     module_name, class_name = ADAPTERS[name].split(":")
     module = __import__(module_name)
-    return getattr(module, class_name)()
+    cls = getattr(module, class_name)
+    # Only forward tuning knobs the chosen adapter actually accepts, so a knob that
+    # is meaningful for one environment does not break construction of the others.
+    accepted = inspect.signature(cls).parameters
+    return cls(**{k: v for k, v in kwargs.items() if k in accepted})
 
 
 class GenericClientNode(Node):
@@ -185,6 +190,11 @@ class GenericClientNode(Node):
             "state_desc": dict(self.state_desc),
             "sensor_eval": self.adapter.get_sensor_eval(),
             "debug": self.adapter.describe(),
+            # Sampled here, WITH the sensor_eval it describes -- not in the worker
+            # thread, which runs later and would report freshness at publish time
+            # rather than at observation time.
+            "confidence": self.adapter.confidence(),
+            "stale": list(self.adapter.stale_sources()),
         }
         self.query_queue.put(snapshot)
         phase = self.state_desc.get("phase") or "—"
@@ -336,8 +346,21 @@ Reply with ONLY a JSON object. No markdown, no explanation.
         print(f"  {B}└{'─' * 50}{R}")
         print()
 
+        # Reserved keys travel beside the AP booleans (same convention as __reset__/
+        # __done__). Guard expressions never reference a dunder name, so this is
+        # inert for evaluation; main.py reads it for the risk block.
+        payload = dict(final_evals)
+        payload["__confidence__"] = task.get("confidence", 1.0)
+        stale = task.get("stale") or []
+        if stale:
+            payload["__stale__"] = stale
+            self.get_logger().warn(
+                f"stale sensor source(s): {', '.join(stale)} — confidence "
+                f"{payload['__confidence__']:.2f}; APs derived from them are not trustworthy"
+            )
+
         msg = String()
-        msg.data = json.dumps(final_evals)
+        msg.data = json.dumps(payload)
         self.eval_pub.publish(msg)
 
 
@@ -349,9 +372,23 @@ def main():
                          help="Which environment's sensor topics to evaluate against.")
     parser.add_argument("--api-url", "--ollama-url", dest="api_url", default="http://192.168.140.111/developer-api/v1")
     parser.add_argument("--model", default="Gemma4")
+    parser.add_argument("--stale-after", type=float, default=2.0,
+                        help="Seconds without a message before a sensor source counts "
+                             "as stale and drops __confidence__. Must exceed the slowest "
+                             "tracked topic's period (UNCALIBRATED against the real robot).")
+    parser.add_argument("--upright-tilt-max", type=float, default=0.5,
+                        help="Max |roll|/|pitch| (rad) still considered upright.")
+    parser.add_argument("--upright-height-min", type=float, default=0.5,
+                        help="Min base height (m) still considered upright. UNCALIBRATED "
+                             "against the real G1's standing pelvis height.")
     args = parser.parse_args(args=remove_ros_args(args=sys.argv)[1:])
 
-    adapter = _load_adapter(args.adapter)
+    adapter = _load_adapter(
+        args.adapter,
+        stale_after=args.stale_after,
+        upright_tilt_max=args.upright_tilt_max,
+        upright_height_min=args.upright_height_min,
+    )
 
     rclpy.init(args=sys.argv)
     node = GenericClientNode(adapter, args.api_url, args.model)

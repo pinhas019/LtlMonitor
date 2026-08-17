@@ -20,11 +20,58 @@ APs against the contract without needing a ROS environment.
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rclpy.node import Node
+
+
+class Freshness:
+    """Per-source last-message clock, so a DEAD topic is distinguishable from a
+    topic that is reporting benign values.
+
+    This exists because every adapter's get_sensor_eval() must return a full key
+    set before any message has arrived, so the defaults are necessarily benign --
+    e.g. min_range=10.0 ("nothing nearby"). If the publisher then dies, that
+    default silently reads as "clear corridor" and no atomic proposition can tell
+    the difference. Freshness answers the question the sensor_eval dict cannot:
+    is this number actually being refreshed?
+
+    A source that has NEVER produced a message counts as stale: "no data yet" and
+    "data stopped" are equally unsafe to treat as an observation.
+
+    `clock` is injected so tests can drive time directly instead of sleeping.
+    """
+
+    def __init__(self, sources, stale_after: float = 2.0, clock=time.monotonic):
+        self._stale_after = float(stale_after)
+        self._clock = clock
+        self._last: dict[str, float | None] = {s: None for s in sources}
+
+    def stamp(self, source: str) -> None:
+        if source not in self._last:
+            raise KeyError(f"unknown freshness source {source!r}; declared: {sorted(self._last)}")
+        self._last[source] = self._clock()
+
+    def stale_sources(self) -> tuple[str, ...]:
+        now = self._clock()
+        return tuple(
+            s for s, t in sorted(self._last.items())
+            if t is None or (now - t) > self._stale_after
+        )
+
+    def confidence(self) -> float:
+        """Fraction of declared sources currently reporting. 1.0 = all fresh.
+
+        ponytail: one scalar over all sources, not per-AP. Per-AP confidence needs
+        an AP->source dependency map; add that only once a guard actually needs to
+        distinguish "my inputs are stale" from "some other sensor is stale".
+        """
+        if not self._last:
+            return 1.0
+        return 1.0 - len(self.stale_sources()) / len(self._last)
 
 # Single source of truth for what every adapter's get_sensor_eval() must return.
 # formulas_g1.json's rule-AP expressions may only reference these identifiers (checked
@@ -83,3 +130,18 @@ class SensorAdapter(ABC):
         nav_state) without generic_client.py needing to know their names.
         """
         return {}
+
+    # -- freshness -----------------------------------------------------------
+    # Deliberately NOT part of sensor_eval: adding keys there would change the
+    # CANONICAL_SENSOR_EVAL_KEYS contract and every formulas_*.json rule that is
+    # checked against it. Freshness travels beside the observation instead, as
+    # the reserved __confidence__ key on /ltl/evaluations.
+
+    def stale_sources(self) -> tuple[str, ...]:
+        """Names of subscribed sources with no recent message. Default: assume
+        fresh, so adapters that do not track freshness behave exactly as before."""
+        return ()
+
+    def confidence(self) -> float:
+        """Confidence in this tick's sensor_eval, 0.0-1.0. Default 1.0."""
+        return 1.0

@@ -575,6 +575,11 @@ class LtlMonitorNode(Node):
         self.phase_violation_count = 0
         self.phase_step_count = 0     # steps elapsed in the current phase
         self.halted = False
+        # Confidence in the latest observation, from the evaluator's reserved
+        # __confidence__ key (sensor freshness). 1.0 until told otherwise, so an
+        # evaluator that does not report it behaves exactly as before.
+        self._confidence = 1.0
+        self._stale_sources: list = []
 
         # Watch formulas file for changes
         self.formulas_file = args.formulas_file
@@ -868,7 +873,16 @@ class LtlMonitorNode(Node):
         print(f"  {BOLD}{'═' * 64}{RESET}\n")
 
     def _halt(self, reason: str) -> None:
-        """Terminal state reached — signal LLM client then shut down both nodes."""
+        """Terminal state reached — signal LLM client then shut down both nodes.
+
+        In --passive mode this degrades to _enter_idle: a passive monitor exists to
+        observe every episode, so ending the process at the first fault would throw
+        away the rest of the session. The evaluator only shuts down on state=="halt",
+        so routing here keeps BOTH nodes alive.
+        """
+        if getattr(self.args, "passive", False):
+            self._enter_idle(f"[passive] {reason}")
+            return
         self.halted = True
         RED = "\033[31m"
         print(f"\n{BOLD}{'═' * 64}{RESET}")
@@ -950,6 +964,11 @@ class LtlMonitorNode(Node):
                 self._reset_for_new_skill()
             # All other messages are ignored while idle
             return
+
+        # Reserved keys are metadata about the observation, not part of it. Strip
+        # them before stepping so they can never reach a guard's eval namespace.
+        self._confidence = float(observation.pop("__confidence__", 1.0))
+        self._stale_sources = list(observation.pop("__stale__", []))
 
         # Capture current automaton states before stepping
         prev_states = {m.name: m.current_state for m in self.multi.monitors}
@@ -1088,7 +1107,10 @@ class LtlMonitorNode(Node):
             }
 
         # Predictive imminence for the intervention supervisor (pre-emptive rung before
-        # the hard fault). G1 nav APs are rule-based, so trigger_confidence is 1.0.
+        # the hard fault). trigger_confidence comes from the evaluator's sensor
+        # freshness: the rule-based APs themselves are exact, but an AP computed from
+        # a topic that stopped publishing is a stale reading dressed as a fact, and
+        # the supervisor's confidence gate is what de-escalates on it.
         risk: dict = {}
         if 0 <= self.phase_idx < len(phases):
             _max_steps = phase_info["timing_bounds"].get("max_steps")
@@ -1099,7 +1121,8 @@ class LtlMonitorNode(Node):
             risk = {
                 "steps_to_timeout": _sto,
                 "violations_to_fault": _vtf,
-                "trigger_confidence": 1.0,
+                "trigger_confidence": self._confidence,
+                "stale_sources": list(self._stale_sources),
                 "warn": bool(_warn_t or _warn_p),
                 "severity": "TIMEOUT" if _warn_t else ("PROGRESS" if _warn_p else None),
             }
@@ -1151,6 +1174,13 @@ def parse_args() -> argparse.Namespace:
     formula_group.add_argument("--formulas-file", type=Path)
     parser.add_argument("--changes-only", action="store_true")
     parser.add_argument("--stop-on-violation", action="store_true")
+    parser.add_argument(
+        "--passive", action="store_true",
+        help="Observation-only mode: on a terminal state or fault, report it and go "
+             "IDLE instead of shutting both nodes down, so the monitor survives to "
+             "observe the next skill execution. Resume by publishing "
+             "{\"__reset__\": true} on /ltl/evaluations.",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("output"))
     return parser.parse_args()
 
