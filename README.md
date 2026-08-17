@@ -16,7 +16,8 @@ Layers are one-directional — `core` knows nothing about the layers above it.
 |---|---|---|
 | `skill_monitor/core/` | **Logic.** Büchi automata, the spec-contract oracle, guard/geometry helpers. No ROS, no Tk, no network. | stdlib, spot |
 | `skill_monitor/backend/` | **ROS layer.** Monitor + evaluator nodes. | core |
-| `skill_monitor/backend/adapters/` | One per **embodiment**. Each declares the sensor schema that robot provides. | core |
+| `skill_monitor/backend/adapters/` | The declarative adapter (msg lookup + decoders) and the older hand-written ones. | core |
+| `skill_monitor/adapters/` | One JSON **descriptor per embodiment**: sensor schema + which topic field feeds which key. Data, not code. | — |
 | `skill_monitor/frontend/` | **Operator surface.** Skill Center control panel. | core (via ROS topics only) |
 | `skill_monitor/describer/` | Free-language description → validated spec. | core |
 | `skill_monitor/specs/` | The specs. Reach them with `skill_monitor.spec_path("g1")`. | — |
@@ -27,6 +28,33 @@ Layers are one-directional — `core` knows nothing about the layers above it.
 The split that matters: **adapter = per embodiment, spec = per skill.** Two skills
 on one robot share an adapter and differ only in `formulas_<skill>.json`. That is
 what keeps the engine unchanged across skills.
+
+## The wire contract
+
+Everything a client needs is published as plain JSON, so nothing that watches a
+monitor has to import this package, share its filesystem, or know the skill:
+
+| topic | who publishes | what |
+|---|---|---|
+| `/ltl/manifest` | monitor (latched) | the skill: APs, formulas, phases, failure modes, terminals |
+| `/ltl/adapter` | evaluator (latched) | the robot: sensor schema, topic → key map |
+| `/ltl/state_description` | monitor, per tick | phase, AP values, sensor values, risk, failure-mode status |
+| `/ltl/required_aps` | monitor, per tick | which APs to evaluate this step |
+| `/ltl/evaluations` | evaluator | AP booleans + `__confidence__`, `__stale__`, `__sensors__` |
+| `/ltl/load_spec` | anyone | a spec to adopt, validated against the adapter schema first |
+| `/ltl/spec_status` | monitor (latched) | accepted, or the problems that got it rejected |
+
+The two manifests are TRANSIENT_LOCAL, so a panel that connects mid-mission gets
+them immediately rather than waiting for a change that may never come.
+
+## Adding a robot
+
+Write `skill_monitor/adapters/<name>.json`: a schema (or a reference to a shared
+one) and one entry per topic saying which field becomes which sensor key. Field
+paths and a handful of named extractors (`quat_to_roll_pitch`, `min_range_points`,
+`stuck_streak`, …) cover the plumbing; anything needing real math is a named
+function in `core/adapter_spec.py`, not more JSON. It is validated on load — a step
+writing a key the schema does not declare fails immediately.
 
 ## Install
 
@@ -42,9 +70,10 @@ images in `deploy/`, not by pip.
 ## Run
 
 ```bash
-python3 -m pytest                                   # 66 tests, no ROS needed
-python3 -m skill_monitor.frontend.skill_center      # control panel
-python3 -m skill_monitor.frontend.skill_center --demo      # with a fake monitor
+python3 -m pytest                                   # 105 tests, no ROS needed
+python3 -m skill_monitor.frontend.skill_center            # control panel
+python3 -m skill_monitor.frontend.skill_center --mock     # simulated monitor, no ROS
+python3 -m skill_monitor.frontend.skill_center --mock --mock-llm   # …and no LLM
 python3 -m skill_monitor.backend.monitor_node   --formulas-file skill_monitor/specs/formulas_g1.json --passive
 python3 -m skill_monitor.backend.evaluator_node --adapter real_g1
 ```
