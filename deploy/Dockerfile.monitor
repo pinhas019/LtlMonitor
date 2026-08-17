@@ -1,0 +1,25 @@
+# The monitor engine (Buchi automata + phase machine). Built separately from the
+# evaluator because only this image needs Spot, which is a ~10 min source build.
+FROM ros:humble
+
+WORKDIR /app
+
+# Spot from source, to avoid C++ ABI conflicts with the ROS packages.
+RUN apt-get update && apt-get install -y wget build-essential python3-dev graphviz && \
+    wget http://www.lrde.epita.fr/dload/spot/spot-2.12.1.tar.gz && \
+    tar -xzf spot-2.12.1.tar.gz && \
+    cd spot-2.12.1 && \
+    ./configure --prefix=/usr --disable-devel && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && rm -rf spot-2.12.1* && \
+    rm -rf /var/lib/apt/lists/*
+
+# The whole package, not a hand-listed set of files: the previous COPY list had to
+# be edited every time a module was added, and a missed one failed at runtime.
+COPY skill_monitor/ ./skill_monitor/
+COPY pyproject.toml ./
+
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app:${PYTHONPATH}
+
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && export PYTHONPATH=/app:/usr/lib/python3.10/site-packages:${PYTHONPATH} && python3 -m skill_monitor.backend.monitor_node \"$@\"", "--"]

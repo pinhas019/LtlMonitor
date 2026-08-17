@@ -1,6 +1,6 @@
 """Unit tests for the graded action ladder — pure. Run: python3 -m pytest test_monitor_action.py"""
 
-from monitor_action import Action, grade_action
+from skill_monitor.core.monitor_action import Action, grade_action
 
 
 def test_no_category_continues():

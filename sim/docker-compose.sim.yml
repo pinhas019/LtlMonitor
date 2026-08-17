@@ -27,6 +27,8 @@ services:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
     volumes:
+      # Whole package, live-editable: one mount instead of a per-file list
+      # that silently went stale whenever a module was added.
       - ./sim_config.json:/app/sim_config.json
       - ./mujoco_ros_bridge.py:/app/mujoco_ros_bridge.py
       - ./arena.xml:/app/arena.xml
@@ -44,6 +46,8 @@ services:
     depends_on:
       - mujoco-sim
     volumes:
+      # Whole package, live-editable: one mount instead of a per-file list
+      # that silently went stale whenever a module was added.
       - ./sim_config.json:/app/sim_config.json
       - ./send_goal.py:/app/send_goal.py
       - ./generate_map.py:/app/generate_map.py
@@ -61,16 +65,15 @@ services:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
     volumes:
+      # Whole package, live-editable: one mount instead of a per-file list
+      # that silently went stale whenever a module was added.
+      - ../skill_monitor:/app/skill_monitor
       # Both mounted: default command runs the generic formulas.json (what
       # run_pipeline.py generates/validates for an arbitrary skill description --
       # unrelated to G1). To exercise the G1 nav skill specifically, override at
       # `docker compose run`: `docker compose run ltl-monitor --formulas-file formulas_g1.json`.
-      - ../formulas.json:/app/formulas.json
-      - ../formulas_g1.json:/app/formulas_g1.json
       - ../output:/app/output
-      - ../main.py:/app/main.py
-      - ../monitor.py:/app/monitor.py
-    command: ["--formulas-file", "formulas.json"]
+    command: ["--formulas-file", "skill_monitor/specs/formulas.json"]
 
   # Agnostic to environment (this file drives it against MuJoCo+Nav2 via --adapter
   # mujoco) and to skill type (formulas_g1.json above is just the currently-active
@@ -89,17 +92,9 @@ services:
       - PYTHONUNBUFFERED=1
     command: ["--adapter", "mujoco", "--model", "${LLM_MODEL:-Gemma4}", "--api-url", "${LLM_API_URL:-http://192.168.140.101/developer-api/v1}"]
     volumes:
-      - ../sensor_adapter.py:/app/sensor_adapter.py
-      - ../vision_mixin.py:/app/vision_mixin.py
-      - ../stuck_detector.py:/app/stuck_detector.py
-      - ../nav2_status_map.py:/app/nav2_status_map.py
-      - ../g1_sensors.py:/app/g1_sensors.py
-      - ../g1_real_frame.py:/app/g1_real_frame.py
-      - ../adapter_real_g1.py:/app/adapter_real_g1.py
-      - ../adapter_nav2_common.py:/app/adapter_nav2_common.py
-      - ../adapter_mujoco.py:/app/adapter_mujoco.py
-      - ../adapter_isaac_lab.py:/app/adapter_isaac_lab.py
-      - ../generic_client.py:/app/generic_client.py
+      # Whole package, live-editable: one mount instead of a per-file list
+      # that silently went stale whenever a module was added.
+      - ../skill_monitor:/app/skill_monitor
     depends_on:
       - ltl-monitor
       - nav2
@@ -121,4 +116,6 @@ services:
     environment:
       - DOZZLE_BASE=/dozzle
     volumes:
+      # Whole package, live-editable: one mount instead of a per-file list
+      # that silently went stale whenever a module was added.
       - /var/run/docker.sock:/var/run/docker.sock

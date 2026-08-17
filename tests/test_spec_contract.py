@@ -7,8 +7,8 @@ matter more than most: a false PASS ships an always-false atomic proposition to 
 robot, and a false FAIL blocks a correct spec.
 """
 
-import spec_contract
-from sensor_adapter import NAV_SCHEMA, SensorAdapter
+import skill_monitor.core.spec_contract as spec_contract
+from skill_monitor.backend.adapters.base import NAV_SCHEMA, SensorAdapter
 
 NAV_KEYS = frozenset(NAV_SCHEMA)
 

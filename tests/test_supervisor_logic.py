@@ -1,7 +1,7 @@
 """Unit tests for supervisor_logic — pure, no ROS. Run: python3 -m pytest test_supervisor_logic.py"""
 
-from monitor_action import Action
-from supervisor_logic import decide_intervention
+from skill_monitor.core.monitor_action import Action
+from skill_monitor.core.supervisor_logic import decide_intervention
 
 
 def _fm(name, category, status):

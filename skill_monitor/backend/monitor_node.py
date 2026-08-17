@@ -32,8 +32,8 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-import spec_contract
-from monitor import FailureModeInfo, MonitorStatus, MultiMonitor, LTLMonitor
+import skill_monitor.core.spec_contract as spec_contract
+from skill_monitor.core.automata import FailureModeInfo, MonitorStatus, MultiMonitor, LTLMonitor
 
 # ---------------------------------------------------------------------------
 # ANSI helpers

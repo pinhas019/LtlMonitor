@@ -2,8 +2,8 @@
 
 import math
 
-import g1_sensors
-from g1_real_frame import remap_optical_to_body
+import skill_monitor.core.g1_sensors as g1_sensors
+from skill_monitor.core.g1_real_frame import remap_optical_to_body
 
 
 def test_point_directly_ahead_in_optical_frame_becomes_forward_range():

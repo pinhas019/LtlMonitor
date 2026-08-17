@@ -6,9 +6,9 @@ proposition that was never declared. Run: python3 -m pytest test_formulas_g1.py
 
 import json
 import re
-from pathlib import Path
+from skill_monitor import spec_path
 
-SPEC = json.loads((Path(__file__).parent / "formulas_g1.json").read_text())
+SPEC = json.loads(spec_path("g1").read_text())
 
 # LTL temporal operators + python logical tokens that are NOT atomic propositions.
 _NON_APS = {

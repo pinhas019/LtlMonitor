@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skill-monitor"
+version = "0.1.0"
+description = "Runtime progress monitoring for robot skills, synthesized from free-language descriptions"
+requires-python = ">=3.10"
+# Deliberately no install_requires: rclpy and spot are supplied by the ROS
+# environment / Docker image, not by pip, and core/ needs neither.
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+skill-center = "skill_monitor.frontend.skill_center:main"
+
+[tool.setuptools.packages.find]
+include = ["skill_monitor*"]
+
+[tool.setuptools.package-data]
+skill_monitor = ["specs/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

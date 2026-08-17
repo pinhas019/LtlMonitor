@@ -20,8 +20,8 @@ from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
 from rclpy.node import Node
 
-import g1_sensors
-from adapter_nav2_common import Nav2BackedAdapter
+import skill_monitor.core.g1_sensors as g1_sensors
+from skill_monitor.backend.adapters.nav2_common import Nav2BackedAdapter
 
 
 class IsaacLabAdapter(Nav2BackedAdapter):

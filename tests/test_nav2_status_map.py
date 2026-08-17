@@ -1,6 +1,6 @@
 """Unit tests for nav2_status_map.py. Run: python3 -m pytest test_nav2_status_map.py"""
 
-from nav2_status_map import nav2_status_to_state
+from skill_monitor.core.nav2_status_map import nav2_status_to_state
 
 
 def test_accepted_and_executing_both_map_to_following():

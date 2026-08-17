@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from supervisor_logic import decide_intervention
+from skill_monitor.core.supervisor_logic import decide_intervention
 
 _NAV_FAIL = frozenset({"aborted", "canceled"})
 

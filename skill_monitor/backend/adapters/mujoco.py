@@ -14,7 +14,7 @@ import math
 from sensor_msgs.msg import LaserScan
 from rclpy.node import Node
 
-from adapter_nav2_common import Nav2BackedAdapter
+from skill_monitor.backend.adapters.nav2_common import Nav2BackedAdapter
 
 
 class MujocoAdapter(Nav2BackedAdapter):

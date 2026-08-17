@@ -1,0 +1,21 @@
+# The sensor evaluator: maps one embodiment's ROS topics to atomic-proposition
+# truth values. No Spot needed -- this image is cheap to rebuild.
+FROM ros:humble
+
+WORKDIR /app
+
+# sensor_msgs_py.point_cloud2: PointCloud2 decoding, used by the real_g1 and
+# isaac_lab adapters. action_msgs (GoalStatusArray) ships with ros-base.
+RUN apt-get update && apt-get install -y ros-humble-sensor-msgs-py && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY skill_monitor/ ./skill_monitor/
+COPY pyproject.toml ./
+
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app:${PYTHONPATH}
+
+# Every adapter is baked in; --adapter selects the environment at runtime:
+#   docker run ... ltl-client --adapter real_g1
+#   docker run ... ltl-client --adapter mujoco
+#   docker run ... ltl-client --adapter isaac_lab
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 -m skill_monitor.backend.evaluator_node \"$@\"", "--"]

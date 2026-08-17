@@ -20,7 +20,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist
 
-from supervisor_logic import decide_intervention
+from skill_monitor.core.supervisor_logic import decide_intervention
 
 
 class InterventionSupervisor(Node):

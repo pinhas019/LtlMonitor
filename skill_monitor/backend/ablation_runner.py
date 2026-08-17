@@ -22,7 +22,7 @@ from rclpy.node import Node
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped
 
-from episode_outcome import classify_outcome, safety_fault_from_state
+from skill_monitor.core.episode_outcome import classify_outcome, safety_fault_from_state
 
 
 class G1EpisodeDriver(Node):

@@ -15,12 +15,12 @@ Run: python3 -m pytest test_adapter_sensor_eval_contract.py
 
 import json
 import re
-from pathlib import Path
+from skill_monitor import spec_path
 
-import spec_contract
-from sensor_adapter import NAV_SCHEMA
+import skill_monitor.core.spec_contract as spec_contract
+from skill_monitor.backend.adapters.base import NAV_SCHEMA
 
-SPEC = json.loads((Path(__file__).parent / "formulas_g1.json").read_text())
+SPEC = json.loads(spec_path("g1").read_text())
 
 def test_every_rule_ap_only_references_canonical_sensor_keys():
     unknown = set()

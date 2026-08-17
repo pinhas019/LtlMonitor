@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from monitor_action import Action, grade_action
+from skill_monitor.core.monitor_action import Action, grade_action
 
 SAFETY_CATEGORIES = frozenset({"SAFETY", "INVARIANT"})
 

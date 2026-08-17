@@ -1,6 +1,6 @@
 """Unit tests for episode_outcome — pure, no ROS. Run: python3 -m pytest test_episode_outcome.py"""
 
-from episode_outcome import classify_outcome, safety_fault_from_state
+from skill_monitor.core.episode_outcome import classify_outcome, safety_fault_from_state
 
 
 def _state(fault=None):

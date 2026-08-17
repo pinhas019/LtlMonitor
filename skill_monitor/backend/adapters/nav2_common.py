@@ -19,11 +19,11 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_action_status_default
 
-import g1_sensors
-from sensor_adapter import NAV_SCHEMA, SensorAdapter
-from stuck_detector import StuckStreak
-from nav2_status_map import nav2_status_to_state
-from vision_mixin import VisionScoreMixin
+import skill_monitor.core.g1_sensors as g1_sensors
+from skill_monitor.backend.adapters.base import NAV_SCHEMA, SensorAdapter
+from skill_monitor.core.stuck_detector import StuckStreak
+from skill_monitor.core.nav2_status_map import nav2_status_to_state
+from skill_monitor.backend.adapters.vision_mixin import VisionScoreMixin
 
 
 class Nav2BackedAdapter(SensorAdapter, VisionScoreMixin):

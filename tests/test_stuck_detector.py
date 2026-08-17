@@ -1,6 +1,6 @@
 """Unit tests for stuck_detector.py. Run: python3 -m pytest test_stuck_detector.py"""
 
-from stuck_detector import is_blocked_state, StuckStreak
+from skill_monitor.core.stuck_detector import is_blocked_state, StuckStreak
 
 
 def test_is_blocked_state_matches_exact_vocabulary():

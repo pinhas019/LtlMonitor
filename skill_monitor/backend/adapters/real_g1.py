@@ -16,11 +16,11 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from rclpy.node import Node
 
-import g1_sensors
-from g1_real_frame import remap_optical_to_body
-from sensor_adapter import NAV_SCHEMA, Freshness, SensorAdapter
-from stuck_detector import StuckStreak
-from vision_mixin import VisionScoreMixin
+import skill_monitor.core.g1_sensors as g1_sensors
+from skill_monitor.core.g1_real_frame import remap_optical_to_body
+from skill_monitor.backend.adapters.base import NAV_SCHEMA, Freshness, SensorAdapter
+from skill_monitor.core.stuck_detector import StuckStreak
+from skill_monitor.backend.adapters.vision_mixin import VisionScoreMixin
 
 # Sources whose silence is unsafe. /vision/goal_similarity is deliberately NOT
 # here: run_visual_goal_matcher.py is optional, so counting it would peg

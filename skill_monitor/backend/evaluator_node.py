@@ -24,10 +24,10 @@ import threading
 import rclpy
 from rclpy.node import Node
 
-import spec_contract
+import skill_monitor.core.spec_contract as spec_contract
 from std_msgs.msg import String
 
-from sensor_adapter import SensorAdapter
+from skill_monitor.backend.adapters.base import SensorAdapter
 
 ADAPTERS: dict[str, str] = {
     # name -> "module:ClassName", imported lazily in _load_adapter so choosing one

@@ -7,7 +7,7 @@ from a sensor reporting benign values. No ROS, no sleeping -- the clock is
 injected.
 """
 
-from sensor_adapter import Freshness, SensorAdapter
+from skill_monitor.backend.adapters.base import Freshness, SensorAdapter
 
 
 class _FakeClock:

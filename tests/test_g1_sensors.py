@@ -2,7 +2,7 @@
 
 import math
 
-from g1_sensors import base_upright, min_range_from_points, quat_to_euler
+from skill_monitor.core.g1_sensors import base_upright, min_range_from_points, quat_to_euler
 
 
 def test_identity_quat_is_level():
