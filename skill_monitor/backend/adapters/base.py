@@ -1,11 +1,14 @@
 """SensorAdapter: the seam that makes generic_client.py agnostic to which environment
 (real G1, MuJoCo sim, Isaac Lab sim, ...) it's evaluating against.
 
-Each adapter maps ONE environment's native ROS topics to the SAME sensor_eval dict
-schema (CANONICAL_SENSOR_EVAL_KEYS below). generic_client.py owns everything else (the
-/ltl/* protocol, rule/LLM AP evaluation, print formatting) unchanged regardless of
-which adapter is loaded -- swapping environments is choosing an adapter, not writing
-new evaluator code or ROS-topic translation shims.
+Each adapter maps ONE environment's native ROS topics to the sensor_eval dict its
+schema declares. Most embodiments now do that declaratively -- a JSON descriptor in
+skill_monitor/adapters/ interpreted by core/adapter_spec.py and declarative.py -- and
+the hand-written subclasses here remain for embodiments whose plumbing needs code.
+
+The evaluator owns everything else (the /ltl/* protocol, rule/LLM AP evaluation, print
+formatting) unchanged regardless of which adapter is loaded -- swapping environments is
+choosing an adapter, not writing new evaluator code or ROS-topic translation shims.
 
 Any environment whose native "path status" isn't already in the mode/state/finished
 vocabulary (e.g. Nav2's accepted/executing/succeeded/aborted/canceled) translates it
@@ -75,21 +78,18 @@ class Freshness:
         return 1.0 - len(self.stale_sources()) / len(self._last)
 
 # A SCHEMA maps each sensor_eval key to a human-readable description of its type,
-# units and meaning. It is the ONE artifact shared by three consumers:
+# units and meaning. It is the ONE artifact shared by four consumers:
 #   1. validate_sensor_eval()               -- runtime: adapter returns exactly these keys
 #   2. test_adapter_sensor_eval_contract    -- static: rules reference only these keys
 #   3. generate_formulas.py                 -- synthesis: what the LLM may write rules over
+#   4. the Skill Center, over /ltl/adapter  -- what an operator sees
 # (3) is why the values are prose and not just types: the generator has to know what
 # `nav_state == 'following'` means to produce a correct rule from a free-language
 # skill description.
 #
-# Schemas live here, in this rclpy-free module, rather than on the adapter classes:
-# the generator runs on a host with no ROS, so it must be able to read a schema
-# without importing the adapter module that implements it.
-
-# The schemas themselves now live in skill_monitor/adapters/*_schema.json, not here:
-# a schema has to be readable by the GUI and the generator, which do not import this
-# package's ROS layer at all. These names stay as the in-process view of that JSON.
+# The schemas themselves live in skill_monitor/adapters/*_schema.json, not in this
+# module: (3) and (4) do not import the ROS layer at all, so a schema they must read
+# cannot live behind a Python import of it. What follows is the in-process view.
 
 def load_schema(name: str = "nav") -> dict:
     """key -> prose, read from skill_monitor/adapters/<name>_schema.json."""

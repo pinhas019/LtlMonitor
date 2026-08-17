@@ -116,3 +116,55 @@ standing G1 first.
 **Housekeeping:** push everything (4 repos/branches unpushed); optionally
 `sudo rm -rf ~/Minigrid/minigrid/envs/cst/ltl_monitor` (root-owned `output/`
 renders are all that survive there).
+
+---
+
+# Session 2 — branch `gui-and-manifest` (2026-08-17)
+
+Branched from `dev`, 4 commits, **not pushed**. `dev` itself is still 6 ahead of
+`origin/dev`. Run `python3 -m pytest` (105 pass, no ROS needed) and
+`python3 -m skill_monitor.frontend.skill_center --mock --mock-llm` to see the panel
+without a robot.
+
+## What changed
+
+1. **Adapters are data.** `skill_monitor/adapters/{real_g1,mujoco,isaac_lab}.json`
+   declare the sensor schema AND which topic field feeds which key;
+   `core/adapter_spec.py` interprets them (pure), `backend/adapters/declarative.py`
+   is the only ROS part left (message-type lookup + four decoders). Adding a robot is
+   a JSON file. Descriptors are validated on load — a step writing an undeclared key,
+   an unknown extractor, or a schema key nothing ever produces all fail immediately.
+2. **A manifest API.** `/ltl/manifest` (skill) and `/ltl/adapter` (robot) are latched
+   JSON; `/ltl/state_description` now also carries `phase_index`, `phases`,
+   `ap_values` and `sensors`. `/ltl/load_spec` accepts a spec over the wire, validated
+   against the adapter schema, answered on `/ltl/spec_status`. Contract lives in
+   `core/manifest.py`.
+3. **Generation reads the robot's schema.** `generate_formulas.SENSOR_SCHEMA` was a
+   hardcoded list of fields no adapter provides (`distance_to_target`, `nav_status`,
+   `mean_range`, `close_objects`) — every spec generated from it was rejected by
+   `spec_contract`. Replaced by `schema_prompt(schema)` + a `generate → validate →
+   repair` loop with the LLM injected. Tested against a scripted model only.
+4. **Skill Center rewritten**: Live / Spec / Timeline tabs, all manifest-driven.
+   `--mock` runs the whole panel with no ROS; `--mock-llm` scripts the model;
+   `--tab` opens a given tab (for screenshots).
+
+## Verified
+
+- 105 pytest, `skill_center --selftest`, all pure.
+- The panel was run on screen (DISPLAY=:1) and screenshotted: Live tab (phase strip,
+  AP table with live values, sensors, failure modes), Timeline (phase transitions,
+  staleness + recovery, warn onsets), Spec tab.
+- **NOT verified against ROS**: this host has no rclpy or spot, so nothing in
+  `backend/` has been executed. The manifest topics, the latched QoS and the
+  declarative adapter's subscriptions are unrun code.
+
+## Next
+
+- Run monitor + evaluator in the Docker images and confirm `/ltl/manifest` and
+  `/ltl/adapter` appear and the panel populates from a real graph.
+- The three Python adapters are now duplicates of the JSON descriptors, kept as
+  `--adapter real_g1_py` etc. Delete them once the declarative path has run on the
+  robot; until then they are the fallback.
+- `--adapter` names: `real_g1` is now the JSON descriptor, `real_g1_py` the class.
+  Any launch script passing `--adapter real_g1` gets the declarative one.
+- Push: `dev` (6) and `gui-and-manifest` (4) are both unpushed.

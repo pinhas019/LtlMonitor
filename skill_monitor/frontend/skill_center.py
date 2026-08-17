@@ -241,7 +241,7 @@ class Discovery(threading.Thread):
             self.on_error(f"ROS unavailable: {exc}")
             return
 
-        # Only own the context if nobody else does -- --demo and any embedding
+        # Only own the context if nobody else does -- any embedding
         # process may already have initialised rclpy, and a second init raises.
         own_context = not rclpy.ok()
         if own_context:
