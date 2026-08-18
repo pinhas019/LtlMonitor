@@ -8,6 +8,15 @@ going wrong.
 The engine is skill-agnostic: navigation and manipulation differ only in their
 generated spec, not in any code here.
 
+## Start here
+
+| document | what it answers |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | what the services are, which tier each runs on, where every artifact lives, and why the monitor cannot tell a real robot from Isaac Sim |
+| [docs/api.md](docs/api.md) | the wire contract — every `/monitor/*` payload, the clock API, the gateway API |
+| [docs/clocking.md](docs/clocking.md) | the tick: when it starts, when it ends, and what "not enough data" means |
+| [docs/packages/](docs/packages/README.md) | one implementable brief per work package, with inputs, outputs and acceptance criteria |
+
 ## Layout
 
 Layers are one-directional — `core` knows nothing about the layers above it.
