@@ -1,20 +1,32 @@
-"""
-main.py — CLI entrypoint for the LTL Büchi monitor.
+"""The monitor node — steps the automata once per tick and publishes the verdict.
 
-Formulas are supplied via -f flags or a --formulas-file JSON file.
+Formulas are supplied via -f flags or a --formulas-file JSON file. `--formulas-file`
+takes a **bare spec name** as readily as a path: the compose files pass
+`formulas_g1.json` and the lookup resolves through `skill_monitor.spec_path()`, so a
+container finds the spec on its /config volume, or the packaged one if nothing is
+mounted.
 
 Usage examples:
-    python3 main.py -f "F(goal)" -f "G(!obstacle)"
-    python3 main.py --formulas-file formulas.json
+    python3 -m skill_monitor.backend.monitor_node -f "F(goal)" -f "G(!obstacle)"
+    python3 -m skill_monitor.backend.monitor_node --formulas-file formulas_g1.json
+
+Two things this node is careful about, both of which used to be wrong here:
+
+**One automaton step per tick, keyed on the received `seq`.** The step used to be driven
+by message arrival, while the evaluator publishes from a worker thread behind a queue --
+so under model backlog tick N's automaton was stepped against tick N-k's observation
+with nothing in the record to say so. `manifest.TickLedger` now decides: one step per
+distinct advancing tick index, a redelivered index changes nothing, and a gap is
+published in `missed_ticks` rather than interpolated away.
+
+**The intervention rung is decided here.** It ships inside the verdict, so the enforcing
+node has nothing left to decide and the choice is in the recorded stream rather than
+implicit in the robot's behaviour.
 
 Skill-type agnosticism: --formulas-file is just the default/initial spec. If something
 publishes a skill label on /active_skill (std_msgs/String), and a matching
-formulas_<label>.json exists beside --formulas-file, this node swaps to it -- the same
-formulas_<skill>.json convention minigrid/skill_monitor/ltl_skill_monitor.py already
-uses for MiniGrid/CoopBoxPush skills, generalized here so a G1 skill executor could use
-it too. No publisher exists for G1 yet (only one skill, navigation); this is inert
-future-proofing, not a behavior change -- with nothing publishing /active_skill,
---formulas-file remains the spec for the whole run, exactly as before.
+formulas_<label>.json exists, this node swaps to it. No publisher exists for G1 yet
+(only one skill, navigation); this is inert future-proofing, not a behavior change.
 """
 
 from __future__ import annotations
@@ -33,9 +45,32 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
+import skill_monitor
 import skill_monitor.core.manifest as manifest_mod
 import skill_monitor.core.spec_contract as spec_contract
+from skill_monitor.core import api
 from skill_monitor.core.automata import FailureModeInfo, MonitorStatus, MultiMonitor, LTLMonitor
+
+# ---------------------------------------------------------------------------
+# Legacy topics — dual-run window
+# ---------------------------------------------------------------------------
+#
+# The rename is `/ltl/*` -> `/monitor/*` (docs/api.md, "Migration from /ltl/*"). The
+# monitor sits between an evaluator that has not moved yet (P3) and a supervisor and a
+# frontend that have not moved yet (P5, P7), so for one release it speaks both: it
+# subscribes to the legacy observation topic as well as api.OBSERVATION, and publishes
+# the legacy state description alongside api.VERDICT.
+#
+# Every constant below dies with the package named against it. Nothing new may be added
+# to this block, and `tests/test_api.py` keeps this file on AWAITING_MIGRATION until it
+# is empty.
+_LEGACY_EVALUATIONS = "/ltl/evaluations"      # in  — dies when P3 publishes api.OBSERVATION
+_LEGACY_STATE_DESC = "/ltl/state_description"  # out — dies when P5 and P7 read api.VERDICT
+_LEGACY_REQUIRED_APS = "/ltl/required_aps"    # out — folded into the verdict; dies with P3
+_LEGACY_MANIFEST = "/ltl/manifest"            # out — dies with P7
+_LEGACY_ADAPTER = "/ltl/adapter"              # in  — dies with P3
+_LEGACY_LOAD_SPEC = "/ltl/load_spec"          # in  — dies with P7
+_LEGACY_SPEC_STATUS = "/ltl/spec_status"      # out — dies with P7
 
 # Latched: the spec and the adapter description change rarely and matter to every
 # late-joining client, so they are published TRANSIENT_LOCAL rather than repeated on
@@ -119,7 +154,7 @@ class SkillSpec:
         raw: dict | None = None,
     ) -> None:
         # The spec exactly as authored. Kept so the monitor can hand the whole thing
-        # to clients on /ltl/manifest without reconstructing it from parsed pieces.
+        # to clients on the manifest topic without reconstructing it from parsed pieces.
         self.raw                 = raw or {}
         self.formulas            = formulas
         self.names               = names
@@ -182,9 +217,22 @@ class SkillSpec:
         return self.names + [fm["name"] for fm in self.named_failure_modes]
 
 
-def load_formulas_from_file(path: Path) -> SkillSpec:
+def load_formulas_from_file(path) -> SkillSpec:
+    """A spec from `--formulas-file`, which may be a path OR a bare spec name.
+
+    Resolution goes through `manifest.resolve_spec_path`, i.e. through
+    `skill_monitor.spec_path()`, because the compose files pass `formulas_g1.json` and
+    expect it to be found on the /config volume -- or in the image when nothing is
+    mounted. Reading the flag as a plain relative path made a containerised monitor
+    fail to find a spec it was shipped with.
+    """
     try:
-        data = json.loads(path.read_text())
+        resolved = manifest_mod.resolve_spec_path(path)
+    except FileNotFoundError as exc:
+        print(f"Error resolving formulas file: {exc}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        data = json.loads(resolved.read_text())
     except Exception as exc:
         print(f"Error reading formulas file: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -193,8 +241,8 @@ def load_formulas_from_file(path: Path) -> SkillSpec:
 
 def spec_from_dict(data) -> SkillSpec:
     """A spec from already-parsed JSON -- the same code path whether it came off disk
-    or off /ltl/load_spec, so a pushed spec can never be interpreted differently from
-    a loaded one."""
+    or off the load_spec topic, so a pushed spec can never be interpreted differently
+    from a loaded one."""
     if isinstance(data, list):
         return SkillSpec(formulas=data, names=data, raw={"ltl_formulas": data})
 
@@ -218,7 +266,8 @@ def spec_from_dict(data) -> SkillSpec:
     )
 
 
-_PHASE_VIOLATION_LIMIT = 3  # default consecutive-step limit before a phase failure
+# Declared in core so the pure risk block and this node's phase machine cannot drift.
+_PHASE_VIOLATION_LIMIT = manifest_mod.PHASE_VIOLATION_LIMIT
 
 
 def _infer_state_annotations(
@@ -601,11 +650,33 @@ class LtlMonitorNode(Node):
         self.phase_violation_count = 0
         self.phase_step_count = 0     # steps elapsed in the current phase
         self.halted = False
-        # Confidence in the latest observation, from the evaluator's reserved
-        # __confidence__ key (sensor freshness). 1.0 until told otherwise, so an
-        # evaluator that does not report it behaves exactly as before.
+        self.paused = False
+        # Confidence in the latest observation (sensor freshness, from the evaluator).
+        # 1.0 until told otherwise, so an evaluator that does not report it behaves
+        # exactly as before.
         self._confidence = 1.0
         self._stale_sources: list = []
+        self._has_data = False
+        self._terminal: str | None = None
+
+        # The tick index is authoritative: the ledger, not message arrival, decides
+        # whether an observation may step the automaton. See manifest.TickLedger.
+        self.ledger = manifest_mod.TickLedger()
+        self._tick_seq = 0
+        self._tick_t = 0.0
+        self._missed_ticks = 0
+        #: Which observation topics have delivered at least once, so the dual-run
+        #: window is announced once per wire instead of once per tick.
+        self._wires_seen: set[str] = set()
+
+        # The clock's own pulse. `tick_hz` is the *effective* rate after any override,
+        # which is what turns a tick-denominated bound into seconds; `t` is the clock's
+        # time at the tick boundary, so a verdict is stamped with the clock that drove
+        # it rather than with this process's wall time.
+        self.tick_hz = 1.0
+        self.clock_t = 0.0
+        self.clock_seq = 0
+        self._clock_seen = False
 
         # Watch formulas file for changes
         self.formulas_file = args.formulas_file
@@ -619,49 +690,89 @@ class LtlMonitorNode(Node):
         # MiniGrid/CoopBoxPush). No publisher exists for G1 yet -- this is inert until
         # one does, and behavior is unchanged: falls back to --formulas-file/-f, same
         # as today, whenever no matching formulas_<label>.json is found.
-        self.skills_dir = (
-            os.path.dirname(os.path.abspath(self.formulas_file)) if self.formulas_file else "."
-        )
+        # Resolved the same way as --formulas-file, so a skill switch finds a spec on
+        # the mounted volume rather than only beside whatever file this run started on.
+        self.skills_dir = skill_monitor.specs_dir()
         self.active_skill_label: str | None = None
         self.active_skill_sub = self.create_subscription(
             String, '/active_skill', self.active_skill_callback, 10
         )
 
-        self.aps_pub = self.create_publisher(String, '/ltl/required_aps', 10)
-        self.state_desc_pub = self.create_publisher(String, '/ltl/state_description', 10)
-        self.eval_sub = self.create_subscription(String, '/ltl/evaluations', self.eval_callback, 10)
+        # ── The verdict, and the pulse that paces it ──────────────
+        self.verdict_pub = self.create_publisher(String, api.VERDICT, 10)
+        self.create_subscription(String, api.TICK, self.tick_callback, 10)
+        self.create_subscription(String, api.OBSERVATION, self.observation_callback, 10)
+        self.create_subscription(String, api.COMMAND, self.command_callback, 10)
+
+        # Dual subscription for one release. P3 still publishes the legacy observation
+        # topic, and the sim stack has to keep running at every commit, so both are
+        # accepted and each arrival says which wire it came in on. DELETE THIS
+        # SUBSCRIPTION, AND `_LEGACY_EVALUATIONS`, WHEN P3 LANDS -- from then on a
+        # message here means something is running an image older than the contract.
+        self.create_subscription(
+            String, _LEGACY_EVALUATIONS, self.legacy_eval_callback, 10
+        )
+        self._legacy_warned = False
 
         # The manifest is the whole spec, latched: a GUI or any other client that
         # connects mid-mission gets it immediately instead of having to find the file
         # on a disk it may not share, and needs no import of this package to read it.
-        self.manifest_pub = self.create_publisher(String, '/ltl/manifest', _LATCHED)
-        self.spec_status_pub = self.create_publisher(String, '/ltl/spec_status', _LATCHED)
+        self.manifest_pub = self.create_publisher(String, api.MANIFEST, _LATCHED)
+        self.spec_status_pub = self.create_publisher(String, api.SPEC_STATUS, _LATCHED)
 
         # A spec can also arrive over the wire. Same code path as a file load, and
         # validated against the adapter's schema first -- a spec whose rules mention
         # fields this robot does not publish would otherwise run as silently-false APs.
-        self.create_subscription(String, '/ltl/load_spec', self.load_spec_callback, 10)
+        self.create_subscription(String, api.LOAD_SPEC, self.load_spec_callback, 10)
         self.adapter_manifest: dict = {}
-        self.create_subscription(String, '/ltl/adapter', self.adapter_callback, _LATCHED)
+        self.create_subscription(String, api.ADAPTER, self.adapter_callback, _LATCHED)
 
-        # Latest sensor_eval and AP truth values from the evaluator, passed through to
-        # state_description so a client sees the numbers the APs were computed from,
-        # not just the APs' names.
+        # ── Legacy mirrors, same dual-run window ──────────────────
+        self.aps_pub = self.create_publisher(String, _LEGACY_REQUIRED_APS, 10)
+        self.state_desc_pub = self.create_publisher(String, _LEGACY_STATE_DESC, 10)
+        self.legacy_manifest_pub = self.create_publisher(
+            String, _LEGACY_MANIFEST, _LATCHED
+        )
+        self.legacy_spec_status_pub = self.create_publisher(
+            String, _LEGACY_SPEC_STATUS, _LATCHED
+        )
+        self.create_subscription(
+            String, _LEGACY_LOAD_SPEC, self.load_spec_callback, 10
+        )
+        self.create_subscription(
+            String, _LEGACY_ADAPTER, self.adapter_callback, _LATCHED
+        )
+
+        # Latest sensor values and AP truth values from the evaluator, passed through
+        # so a client sees the numbers the APs were computed from, not just the APs'
+        # names.
         self.sensors: dict = {}
         self.last_observation: dict = {}
 
-        self.timer = self.create_timer(1.0, self.publish_current_state)
+        # A heartbeat, not a step: it re-announces the current verdict for late joiners
+        # and picks up an edited spec file. It never advances the automaton -- only an
+        # observation the ledger admitted does that.
+        self.timer = self.create_timer(1.0, self.heartbeat)
 
-        self.get_logger().info('LTL Monitor ROS 2 Node started.')
+        self.get_logger().info(
+            f"Monitor node started. Verdict on {api.VERDICT}; also mirroring "
+            f"{_LEGACY_STATE_DESC} until P5 and P7 land."
+        )
 
-        # Publish initial state
+        # Announce what this monitor is. Deliberately NOT a verdict: the verdict topic
+        # carries exactly one message per tick that actually happened, and a startup
+        # frame for a tick nobody clocked would be the first lie in the record. A
+        # standalone monitor with no evaluator is discoverable from its latched
+        # manifest, which is what a panel needs to describe it.
         self.publish_manifest()
-        self.publish_current_state()
+        self.publish_legacy_state()
 
     # -- manifest / spec push -------------------------------------------------
 
     def publish_manifest(self, source: str | None = None) -> None:
-        self.manifest_pub.publish(String(data=json.dumps(self.manifest(source))))
+        payload = json.dumps(self.manifest(source))
+        self.manifest_pub.publish(String(data=payload))
+        self.legacy_manifest_pub.publish(String(data=payload))
 
     def manifest(self, source: str | None = None) -> dict:
         return manifest_mod.skill_manifest(
@@ -674,6 +785,55 @@ class LtlMonitorNode(Node):
             self.adapter_manifest = json.loads(msg.data)
         except Exception as exc:
             self.get_logger().warn(f"Unparseable adapter manifest: {exc}")
+            return
+        tick_hz = self.adapter_manifest.get("tick_hz")
+        if isinstance(tick_hz, (int, float)) and tick_hz > 0 and not self._clock_seen:
+            # A fallback only: the pulse is the authority on the effective rate. This
+            # keeps `seconds_to_timeout` honest when no clock is on the graph yet.
+            self.tick_hz = float(tick_hz)
+
+    def tick_callback(self, msg: String) -> None:
+        """The clock's pulse. It does NOT step the automaton.
+
+        The monitor advances on the tick index carried *inside the observation*, so that
+        the automaton and the evidence it consumes are the same tick. The pulse supplies
+        the effective rate and the clock's own time, and nothing else.
+        """
+        try:
+            tick = json.loads(msg.data)
+        except Exception as exc:
+            self.get_logger().warn(f"Unparseable tick: {exc}")
+            return
+        problems = api.validate_tick(tick)
+        if problems:
+            self.get_logger().warn(f"Malformed tick, ignoring: {problems}")
+            return
+        self._clock_seen = True
+        self.clock_seq = tick["seq"]
+        self.clock_t = float(tick["t"])
+        if tick["tick_hz"] > 0:
+            self.tick_hz = float(tick["tick_hz"])
+
+    def command_callback(self, msg: String) -> None:
+        """`arm` | `reset` | `pause` | `resume` from the frontend."""
+        try:
+            payload = json.loads(msg.data)
+        except Exception as exc:
+            self.get_logger().warn(f"Unparseable command: {exc}")
+            return
+        problems = api.validate_command(payload)
+        if problems:
+            self.get_logger().warn(f"Rejected command: {problems}")
+            return
+        command = payload["command"]
+        self.get_logger().info(f"Command: {command}")
+        if command in ("arm", "reset"):
+            self.paused = False
+            self._reset_for_new_skill()
+        elif command == "pause":
+            self.paused = True
+        elif command == "resume":
+            self.paused = False
 
     def load_spec_callback(self, msg: String) -> None:
         try:
@@ -701,8 +861,11 @@ class LtlMonitorNode(Node):
         return spec_contract.validate(data, schema_keys)
 
     def _spec_status(self, ok: bool, problems: list, skill_name: str = "") -> None:
-        self.spec_status_pub.publish(String(data=json.dumps(
-            {"ok": ok, "problems": problems, "skill_name": skill_name})))
+        payload = json.dumps(api.build_spec_status(
+            ok=ok, problems=problems, skill_name=skill_name,
+        ))
+        self.spec_status_pub.publish(String(data=payload))
+        self.legacy_spec_status_pub.publish(String(data=payload))
 
     def check_formulas_file_changed(self) -> bool:
         if not self.formulas_file or not os.path.exists(self.formulas_file):
@@ -716,15 +879,21 @@ class LtlMonitorNode(Node):
             pass
         return False
 
-    def is_terminal_observation(self, observation: dict[str, bool]) -> bool:
+    def terminal_observation(self, observation: dict[str, bool]) -> str | None:
+        """`"SUCCESS"`, `"FAILURE"`, or None if the run has not ended.
+
+        Which one is now reported rather than just "one of them happened": the verdict
+        carries `terminal`, and a consumer reading a recorded stream should not have to
+        re-evaluate the spec's conditions to find out how the episode finished.
+        """
         # Skip terminal checks until the skill has actually started:
         # - When phases are defined, wait until the first phase is entered.
         # - Always enforce a minimum step count (grace period) to absorb
         #   stale sensor state and LLM warm-up hallucinations.
         if self.step_idx < 2:
-            return False
+            return None
         if self.has_phases and self.phase_idx < 0:
-            return False
+            return None
 
         success_cond_raw = getattr(self.spec, "terminal_success_condition", "False")
         success_cond = _sanitize_condition(success_cond_raw)
@@ -732,7 +901,7 @@ class LtlMonitorNode(Node):
             if eval(success_cond, {"__builtins__": {}}, observation):
                 desc = getattr(self.spec, "terminal_success_description", "")
                 self.get_logger().info(f"Terminal SUCCESS: {success_cond_raw} ({desc})")
-                return True
+                return "SUCCESS"
         except Exception as e:
             self.get_logger().warn(f"Failed to evaluate terminal success condition '{success_cond_raw}': {e}")
 
@@ -742,20 +911,21 @@ class LtlMonitorNode(Node):
             if eval(failure_cond, {"__builtins__": {}}, observation):
                 desc = getattr(self.spec, "terminal_failure_description", "")
                 self.get_logger().info(f"Terminal FAILURE: {failure_cond_raw} ({desc})")
-                return True
+                return "FAILURE"
         except Exception as e:
             self.get_logger().warn(f"Failed to evaluate terminal failure condition '{failure_cond_raw}': {e}")
 
-        return False
+        return None
 
     def active_skill_callback(self, msg: String):
         label = msg.data.strip()
         if not label or label == self.active_skill_label:
             return
-        skill_path = Path(self.skills_dir) / f"formulas_{label}.json"
-        if not skill_path.exists():
+        try:
+            skill_path = manifest_mod.resolve_spec_path(label)
+        except FileNotFoundError as exc:
             self.get_logger().warn(
-                f"No spec file for active skill '{label}' (expected {skill_path}) — "
+                f"No spec for active skill '{label}' ({exc}) — "
                 f"continuing with the current spec ('{self.spec.skill_name}')."
             )
             return
@@ -765,13 +935,13 @@ class LtlMonitorNode(Node):
 
     def reload_specs(self, formulas_path: str | None = None, spec_data: dict | None = None):
         if spec_data is not None:
-            # Pushed over /ltl/load_spec: there is no file, and adopting one would
+            # Pushed over the load_spec topic: there is no file, and adopting one would
             # make the file watcher immediately reload over the top of it.
             self.get_logger().info("Reloading from pushed spec...")
             spec = spec_from_dict(spec_data)
             self.formulas_file = None
         else:
-            path = formulas_path or self.formulas_file
+            path = manifest_mod.resolve_spec_path(formulas_path or self.formulas_file)
             self.get_logger().info(f"Reloading formulas and AP specs from {path}...")
             spec = load_formulas_from_file(path)
             self.formulas_file = path
@@ -984,12 +1154,17 @@ class LtlMonitorNode(Node):
             self._enter_idle(f"[passive] {reason}")
             return
         self.halted = True
+        self._terminal = self._terminal or "FAILURE"
         RED = "\033[31m"
         print(f"\n{BOLD}{'═' * 64}{RESET}")
         print(f"{BOLD}{RED}  ■  MONITOR HALTED{RESET}")
         print(f"  Reason : {reason}")
         print(f"{BOLD}{'═' * 64}{RESET}\n")
         self.get_logger().info(f"Monitor halting. Reason: {reason}")
+
+        # The verdict carrying `terminal` is published by the caller, once, after this
+        # returns -- so the run's last message is the verdict that ended it and not a
+        # second frame for the same tick.
 
         # Tell the LLM client to shut down
         aps_msg = String()
@@ -1011,13 +1186,14 @@ class LtlMonitorNode(Node):
     def _enter_idle(self, reason: str) -> None:
         """Suspend monitoring and wait for reset (recoverable — e.g. progress failure)."""
         self.halted = True
+        self._terminal = self._terminal or "FAILURE"
         YELLOW = "\033[33m"
         print(f"\n{BOLD}{'═' * 64}{RESET}")
         print(f"{BOLD}{YELLOW}  ◉  MONITOR IDLE{RESET}")
         print(f"  Reason   : {reason}")
         print(f"  Awaiting : new skill execution")
-        print(f"  Resume   : send {{\"__reset__\": true}} on /ltl/evaluations")
-        print(f"           : or update formulas.json to reload automatically")
+        print(f"  Resume   : send {{\"command\": \"reset\"}} on {api.COMMAND}")
+        print(f"           : or update the spec file to reload automatically")
         print(f"{BOLD}{'═' * 64}{RESET}\n")
         self.get_logger().info(f"Monitor entering IDLE state. Reason: {reason}")
 
@@ -1036,42 +1212,128 @@ class LtlMonitorNode(Node):
         self.prev_statuses = dict(self.multi.statuses())
         self.step_idx = 0
         self.halted = False
+        self._terminal = None
+        self._has_data = False
+        # The episode restarts; the tick stream does not. `last_seq` deliberately
+        # survives, so a redelivery from before the reset cannot be mistaken for the
+        # first tick of the new episode.
+        self.ledger.reset()
         self._reset_phase_state()
         print(f"\n{BOLD}{'─' * 64}{RESET}")
         print(f"{BOLD}  Monitoring Trace (New Execution){RESET}")
         print(f"{BOLD}{'─' * 64}{RESET}")
         _print_step_block("init", self.multi, {}, "Idle")
-        self.publish_current_state()
+        self.publish_legacy_state()
 
-    def eval_callback(self, msg: String):
+    # -- one tick in, one verdict out -----------------------------------------
+
+    def observation_callback(self, msg: String) -> None:
+        self._on_observation(msg.data, wire=api.OBSERVATION)
+
+    def legacy_eval_callback(self, msg: String) -> None:
+        """DIES WHEN P3 LANDS, together with `_LEGACY_EVALUATIONS`.
+
+        Until then the evaluator publishes only on the legacy topic, and a monitor that
+        listened solely to api.OBSERVATION would run a whole release seeing nothing.
+        """
+        self._on_observation(msg.data, wire=_LEGACY_EVALUATIONS)
+
+    def _on_observation(self, data: str, *, wire: str) -> None:
         try:
-            observation = json.loads(msg.data)
-        except Exception as e:
-            self.get_logger().error(f"Failed to parse evaluation JSON: {e}")
+            payload = json.loads(data)
+        except Exception as exc:
+            self.get_logger().error(f"Failed to parse observation from {wire}: {exc}")
             return
 
-        # Check for termination signal
-        if observation.get("__done__", False):
+        obs = manifest_mod.normalize_observation(payload)
+        if obs is None:
+            self.get_logger().warn(f"Ignoring non-object observation from {wire}")
+            return
+
+        # Which wire carried it. Logged the first time each is seen and then left
+        # alone: the point is that a stack still on the legacy topic says so, not that
+        # a line is printed per tick for the rest of the run.
+        if wire not in self._wires_seen:
+            self._wires_seen.add(wire)
+            note = " (legacy — P3 has not migrated yet)" if obs.legacy else ""
+            self.get_logger().info(f"Observations arriving on {wire}{note}")
+
+        if obs.control == "done":
             self.get_logger().info("Received termination signal.")
             _print_summary(self.multi)
             rclpy.shutdown()
             return
 
-        # While halted, only accept an explicit reset signal
+        # While halted, only an explicit reset restarts the run.
         if self.halted:
-            if observation.get("__reset__", False):
-                self.get_logger().info("Reset signal received. Starting new skill execution...")
+            if obs.control == "reset":
+                self.get_logger().info(
+                    "Reset signal received. Starting new skill execution..."
+                )
                 self._reset_for_new_skill()
-            # All other messages are ignored while idle
             return
 
-        # Reserved keys are metadata about the observation, not part of it. Strip
-        # them before stepping so they can never reach a guard's eval namespace.
-        self._confidence = float(observation.pop("__confidence__", 1.0))
-        self._stale_sources = list(observation.pop("__stale__", []))
-        self.sensors = dict(observation.pop("__sensors__", {}) or {})
-        self.last_observation = dict(observation)
+        if self.paused:
+            return
 
+        # The tick index decides, not the arrival. A redelivered tick must not advance
+        # a debounce or a phase counter a second time, so it is refused here rather
+        # than deduplicated somewhere downstream where the counters already moved.
+        admission = self.ledger.admit(obs.seq)
+        if not admission.step:
+            self.get_logger().warn(
+                f"Tick {admission.seq} {admission.reason}; already stepped through "
+                f"seq {self.ledger.last_seq} — not stepping again"
+            )
+            return
+        if admission.missed:
+            # Counted and published, never interpolated: fabricating the observations
+            # that did not arrive would put invented evidence in the automaton's past.
+            self.get_logger().warn(
+                f"Missed {admission.missed} tick(s) before seq {admission.seq}"
+            )
+
+        self._step_once(obs, admission)
+
+    def _step_once(self, obs, admission) -> None:
+        """Advance the automata and the phase machine exactly one tick, then publish.
+
+        Publishing happens here, once, at the end -- including on the paths that end
+        the run, so a recorded stream always finishes with the verdict that finished it.
+        """
+        self._confidence = obs.confidence
+        self._stale_sources = list(obs.stale_sources)
+        self.sensors = dict(obs.sensors)
+        self.last_observation = dict(obs.ap_values)
+        self._has_data = obs.has_data
+        self._tick_seq = admission.seq
+        self._missed_ticks = admission.missed
+        # The observation's own `t` is the boundary of the tick it describes, which is
+        # the timestamp this verdict belongs at; the clock's latest pulse is the
+        # fallback for a legacy payload that carries no envelope.
+        self._tick_t = float(obs.t) if obs.t is not None else self.clock_t
+
+        if obs.unknown_aps:
+            # Three-valued APs are P10's. Until then an AP that could not be evaluated
+            # is simply absent from ap_values; logged so it is not invisible, but the
+            # step is unchanged by it.
+            self.get_logger().info(
+                f"unknown_aps at seq {admission.seq}: {list(obs.unknown_aps)}"
+            )
+
+        self._advance(dict(obs.ap_values))
+
+        if rclpy.ok():
+            self.publish_verdict()
+            # A halt or idle path has already sent its own legacy signal; publishing
+            # the generic one on top would overwrite `state: halt` with `state: idle`,
+            # and the evaluator shuts down only on the former.
+            if not self.halted:
+                self.publish_legacy_state()
+
+    def _advance(self, observation: dict) -> None:
+        """The step itself. Returns early on every run-ending path; the caller
+        publishes afterwards either way."""
         # Capture current automaton states before stepping
         prev_states = {m.name: m.current_state for m in self.multi.monitors}
 
@@ -1092,8 +1354,6 @@ class LtlMonitorNode(Node):
             self.current_phase = phase_name
             if self.phase_idx != prev_phase_idx and self.phase_idx >= 0:
                 self._print_phase_context()
-        else:
-            pass
 
         # Print standard console step block
         _print_step_block(
@@ -1122,12 +1382,14 @@ class LtlMonitorNode(Node):
                 f"Named failure [{finfo.fault_category}] '{finfo.name}': {finfo.description}"
             )
             _print_summary(self.multi)
+            self._terminal = "FAILURE"
             self._halt(f"[{finfo.fault_category}] {finfo.name}: {finfo.description}")
             return
 
         # ── Phase failure ─────────────────────────────────────────
         if phase_fail_reason is not None:
             _print_summary(self.multi)
+            self._terminal = "FAILURE"
             if phase_recoverable:
                 self._enter_idle(phase_fail_reason)
             else:
@@ -1150,42 +1412,122 @@ class LtlMonitorNode(Node):
         self.step_idx += 1
 
         if self.args.stop_on_violation and self.multi.any_violated():
-            self.get_logger().error(f"Stopping early — formula permanently VIOLATED at step {self.step_idx}.")
+            self.get_logger().error(
+                f"Stopping early — formula permanently VIOLATED at step {self.step_idx}."
+            )
             _print_summary(self.multi)
+            self._terminal = "FAILURE"
+            self.publish_verdict()
             rclpy.shutdown()
             return
 
         # Check if we reached a terminal observation → enter idle/waiting state
-        if self.is_terminal_observation(observation):
+        terminal = self.terminal_observation(observation)
+        if terminal is not None:
             _print_summary(self.multi)
+            self._terminal = terminal
             self._enter_idle("Terminal state reached (success or failure)")
             return
 
-        # Publish state info for the next step immediately
-        self.publish_current_state()
+    # -- the verdict ----------------------------------------------------------
 
-    def publish_current_state(self):
-        # Auto-reload if formulas file changed
+    def verdict(self) -> dict:
+        """This tick's api.VERDICT payload.
+
+        Assembled entirely by `manifest.build_verdict_payload`, so no field name in the
+        wire contract is spelled out in this node -- and so the same payload can be
+        built, and validated, in a test with no ROS on the machine.
+        """
+        phases = self.spec.execution_phases
+        in_phase = 0 <= self.phase_idx < len(phases)
+        steps_to_timeout = None
+        violations_to_fault = None
+        if in_phase:
+            p = phases[self.phase_idx]
+            limit = p.get("progress_violation_limit", _PHASE_VIOLATION_LIMIT)
+            max_steps = (p.get("timing_bounds") or {}).get("max_steps")
+            if max_steps is not None:
+                steps_to_timeout = max_steps - self.phase_step_count
+            violations_to_fault = limit - self.phase_violation_count
+
+        return manifest_mod.build_verdict_payload(
+            seq=self._tick_seq,
+            t=self._tick_t,
+            step=self.step_idx,
+            skill_name=self.spec.skill_name,
+            phase=self.current_phase or None,
+            # null, not -1: "no phase is active" is an absence, and a consumer indexing
+            # a phase list with -1 would silently get the last one.
+            phase_index=self.phase_idx if in_phase else None,
+            formula_statuses=[
+                (m.name, m.status) for m in self.multi.get_property_monitors()
+            ],
+            failure_modes=[
+                {
+                    "name": m.failure_mode.name,
+                    "fault_category": m.failure_mode.fault_category,
+                    "status": m.status.name,
+                }
+                for m in self.multi.get_failure_mode_monitors()
+            ],
+            confidence=self._confidence,
+            stale_sources=self._stale_sources,
+            steps_to_timeout=steps_to_timeout,
+            violations_to_fault=violations_to_fault,
+            violations_seen=self.phase_violation_count,
+            tick_hz=self.tick_hz,
+            terminal=self._terminal,
+            missed_ticks=self._missed_ticks,
+            has_data=self._has_data,
+        )
+
+    def publish_verdict(self) -> None:
+        payload = self.verdict()
+        problems = api.validate_verdict(payload)
+        if problems:
+            # A verdict that fails its own schema is a bug in this node, not at the
+            # consumer, and it is reported here rather than discovered downstream.
+            # Published anyway: a supervisor holding a slightly wrong verdict is better
+            # placed than one holding silence.
+            self.get_logger().error(f"Verdict failed its own schema: {problems}")
+        self.verdict_pub.publish(String(data=json.dumps(payload)))
+
+    # -- legacy mirror --------------------------------------------------------
+
+    def required_aps(self) -> list:
+        """Automaton APs + terminal APs + phase APs — all evaluated every step."""
+        return sorted(
+            self.multi.get_required_aps() | self.spec.terminal_aps | self.spec.phase_aps
+        )
+
+    def heartbeat(self) -> None:
+        """Picks up an edited spec file and keeps the legacy channels alive.
+
+        It never steps the automaton. Only an observation the ledger admitted does
+        that, which is what makes "exactly one step per tick" true rather than
+        approximately true.
+        """
         if self.check_formulas_file_changed():
             self.reload_specs()
+        self.publish_legacy_state()
 
+    def publish_legacy_state(self) -> None:
+        """The `/ltl/*` half of the dual-run window.
+
+        DIES WHEN P5 AND P7 LAND. Every consumer of `/ltl/state_description` and
+        `/ltl/required_aps` is owned by a package that has not migrated yet, and
+        dropping these before they do would leave the sim stack unrunnable at this
+        commit for no gain.
+        """
         if self.halted:
-            # Periodically re-publish the idle signal so late-joining LLM clients
-            # also pick up the idle state.
-            aps_msg = String()
-            aps_msg.data = json.dumps([])
-            self.aps_pub.publish(aps_msg)
-            idle_desc = {"state": "idle", "skill_name": self.spec.skill_name}
-            desc_msg = String()
-            desc_msg.data = json.dumps(idle_desc)
-            self.state_desc_pub.publish(desc_msg)
+            # Periodically re-publish the idle signal so late-joining LLM clients also
+            # pick up the idle state.
+            self.aps_pub.publish(String(data=json.dumps([])))
+            self.state_desc_pub.publish(String(data=json.dumps(
+                {"state": "idle", "skill_name": self.spec.skill_name})))
             return
 
-        # Automaton APs + terminal APs + phase APs — all must be evaluated each step.
-        required_aps = self.multi.get_required_aps() | self.spec.terminal_aps | self.spec.phase_aps
-        aps_msg = String()
-        aps_msg.data = json.dumps(list(required_aps))
-        self.aps_pub.publish(aps_msg)
+        self.aps_pub.publish(String(data=json.dumps(self.required_aps())))
 
         # Build phase_info for the LLM client (full per-phase constraint set)
         phases = self.spec.execution_phases
@@ -1208,38 +1550,19 @@ class LtlMonitorNode(Node):
                 "timing_bounds":        timing,
             }
 
-        # Predictive imminence for the intervention supervisor (pre-emptive rung before
-        # the hard fault). trigger_confidence comes from the evaluator's sensor
-        # freshness: the rule-based APs themselves are exact, but an AP computed from
-        # a topic that stopped publishing is a stale reading dressed as a fact, and
-        # the supervisor's confidence gate is what de-escalates on it.
-        risk: dict = {}
-        if 0 <= self.phase_idx < len(phases):
-            _max_steps = phase_info["timing_bounds"].get("max_steps")
-            _sto = (_max_steps - self.phase_step_count) if _max_steps is not None else None
-            _vtf = phase_info["violation_limit"] - self.phase_violation_count
-            _warn_t = _sto is not None and _sto <= 3
-            _warn_p = self.phase_violation_count > 0 and _vtf <= 3
-            risk = {
-                "steps_to_timeout": _sto,
-                "violations_to_fault": _vtf,
-                "trigger_confidence": self._confidence,
-                "stale_sources": list(self._stale_sources),
-                "warn": bool(_warn_t or _warn_p),
-                "severity": "TIMEOUT" if _warn_t else ("PROGRESS" if _warn_p else None),
-            }
-
+        verdict = self.verdict()
         state_desc = {
             "phase": self.current_phase,
             "phase_index": self.phase_idx,
             "phases": manifest_mod.phase_names(phases),
             "step": self.step_idx,
-            # The numbers the APs were computed from, forwarded from the evaluator's
-            # reserved __sensors__ key so a client sees observation and conclusion
-            # together rather than having to subscribe to the robot's raw topics.
+            "seq": verdict["seq"],
             "sensors": self.sensors,
             "ap_values": self.last_observation,
-            "risk": risk,
+            # The same risk and intervention blocks the verdict carries, so a consumer
+            # that has not migrated yet still sees the confidence-bearing numbers.
+            "risk": verdict["risk"],
+            "intervention": verdict["intervention"],
             "skill_name": self.spec.skill_name,
             "description": self.spec.description,
             "ap_descriptions": self.spec.atomic_propositions,
@@ -1254,20 +1577,19 @@ class LtlMonitorNode(Node):
                 "description": self.spec.terminal_failure_description,
                 "aps": list(self.spec.terminal_failure_aps),
             },
+            # `confidence` on every entry, mirroring the verdict. The legacy consumers
+            # are the ones the missing key actually broke: supervisor_logic's VIOLATED
+            # branch reads it here, and defaulted a dead-sensor fault to 1.0.
             "named_failure_modes": [
-                {
-                    "name":           m.failure_mode.name,
-                    "fault_category": m.failure_mode.fault_category,
-                    "description":    m.failure_mode.description,
-                    "formula":        m.formula,
-                    "status":         m.status.name,
-                }
-                for m in self.multi.get_failure_mode_monitors()
+                dict(entry, description=info.description, formula=formula)
+                for entry, info, formula in zip(
+                    verdict["failure_modes"],
+                    [m.failure_mode for m in self.multi.get_failure_mode_monitors()],
+                    [m.formula for m in self.multi.get_failure_mode_monitors()],
+                )
             ],
         }
-        desc_msg = String()
-        desc_msg.data = json.dumps(state_desc)
-        self.state_desc_pub.publish(desc_msg)
+        self.state_desc_pub.publish(String(data=json.dumps(state_desc)))
 
 
 # ---------------------------------------------------------------------------
@@ -1281,25 +1603,43 @@ def parse_args() -> argparse.Namespace:
     )
     formula_group = parser.add_mutually_exclusive_group(required=True)
     formula_group.add_argument("-f", "--formula", action="append", dest="formulas")
-    formula_group.add_argument("--formulas-file", type=Path)
+    formula_group.add_argument(
+        "--formulas-file",
+        help="a spec: either a path, or a bare name like 'formulas_g1.json' resolved "
+             "against the config volume's specs/ and then the packaged specs",
+    )
     parser.add_argument("--changes-only", action="store_true")
     parser.add_argument("--stop-on-violation", action="store_true")
     parser.add_argument(
         "--passive", action="store_true",
         help="Observation-only mode: on a terminal state or fault, report it and go "
              "IDLE instead of shutting both nodes down, so the monitor survives to "
-             "observe the next skill execution. Resume by publishing "
-             "{\"__reset__\": true} on /ltl/evaluations.",
+             "observe the next skill execution. Resume with a 'reset' command.",
     )
     parser.add_argument("--output-dir", type=Path, default=Path("output"))
+    skill_monitor.add_config_argument(parser)
     return parser.parse_args()
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
     parsed_args = parse_args()
+    # Before anything resolves a spec: --config beats $SKILL_MONITOR_CONFIG beats the
+    # packaged defaults, and the choice is announced so a container that quietly read
+    # its baked-in spec instead of the mounted one says so.
+    skill_monitor.set_config_dir(parsed_args.config)
+    print(skill_monitor.config_report())
 
     if parsed_args.formulas_file:
+        # Resolved once, here, so the file watcher and the manifest's `source` both
+        # name a real path rather than the bare argument.
+        try:
+            parsed_args.formulas_file = manifest_mod.resolve_spec_path(
+                parsed_args.formulas_file
+            )
+        except FileNotFoundError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         spec = load_formulas_from_file(parsed_args.formulas_file)
     else:
         spec = SkillSpec(formulas=parsed_args.formulas, names=parsed_args.formulas)
