@@ -1,0 +1,67 @@
+# Dev overlay: live source, applied OVER another stack. Never on its own.
+#
+#   docker compose -f deploy/docker-compose.robot.yml -f deploy/docker-compose.dev.yml up
+#   docker compose -f sim/docker-compose.sim.yml      -f deploy/docker-compose.dev.yml up
+#
+# Why this is a separate file rather than mounts in every stack: a deployed image is
+# then a self-contained versioned unit. The monitor's spec is whatever that image tag
+# plus that config volume says, and there is no third source. sim/docker-compose.sim.yml
+# used to mount ../skill_monitor over the COPY its own image had just performed, so
+# code and specs arrived from two places with no stated rule -- which is exactly how a
+# build breaking (see the header of that file) went unnoticed for several commits.
+#
+# Relative paths below resolve against the PROJECT directory, which is the directory
+# of the FIRST -f file. Both deploy/ and sim/ sit one level under the repo root, so
+# ../skill_monitor is the repo's package either way. Invoking this overlay with a
+# first file from some other depth would silently mount the wrong thing.
+#
+# Each service repeats build/image so that overlaying onto a stack that does not have
+# that service produces a valid config rather than a parse error. The cost is that
+# such a service gets ADDED to the stack: `-f sim -f dev` gains a supervisor, which
+# subscribes to verdicts and enforces nothing until enabled. Name the services you
+# want on the command line if that matters.
+
+x-source-mount: &source
+  # The package, live: edit on the host, restart the container, no rebuild. Mounted
+  # OVER the image's COPY of the same path -- deliberate here, and only here.
+  - "../skill_monitor:/app/skill_monitor"
+
+services:
+
+  clock:
+    build:
+      context: ..
+      # Owned by P1; does not exist yet. See the stack files.
+      dockerfile: deploy/Dockerfile.clock
+    image: skill-monitor/clock:${TAG:-dev}
+    volumes: *source
+
+  evaluator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.evaluator
+    image: skill-monitor/evaluator:${TAG:-dev}
+    volumes:
+      - "../skill_monitor:/app/skill_monitor"
+      # Descriptors read-WRITE in dev: editing an adapter JSON is the inner loop of
+      # bringing a new embodiment up. The deployed stacks mount /config :ro.
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config"
+
+  monitor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.monitor
+    image: skill-monitor/monitor:${TAG:-dev}
+    volumes:
+      - "../skill_monitor:/app/skill_monitor"
+      # Specs read-write for the same reason -- and so the describer job and a hand
+      # edit land in the same place.
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config"
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
+
+  supervisor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.supervisor
+    image: skill-monitor/supervisor:${TAG:-dev}
+    volumes: *source
