@@ -1,0 +1,99 @@
+# Robot tier: what runs ON the machine that moves.
+#
+#   docker compose -f deploy/docker-compose.robot.yml up --build
+#   docker compose -f deploy/docker-compose.robot.yml \
+#                  -f deploy/docker-compose.dev.yml up      # live source overlay
+#
+# Clock, evaluator, monitor (tier 1 -- the safety ladder), supervisor. The tier-2
+# monitor, the gateway and the frontend live in docker-compose.server.yml; the
+# describer is a job and is declared there too.
+#
+# Every service builds with `context: ..` (the repo root) because the images COPY
+# skill_monitor/, which is above deploy/. Building from deploy/ as context is the
+# mistake that cannot be made here.
+#
+# Artifacts arrive on volumes, not baked in:
+#   /config  adapters/ + specs/, read-only  -- change a skill or a robot, no rebuild
+#   /data    verdicts + automaton renders, read-write
+# With nothing mounted the images still boot on their packaged defaults and say so
+# (skill_monitor.config_report()). That fallback is what keeps pytest and a bare
+# `python3 -m skill_monitor...` working on a host with no volumes.
+
+x-ros: &ros
+  # host networking + host IPC: DDS discovery and shared-memory transport between
+  # containers. Bridged networking makes the nodes silently not see each other.
+  network_mode: host
+  ipc: host
+  environment: &ros-env
+    ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+    PYTHONUNBUFFERED: "1"
+    SKILL_MONITOR_CONFIG: /config
+  restart: unless-stopped
+
+x-config-ro: &config-ro
+  # Host paths, overridable: SKILL_MONITOR_CONFIG_HOST=/srv/robot-config docker compose up
+  - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
+
+services:
+
+  # The tick everything else advances on. One clock per tier, and THIS one is
+  # authoritative for live data -- the tick index is stamped here and travels inside
+  # the observation, so the server's monitor advances on the received tick rather
+  # than on a second clock racing this one.
+  #
+  # NOTE: deploy/Dockerfile.clock does not exist yet -- it is owned by P1 (clock
+  # service) and lands with that package. This service is declared now so the stack
+  # is complete and reviewable; `up --build` will fail on it until P1 merges.
+  clock:
+    <<: *ros
+    container_name: sm-clock
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.clock
+    image: skill-monitor/clock:${TAG:-dev}
+    command: ["--rate", "${TICK_HZ:-1.0}", "--source", "wall"]
+
+  # Embodiment stops here. The evaluator is the only service that reads an adapter
+  # descriptor, and the only one that names a robot.
+  evaluator:
+    <<: *ros
+    container_name: sm-evaluator
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.evaluator
+    image: skill-monitor/evaluator:${TAG:-dev}
+    command: ["--adapter", "${ADAPTER:-real_g1}"]
+    volumes: *config-ro
+    depends_on: [clock]
+
+  # Tier 1: the safety ladder, on the robot, where latency matters. Reads a spec and
+  # nothing else -- never an adapter descriptor; it learns the schema from the
+  # evaluator's latched /monitor/adapter.
+  monitor:
+    <<: *ros
+    container_name: sm-monitor
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.monitor
+    image: skill-monitor/monitor:${TAG:-dev}
+    # A BARE spec name, not a path: it resolves through skill_monitor.spec_path(),
+    # which searches /config/specs first and the packaged specs second. Passing
+    # /config/specs/... here instead would hard-fail an unmounted container.
+    command: ["--formulas-file", "${SPEC:-formulas_g1.json}", "--output-dir", "/data/output"]
+    volumes:
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
+      # Read-write: verdict records and the automaton PNGs rendered at spec load.
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
+    depends_on: [clock, evaluator]
+
+  # Enforces nothing until enabled -- see P5. Robot tier only: an intervention
+  # decided across the network is an intervention that arrives late.
+  supervisor:
+    <<: *ros
+    container_name: sm-supervisor
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.supervisor
+    image: skill-monitor/supervisor:${TAG:-dev}
+    volumes: *config-ro
+    depends_on: [monitor]

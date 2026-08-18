@@ -22,4 +22,10 @@ COPY pyproject.toml ./
 
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app:${PYTHONPATH}
 
+# Artifacts on a volume, code in the image: a spec changes without a rebuild, and
+# the robot can carry one this image never saw. Nothing mounted is still a working
+# container -- skill_monitor falls back to the specs COPYed above and says so.
+ENV SKILL_MONITOR_CONFIG=/config
+VOLUME ["/config", "/data"]
+
 ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && export PYTHONPATH=/app:/usr/lib/python3.10/site-packages:${PYTHONPATH} && python3 -m skill_monitor.backend.monitor_node \"$@\"", "--"]

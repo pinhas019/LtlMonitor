@@ -1,0 +1,129 @@
+# Server tier: what runs OFF the robot -- the verdict of record, the API, the console.
+#
+#   docker compose -f deploy/docker-compose.server.yml up --build
+#   docker compose -f deploy/docker-compose.server.yml run --rm describer \
+#                  --description "walk to the goal without falling"
+#
+# Clock (replay only), monitor tier-2, gateway, frontend, plus the describer job.
+#
+# The server's clock exists ONLY to pace replay of a recorded stream. Live data
+# advances on the tick stamped by the robot's clock inside the observation. Two
+# clocks driving one trace is the bug that rule prevents -- see docs/clocking.md.
+
+x-ros: &ros
+  network_mode: host
+  ipc: host
+  environment: &ros-env
+    ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+    PYTHONUNBUFFERED: "1"
+    SKILL_MONITOR_CONFIG: /config
+  restart: unless-stopped
+
+services:
+
+  # Replay pacing only; idle for live traffic. Started with --paused so that
+  # bringing the server up never advances a trace nobody asked to advance.
+  #
+  # NOTE: deploy/Dockerfile.clock is owned by P1 and lands with that package.
+  # Declared here now so the stack is complete; `up --build` fails on it until then.
+  clock:
+    <<: *ros
+    container_name: sm-clock-replay
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.clock
+    image: skill-monitor/clock:${TAG:-dev}
+    command: ["--rate", "${REPLAY_HZ:-1.0}", "--source", "replay", "--paused"]
+
+  # Tier 2: the verdict of record. No adapter present and none needed -- it advances
+  # on the tick inside each received observation. That is exactly what makes it
+  # runnable here, a network away from any robot.
+  monitor:
+    <<: *ros
+    container_name: sm-monitor-tier2
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.monitor
+    image: skill-monitor/monitor:${TAG:-dev}
+    # Bare spec name -- resolved by skill_monitor.spec_path() against /config/specs
+    # first, packaged specs second.
+    command: ["--formulas-file", "${SPEC:-formulas_g1.json}", "--output-dir", "/data/output"]
+    volumes:
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
+    depends_on: [clock]
+
+  # REST + websocket in front of the ROS graph, so the frontend needs no DDS.
+  #
+  # NOTE: deploy/Dockerfile.gateway is owned by P6 and lands with that package.
+  # Declared here now so the stack is complete; `up --build` fails on it until then.
+  gateway:
+    <<: *ros
+    container_name: sm-gateway
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    image: skill-monitor/gateway:${TAG:-dev}
+    command: ["--port", "${GATEWAY_PORT:-8080}"]
+    volumes:
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data:ro"
+    depends_on: [monitor]
+
+  # The Skill Center console.
+  #
+  # NOTE: deploy/Dockerfile.skill_center is owned by P7 and lands with that package.
+  # Declared here now so the stack is complete; `up --build` fails on it until then.
+  frontend:
+    <<: *ros
+    container_name: sm-frontend
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.skill_center
+    image: skill-monitor/skill-center:${TAG:-dev}
+    environment:
+      <<: *ros-env
+      # Tk in a container draws on the HOST's X server, and fails obscurely without
+      # both of these -- typically "no display name and no $DISPLAY environment
+      # variable", or a silent hang on connect. The socket mount below is the other
+      # half; DISPLAY alone is not enough.
+      DISPLAY: "${DISPLAY:-:0}"
+      # Host must also allow the connection once per boot:  xhost +local:docker
+      QT_X11_NO_MITSHM: "1"
+    volumes:
+      # X11: see DISPLAY above. Read-only is sufficient -- the client only connects.
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+      # SECURITY, deliberate and narrow: the Skill Center's container controls
+      # (start/stop/restart a service, tail its logs) drive the host's Docker daemon
+      # through this socket. Mounting it is ROOT-EQUIVALENT CONTROL OF THE HOST --
+      # anything inside this container can start a privileged container and own the
+      # machine. Right for a single-operator lab console on a machine you already
+      # trust; WRONG on any shared or multi-tenant host, and wrong anywhere the
+      # frontend is reachable from a network you do not control. Drop this line and
+      # the UI still runs -- only the container-control panel goes dark.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data:ro"
+    depends_on: [gateway]
+
+  # A JOB, not a service: `docker compose ... run --rm describer --description "..."`.
+  # No ROS in the image; it talks to an LLM over HTTP and writes a validated spec.
+  describer:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.describer
+    image: skill-monitor/describer:${TAG:-dev}
+    network_mode: host
+    environment:
+      PYTHONUNBUFFERED: "1"
+      SKILL_MONITOR_CONFIG: /config
+      LLM_API_URL: "${LLM_API_URL:-http://192.168.140.101/developer-api/v1}"
+      LLM_MODEL: "${LLM_MODEL:-Gemma4}"
+    # The ONE service that mounts /config read-write: it reads the robot's sensor
+    # schema from /config/adapters and writes the generated spec into /config/specs,
+    # where the monitor picks it up on the next load.
+    volumes:
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config"
+    # Never started by `up` -- only by `run`.
+    profiles: ["job"]
+    restart: "no"

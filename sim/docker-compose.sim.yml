@@ -1,12 +1,24 @@
-version: '3.8'
-
 # Sim verification for the G1 navigation skill (formulas_g1.json) against the MuJoCo+
-# Nav2 harness, using the SAME generic_client.py + formulas_g1.json that run against
-# the real robot -- only ltl-client's --adapter flag changes. No topic-translation
-# shim containers: adapter_mujoco.py maps MuJoCo/Nav2's native topics straight to the
+# Nav2 harness, using the SAME evaluator + formulas_g1.json that run against the real
+# robot -- only the evaluator's --adapter flag changes. No topic-translation shim
+# containers: the mujoco descriptor maps MuJoCo/Nav2's native topics straight to the
 # canonical sensor_eval schema in-process.
 #
-#   docker compose -f docker-compose.sim.yml up --build
+#   docker compose -f sim/docker-compose.sim.yml up --build
+#   docker compose -f sim/docker-compose.sim.yml -f deploy/docker-compose.dev.yml up
+#
+# THIS STACK COULD NOT BUILD BEFORE THIS COMMIT. `monitor` and `evaluator` (then named
+# ltl-monitor / ltl-client) built `dockerfile: Dockerfile` and `dockerfile:
+# Dockerfile.client` against `context: ..`, and NEITHER PATH HAS EXISTED SINCE e550c3b
+# moved them to deploy/Dockerfile.monitor and deploy/Dockerfile.evaluator. The failure
+# stayed hidden because the same services also mounted ../skill_monitor over the COPY
+# the image performs, so a stale local image kept behaving. Live source mounts now
+# live in deploy/docker-compose.dev.yml, applied explicitly.
+#
+# Service names are the canonical ones -- clock, evaluator, monitor -- shared with
+# deploy/docker-compose.{robot,server}.yml, which is what lets the dev overlay apply to
+# this stack too. The container_name values stay ltl-* so existing `docker exec`
+# recipes keep working. (`docker compose run ltl-monitor` becomes `... run monitor`.)
 #
 # VisualGoalConfirmation needs a manually-published /vision/goal_similarity (Float32)
 # -- MuJoCo has no camera. Publish it via `docker exec -d ltl-nav2 bash -c "source
@@ -27,8 +39,9 @@ services:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
     volumes:
-      # Whole package, live-editable: one mount instead of a per-file list
-      # that silently went stale whenever a module was added.
+      # The sim harness's own assets -- scene and bridge, not package source. Kept
+      # here rather than in the dev overlay: editing the arena IS what this stack is
+      # for, and none of these files exists in any deployed image.
       - ./sim_config.json:/app/sim_config.json
       - ./mujoco_ros_bridge.py:/app/mujoco_ros_bridge.py
       - ./arena.xml:/app/arena.xml
@@ -46,57 +59,81 @@ services:
     depends_on:
       - mujoco-sim
     volumes:
-      # Whole package, live-editable: one mount instead of a per-file list
-      # that silently went stale whenever a module was added.
       - ./sim_config.json:/app/sim_config.json
       - ./send_goal.py:/app/send_goal.py
       - ./generate_map.py:/app/generate_map.py
       - ./arena.xml:/app/arena.xml
       - ./nav2_params.yaml:/app/nav2_params.yaml
 
-  ltl-monitor:
-    container_name: ltl-monitor
+  # The tick the evaluator and the monitor advance on. Sim uses a wall clock like the
+  # robot, so a sim trace and a real trace have the same length for the same episode --
+  # the property that makes their verdicts comparable at all (docs/clocking.md).
+  #
+  # NOTE: deploy/Dockerfile.clock does not exist yet -- it is owned by P1 and lands
+  # with that package. Declared now so the stack matches the robot one; `up --build`
+  # will fail on this service until P1 merges. Until then, start the stack service by
+  # service: `up mujoco-sim nav2 monitor evaluator`.
+  clock:
+    container_name: ltl-clock
     build:
       context: ..
-      dockerfile: Dockerfile
+      dockerfile: deploy/Dockerfile.clock
+    image: skill-monitor/clock:${TAG:-dev}
     network_mode: host
     ipc: host
     environment:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
+    command: ["--rate", "${TICK_HZ:-1.0}", "--source", "wall"]
+
+  monitor:
+    container_name: ltl-monitor
+    build:
+      # context is the REPO ROOT, because the image COPYs skill_monitor/ which lives
+      # there. dockerfile is relative to that context, hence the deploy/ prefix.
+      context: ..
+      dockerfile: deploy/Dockerfile.monitor
+    image: skill-monitor/monitor:${TAG:-dev}
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - PYTHONUNBUFFERED=1
+      - SKILL_MONITOR_CONFIG=/config
     volumes:
-      # Whole package, live-editable: one mount instead of a per-file list
-      # that silently went stale whenever a module was added.
-      - ../skill_monitor:/app/skill_monitor
-      # Both mounted: default command runs the generic formulas.json (what
-      # run_pipeline.py generates/validates for an arbitrary skill description --
-      # unrelated to G1). To exercise the G1 nav skill specifically, override at
-      # `docker compose run`: `docker compose run ltl-monitor --formulas-file formulas_g1.json`.
-      - ../output:/app/output
-    command: ["--formulas-file", "skill_monitor/specs/formulas.json"]
+      # Adapters + specs from the volume when present; the image's packaged copies
+      # otherwise. One rule, one place -- see skill_monitor/__init__.py.
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
+    # A bare spec name, resolved by skill_monitor.spec_path() -- /config/specs first,
+    # packaged specs second. formulas.json (the generic pipeline output, unrelated to
+    # G1) is the default; for the G1 nav skill: `... run monitor --formulas-file
+    # formulas_g1.json`.
+    command: ["--formulas-file", "${SPEC:-formulas.json}", "--output-dir", "/data/output"]
+    depends_on:
+      - clock
 
   # Agnostic to environment (this file drives it against MuJoCo+Nav2 via --adapter
-  # mujoco) and to skill type (formulas_g1.json above is just the currently-active
-  # spec; see main.py's --skills-dir for swapping skills without touching this stack).
-  # --adapter real_g1 / isaac_lab select the other environments generic_client.py
-  # supports -- same image, same formulas_g1.json, no shim containers needed.
-  ltl-client:
+  # mujoco) and to skill type. --adapter real_g1 / isaac_lab select the other
+  # environments the same image supports -- same image, same formulas_g1.json, no shim
+  # containers needed.
+  evaluator:
     container_name: ltl-client
     build:
       context: ..
-      dockerfile: Dockerfile.client
+      dockerfile: deploy/Dockerfile.evaluator
+    image: skill-monitor/evaluator:${TAG:-dev}
     network_mode: host
     ipc: host
     environment:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
+      - SKILL_MONITOR_CONFIG=/config
     command: ["--adapter", "mujoco", "--model", "${LLM_MODEL:-Gemma4}", "--api-url", "${LLM_API_URL:-http://192.168.140.101/developer-api/v1}"]
     volumes:
-      # Whole package, live-editable: one mount instead of a per-file list
-      # that silently went stale whenever a module was added.
-      - ../skill_monitor:/app/skill_monitor
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
     depends_on:
-      - ltl-monitor
+      - monitor
       - nav2
 
   foxglove-bridge:
@@ -116,6 +153,10 @@ services:
     environment:
       - DOZZLE_BASE=/dozzle
     volumes:
-      # Whole package, live-editable: one mount instead of a per-file list
-      # that silently went stale whenever a module was added.
+      # SECURITY: this socket is ROOT-EQUIVALENT CONTROL OF THE HOST DAEMON -- a
+      # process that can reach it can start a privileged container and own the
+      # machine. Dozzle only reads logs, but the socket grants far more than that.
+      # Acceptable for a lab sim box you already trust; drop this service anywhere
+      # shared or network-reachable. The same caveat applies to the frontend in
+      # deploy/docker-compose.server.yml, which mounts it for container controls.
       - /var/run/docker.sock:/var/run/docker.sock

@@ -14,6 +14,12 @@ COPY pyproject.toml ./
 
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app:${PYTHONPATH}
 
+# /config/adapters is where descriptors come from; the COPYed ones are the fallback
+# for an unmounted container. /data is declared for symmetry with the monitor -- the
+# evaluator writes nothing there today.
+ENV SKILL_MONITOR_CONFIG=/config
+VOLUME ["/config", "/data"]
+
 # Every adapter is baked in; --adapter selects the environment at runtime:
 #   docker run ... ltl-client --adapter real_g1
 #   docker run ... ltl-client --adapter mujoco

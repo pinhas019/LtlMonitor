@@ -1,0 +1,39 @@
+# The describer: free-language skill description -> validated formulas_<skill>.json.
+#
+# A JOB, not a service. It runs once, writes a spec into /config/specs, and exits:
+#
+#   docker compose -f deploy/docker-compose.server.yml \
+#     run --rm describer --description "walk to the goal without falling" \
+#                        --adapter real_g1 --output /config/specs/formulas_walk.json
+#
+# No ROS in this image and no Spot. It talks to an LLM over HTTP and validates the
+# result against a sensor schema -- both pure-Python, both testable on a laptop. That
+# is why it is a python:slim base and not ros:humble: the ROS image is ~2 GB of
+# runtime this job never touches, and pulling it would make the one job that a human
+# runs by hand the slowest thing in the system.
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Nothing to pip install: generate_formulas uses urllib from the stdlib, and
+# core/spec_contract is pure Python. See pyproject.toml -- deliberately no
+# install_requires, because rclpy and spot come from the ROS image, not from pip.
+COPY skill_monitor/ ./skill_monitor/
+COPY pyproject.toml ./
+
+# Plain /app, not /app:${PYTHONPATH}: there is no ROS install in this image whose
+# path needs preserving, and the appended empty var is a build warning for nothing.
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app
+
+# The describer is the one image that WRITES to /config: it reads the robot's sensor
+# schema from /config/adapters and drops the generated spec into /config/specs, where
+# the monitor will find it. Mount /config read-write for this service alone; every
+# other service mounts it :ro.
+ENV SKILL_MONITOR_CONFIG=/config
+VOLUME ["/config"]
+
+# argv is appended, so `docker compose run describer --description "..."` works and
+# `--help` lists the real flags (--description, --output, --adapter, --api-url,
+# --model).
+ENTRYPOINT ["python3", "-m", "skill_monitor.describer.generate_formulas"]
+CMD ["--help"]

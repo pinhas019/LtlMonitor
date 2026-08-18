@@ -1,0 +1,18 @@
+# The intervention supervisor: subscribes to verdicts and acts on them. No Spot --
+# it never builds an automaton, it only reads the monitor's conclusion -- so it is
+# the cheap ros:humble image rather than the ~10 min Spot build.
+FROM ros:humble
+
+WORKDIR /app
+
+COPY skill_monitor/ ./skill_monitor/
+COPY pyproject.toml ./
+
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app:${PYTHONPATH}
+
+# Reads no spec and no descriptor today; /config is declared so that the ladder
+# thresholds can move onto the volume without a new image.
+ENV SKILL_MONITOR_CONFIG=/config
+VOLUME ["/config", "/data"]
+
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 -m skill_monitor.backend.intervention_supervisor \"$@\"", "--"]
