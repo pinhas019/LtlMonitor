@@ -7,7 +7,9 @@ A descriptor (skill_monitor/adapters/*.json) has:
 
     schema    "nav_schema.json" or an inline {key: {doc, default}} dict
     defaults  optional per-robot overrides of the schema defaults
-    sources   one per topic: {id, topic, type, decode, qos, tracked, steps}
+    tick_hz   the observation rate this descriptor is written for (default 1.0)
+    sources   one per topic: {id, topic, type, decode, qos, tracked, required,
+              expected_hz, max_age_s, steps}
     describe  which keys to surface in the evaluator's console block
 
 and each step turns one message into one or more sensor_eval keys:
@@ -15,8 +17,9 @@ and each step turns one message into one or more sensor_eval keys:
     {"key": "linear_vel", "field": "twist.twist.linear.x", "round": 2}
     {"keys": ["base_roll","base_pitch"], "fn": "quat_to_roll_pitch",
      "field": "pose.pose.orientation"}
+    {"key": "min_range", "fn": "min_range_scan", "aggregate": "min"}
     {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
-     "args": {"threshold": 10}}
+     "on": "tick", "args": {"debounce_s": 10.0}}
 
 Field paths and `inputs` are the whole vocabulary for plumbing; anything that needs
 real math (quaternions, point clouds, debounce) is a NAMED function in EXTRACTORS
@@ -27,20 +30,47 @@ Arguments handed to `fn`: the values named by `inputs` if present, else the valu
 `field`, else the whole decoded message. An extractor returning None leaves the keys
 untouched -- that is how a Nav2 status array with no goals in it reports nothing
 rather than reporting a wrong state.
+
+## The observation window
+
+Messages arrive event-driven at each sensor's own rate; the trace must be a function
+of the DATA, not of how fast messages happened to arrive. So `update()` does not write
+the observation. It appends to a per-tick WINDOW, and `tick()` folds that window by
+each key's declared `aggregate` policy into the held values. `sensor_eval()` is a pure
+read of the held values and may be called any number of times between ticks.
+
+Two live bugs are what this shape exists to kill, both documented in docs/clocking.md:
+
+  * a debounce counted in MESSAGES rather than ticks silently scales with the topic's
+    publish rate -- `on: "tick"` plus `debounce_s` fixes it in the descriptor's own
+    vocabulary;
+  * `last`-wins over a cloud published far faster than the tick discards almost every
+    frame, so a transient obstacle is simply never seen -- `aggregate: "min"` fixes it.
+
+Both capabilities ship here. No descriptor in skill_monitor/adapters/ uses them yet:
+the navigation schema is being redesigned to stop depending on the planner's own
+status stream, and the new schema is what will take them up.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import threading
+from collections import ChainMap
 from pathlib import Path
 
+import skill_monitor
 import skill_monitor.core.g1_sensors as g1_sensors
 from skill_monitor.core.g1_real_frame import remap_optical_to_body
 from skill_monitor.core.nav2_status_map import nav2_status_to_state
-from skill_monitor.core.stuck_detector import StuckStreak
+from skill_monitor.core.stuck_detector import StuckStreak, threshold_from_seconds
 
-ADAPTERS_DIR = Path(__file__).resolve().parent.parent / "adapters"
+#: Retained module-level name -- anything importing `adapter_spec.ADAPTERS_DIR` keeps
+#: working. Every lookup below calls `skill_monitor.adapters_dir()` instead, so a
+#: /config volume mounted after import is still honoured; this constant is only the
+#: packaged fallback and cannot track a later override.
+ADAPTERS_DIR = skill_monitor.PACKAGED_ADAPTERS_DIR
 
 _MISSING = object()
 
@@ -49,6 +79,65 @@ _MISSING = object()
 DECODERS = frozenset({"json", "pointcloud_xyz", "laserscan_ranges", "goal_status"})
 
 CASTS = {"bool": bool, "int": int, "float": float, "str": str}
+
+#: When a step runs. `message` folds into the window; `tick` runs once per tick over
+#: the values the fold just committed -- which is the difference between "blocked for
+#: 10 s" and "blocked for 10 s, reported one tick late".
+STEP_PHASES = frozenset({"message", "tick"})
+
+DEFAULT_TICK_HZ = 1.0
+
+#: Descriptor keys, listed so a typo raises instead of being silently ignored.
+STEP_KEYS = frozenset({
+    "key", "keys", "field", "inputs", "fn", "args", "round", "cast", "default",
+    "aggregate", "q", "on",
+})
+SOURCE_KEYS = frozenset({
+    "id", "topic", "type", "decode", "qos", "tracked", "required", "expected_hz",
+    "max_age_s", "steps",
+})
+ADAPTER_KEYS = frozenset({
+    "name", "doc", "schema", "defaults", "describe", "sources", "tick_hz",
+})
+
+
+# ----------------------------------------------------------------- aggregators
+
+def _mean(xs):
+    return sum(xs) / len(xs)
+
+
+def _quantile(xs, q):
+    """Linear-interpolated quantile. `q` is 0.0-1.0; 0.5 is the median."""
+    ordered = sorted(xs)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = q * (len(ordered) - 1)
+    lo = math.floor(pos)
+    hi = math.ceil(pos)
+    if lo == hi:
+        return ordered[lo]
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo)
+
+
+#: How several samples of one key inside one tick become the single value the trace
+#: sees. `last` is the default and reproduces the pre-window behaviour exactly.
+AGGREGATORS = {
+    "last": lambda xs: xs[-1],
+    "first": lambda xs: xs[0],
+    "min": min,
+    "max": max,
+    "mean": _mean,
+    "any": lambda xs: any(xs),
+    "all": lambda xs: all(xs),
+    "quantile": _quantile,
+}
+
+#: Aggregates that do arithmetic or ordering comparisons, and so are a load-time error
+#: on a key the schema defaults to a str or a bool.
+NUMERIC_AGGREGATES = frozenset({"min", "max", "mean", "quantile"})
+
+DEFAULT_AGGREGATE = "last"
 
 
 # ------------------------------------------------------------------ extractors
@@ -90,6 +179,7 @@ def _fn_stuck_streak(threshold=10):
         streak.update(state)
         return streak.is_stuck
     f.streak = streak                              # exposed for describe()
+    f.threshold = threshold                        # resolved; published in manifest()
     return f
 
 
@@ -135,10 +225,24 @@ def _path(obj, dotted: str):
     return obj
 
 
+def _positive(value, label: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not value > 0:
+        raise ValueError(f"{label} must be a positive number, got {value!r}")
+    return float(value)
+
+
 # ----------------------------------------------------------------------- model
 
 class Step:
-    def __init__(self, raw: dict, source_id: str):
+    def __init__(self, raw: dict, source_id: str, tick_hz: float = DEFAULT_TICK_HZ):
+        unknown = set(raw) - STEP_KEYS
+        if unknown:
+            # The highest-value rule of the set: {"agregate": "min"} used to be
+            # accepted in silence, leaving the fold on its default and the bug live.
+            raise ValueError(
+                f"{source_id}: step has unknown key(s) {sorted(unknown)}; "
+                f"allowed: {sorted(STEP_KEYS)}")
+
         self.source_id = source_id
         keys = raw.get("keys") or ([raw["key"]] if "key" in raw else [])
         if not keys:
@@ -149,6 +253,66 @@ class Step:
         self.round = raw.get("round")
         self.cast = raw.get("cast")
         self.default = raw.get("default", _MISSING)
+
+        self.on = raw.get("on", "message")
+        if self.on not in STEP_PHASES:
+            raise ValueError(
+                f"{source_id}: step 'on' must be one of {sorted(STEP_PHASES)}, "
+                f"got {self.on!r}")
+
+        self.aggregate = raw.get("aggregate", DEFAULT_AGGREGATE)
+        if self.aggregate not in AGGREGATORS:
+            raise ValueError(
+                f"{source_id}: unknown aggregate {self.aggregate!r} for "
+                f"{list(self.keys)}; available: {sorted(AGGREGATORS)}")
+        self.q = raw.get("q")
+        if self.aggregate == "quantile" and self.q is None:
+            raise ValueError(
+                f"{source_id}: aggregate 'quantile' for {list(self.keys)} requires 'q' "
+                f"(0.0-1.0)")
+        if self.q is not None and self.aggregate != "quantile":
+            raise ValueError(
+                f"{source_id}: 'q' is only meaningful with aggregate 'quantile', "
+                f"not {self.aggregate!r}")
+        if self.q is not None and not 0.0 <= self.q <= 1.0:
+            raise ValueError(f"{source_id}: 'q' must be between 0.0 and 1.0, got {self.q!r}")
+
+        if self.on == "tick":
+            # A tick-step has no message to read, so a field path is meaningless and
+            # `inputs` is the only way it can say what it consumes.
+            if self.field is not None:
+                raise ValueError(
+                    f"{source_id}: tick-step {list(self.keys)} declares 'field' "
+                    f"{self.field!r}, but a tick-step has no message to read it from")
+            if not self.inputs:
+                raise ValueError(
+                    f"{source_id}: tick-step {list(self.keys)} declares no 'inputs'; "
+                    f"a tick-step reads the folded observation, so it must name what "
+                    f"it consumes")
+            if "aggregate" in raw:
+                raise ValueError(
+                    f"{source_id}: tick-step {list(self.keys)} declares "
+                    f"aggregate {self.aggregate!r}, but a tick-step produces exactly one "
+                    f"value per tick and is never windowed")
+
+        args = dict(raw.get("args") or {})
+        self.debounce_s = args.pop("debounce_s", None)
+        if self.debounce_s is not None:
+            if "threshold" in args:
+                raise ValueError(
+                    f"{source_id}: step {list(self.keys)} declares both 'threshold' and "
+                    f"'debounce_s'; declare the duration only -- the tick count is "
+                    f"derived from tick_hz")
+            if self.on != "tick":
+                raise ValueError(
+                    f"{source_id}: step {list(self.keys)} declares 'debounce_s' but runs "
+                    f"on {self.on!r}; a debounce in seconds is only meaningful on "
+                    f'\'on\': "tick", otherwise it counts messages and scales with the '
+                    f"topic's publish rate")
+            args["threshold"] = threshold_from_seconds(self.debounce_s, tick_hz)
+        #: The resolved tick count, when this step debounces. Published in manifest().
+        self.threshold = args.get("threshold")
+
         fn_name = raw.get("fn")
         if fn_name is not None and fn_name not in EXTRACTORS:
             raise ValueError(
@@ -159,11 +323,22 @@ class Step:
         if fn_name is None and len(self.keys) != 1:
             raise ValueError(f"{source_id}: a step with no 'fn' produces exactly one key")
         self.fn_name = fn_name
-        self.fn = EXTRACTORS[fn_name](**(raw.get("args") or {})) if fn_name else None
+        self.fn = EXTRACTORS[fn_name](**args) if fn_name else None
 
-    def apply(self, payload, values: dict) -> dict:
+    def fold(self, samples: list):
+        """Collapse this tick's samples of one key into the single value the trace sees."""
+        if self.aggregate == "quantile":
+            return _quantile(samples, self.q)
+        return AGGREGATORS[self.aggregate](samples)
+
+    def apply(self, payload, values) -> dict:
         """Values this step contributes, given a decoded message and the current
-        sensor state. Empty when the field is absent and no default covers it."""
+        sensor state. Empty when the field is absent and no default covers it.
+
+        `values` is a read-only mapping -- during a message it is a ChainMap whose
+        front layer holds what earlier steps of the SAME message produced, so
+        `upright_flag` sees this message's roll/pitch/height rather than last tick's.
+        """
         if self.inputs:
             args = [values.get(k) for k in self.inputs]
         elif self.field is not None:
@@ -195,21 +370,56 @@ class Step:
 
 
 class Source:
-    def __init__(self, raw: dict):
+    def __init__(self, raw: dict, tick_hz: float = DEFAULT_TICK_HZ):
+        unknown = set(raw) - SOURCE_KEYS
+        if unknown:
+            raise ValueError(
+                f"{raw.get('id', '<no id>')}: source has unknown key(s) "
+                f"{sorted(unknown)}; allowed: {sorted(SOURCE_KEYS)}")
         self.id = raw["id"]
         self.topic = raw["topic"]
         self.type = raw["type"]
         self.decode = raw.get("decode")
         self.qos = raw.get("qos", 10)
         self.tracked = bool(raw.get("tracked", True))
+
+        # -- data health, declared per source ---------------------------------
+        # `required` is deliberately NOT `tracked`: tracked counts toward the
+        # confidence scalar, required decides whether an AP over this source's keys
+        # becomes UNKNOWN when it goes unhealthy. They diverge in practice (an
+        # optional vision topic is untracked yet its key still feeds an AP), so it is
+        # its own field -- defaulting to `tracked` only because that is what today's
+        # descriptors mean when they say nothing.
+        self.declares_expected_hz = "expected_hz" in raw
+        self.expected_hz = (
+            _positive(raw["expected_hz"], f"{self.id}: expected_hz")
+            if self.declares_expected_hz else float(tick_hz)
+        )
+        self.required = bool(raw.get("required", self.tracked))
+        self.declares_max_age_s = "max_age_s" in raw
+        self.max_age_s = (
+            _positive(raw["max_age_s"], f"{self.id}: max_age_s")
+            if self.declares_max_age_s
+            # Two publish periods, but never shorter than a tick: a source slower than
+            # the tick would otherwise be permanently "late" by construction.
+            else max(2.0 / self.expected_hz, 1.0 / tick_hz)
+        )
+
         if self.decode is not None and self.decode not in DECODERS:
             raise ValueError(
                 f"{self.id}: unknown decode {self.decode!r}; available: {sorted(DECODERS)}")
-        self.steps = [Step(s, self.id) for s in raw.get("steps") or []]
+        self.steps = [Step(s, self.id, tick_hz) for s in raw.get("steps") or []]
+        self.message_steps = [s for s in self.steps if s.on == "message"]
+        self.tick_steps = [s for s in self.steps if s.on == "tick"]
 
     @property
     def keys(self) -> set:
         return {k for s in self.steps for k in s.keys}
+
+    @property
+    def windowed_keys(self) -> set:
+        """Keys this source folds -- tick-step outputs are never windowed."""
+        return {k for s in self.message_steps for k in s.keys}
 
 
 class AdapterSpec:
@@ -217,16 +427,28 @@ class AdapterSpec:
     load it once per adapter instance rather than sharing one across robots."""
 
     def __init__(self, raw: dict, schema: dict):
+        unknown = set(raw) - ADAPTER_KEYS
+        if unknown:
+            raise ValueError(
+                f"{raw.get('name', 'adapter')}: descriptor has unknown key(s) "
+                f"{sorted(unknown)}; allowed: {sorted(ADAPTER_KEYS)}")
         self.raw = raw
         self.name = raw.get("name", "adapter")
         self.doc = raw.get("doc", "")
+        self.declares_tick_hz = "tick_hz" in raw
+        self.tick_hz = (
+            _positive(raw["tick_hz"], f"{self.name}: tick_hz")
+            if self.declares_tick_hz else DEFAULT_TICK_HZ
+        )
         self.schema = schema                      # key -> {"doc":…, "default":…}
-        self.sources = [Source(s) for s in raw.get("sources") or []]
+        self.sources = [Source(s, self.tick_hz) for s in raw.get("sources") or []]
         self.describe_keys = list(raw.get("describe") or [])
         self._defaults = {
             k: v.get("default") for k, v in schema.items()
         } | dict(raw.get("defaults") or {})
         self._validate()
+        self._aggregate_by_key = self._build_aggregate_by_key()
+        self._warnings = self._build_warnings()
 
     # -- introspection the rest of the system consumes ------------------------
 
@@ -241,19 +463,125 @@ class AdapterSpec:
     def defaults(self) -> dict:
         return dict(self._defaults)
 
+    def aggregate_by_key(self) -> dict:
+        """key -> the fold policy the tick applies to that key's samples."""
+        return dict(self._aggregate_by_key)
+
+    def tick_steps(self) -> list:
+        """Steps that run once per tick, in declaration order, across all sources."""
+        return [s for src in self.sources for s in src.tick_steps]
+
+    def message_steps(self, source_id: str) -> list:
+        return self._by_id()[source_id].message_steps
+
+    def resolved_thresholds(self) -> dict:
+        """key -> the integer tick count a declared `debounce_s` resolved to."""
+        return {
+            k: step.threshold
+            for src in self.sources for step in src.steps
+            for k in step.keys
+            if step.threshold is not None
+        }
+
+    def warnings(self) -> list:
+        """Non-fatal descriptor smells, published in the manifest so they are visible
+        on the wire rather than only in a log nobody reads."""
+        return list(self._warnings)
+
+    def _by_id(self) -> dict:
+        return {s.id: s for s in self.sources}
+
     def manifest(self) -> dict:
-        """The JSON this adapter announces on the wire. Everything a client needs to
-        render or validate against it, with no import of this package."""
+        """The JSON this adapter announces on the wire, as the keyword arguments
+        `core.api.build_adapter` takes -- so P3 publishes it with
+        `api.build_adapter(**spec.manifest(), seq=…, t=…)` and the shape cannot drift
+        from the wire contract.
+
+        Resolved values only: a `debounce_s` declared in the descriptor appears here
+        as the integer tick count it resolved to, on the schema entry for the key it
+        governs, so "10+ consecutive ticks" can be read off the wire instead of being
+        maintained by hand in a spec's prose.
+        """
+        thresholds = self.resolved_thresholds()
+        schema = {}
+        for key, entry in self.schema.items():
+            out = dict(entry)
+            if key in thresholds:
+                out["debounce_ticks"] = thresholds[key]
+            schema[key] = out
         return {
             "adapter": self.name,
             "doc": self.doc,
-            "schema": {k: dict(v) for k, v in self.schema.items()},
+            "tick_hz": self.tick_hz,
+            "warnings": self.warnings(),
+            "schema": schema,
             "sources": [
                 {"id": s.id, "topic": s.topic, "type": s.type,
-                 "tracked": s.tracked, "keys": sorted(s.keys)}
+                 "expected_hz": s.expected_hz, "max_age_s": s.max_age_s,
+                 "required": s.required, "tracked": s.tracked,
+                 "keys": sorted(s.keys),
+                 "steps": [
+                     # Exactly the fields the wire contract declares for a step.
+                     {"keys": list(step.keys),
+                      # A tick-step is not windowed; it yields one value per tick,
+                      # which is what `last` means for a reader folding samples.
+                      "aggregate": step.aggregate if step.on == "message" else "last",
+                      "on": step.on}
+                     for step in s.steps
+                 ]}
                 for s in self.sources
             ],
         }
+
+    # -- load-time validation -------------------------------------------------
+
+    def _build_aggregate_by_key(self) -> dict:
+        """key -> policy, refusing two sources that fold one key differently.
+
+        Two policies for one key is not a merge conflict the runtime could resolve;
+        it means the descriptor's author believed two incompatible things about what
+        the number means.
+        """
+        policy: dict[str, str] = {}
+        declared_by: dict[str, str] = {}
+        for src in self.sources:
+            for step in src.message_steps:
+                for key in step.keys:
+                    previous = policy.get(key)
+                    if previous is not None and previous != step.aggregate:
+                        raise ValueError(
+                            f"{self.name}: key {key!r} is folded as {previous!r} by "
+                            f"{declared_by[key]} and as {step.aggregate!r} by {src.id}; "
+                            f"one key has exactly one fold policy")
+                    policy[key] = step.aggregate
+                    declared_by[key] = src.id
+        return policy
+
+    def _build_warnings(self) -> list:
+        out = []
+        for src in self.sources:
+            if not src.declares_expected_hz:
+                out.append(
+                    f"source {src.id!r} declares no expected_hz; assuming the tick rate "
+                    f"({self.tick_hz} Hz), so its data-health report cannot detect a "
+                    f"slow topic")
+        for key, policy in self._aggregate_by_key.items():
+            if policy != "last":
+                continue
+            # Only continuous measurements. `last` on a state-like value (a planner
+            # state string, a bool, a waypoint index) is not a bug, it is the right
+            # answer -- warning about those trains people to ignore the warnings.
+            if not isinstance(self._defaults.get(key), float):
+                continue
+            for src in self.sources:
+                if key in src.windowed_keys and src.expected_hz > 2 * self.tick_hz:
+                    out.append(
+                        f"key {key!r} is folded with 'last' from {src.id!r} at "
+                        f"{src.expected_hz} Hz against a {self.tick_hz} Hz tick: about "
+                        f"{max(0, round(src.expected_hz / self.tick_hz) - 1)} of every "
+                        f"{round(src.expected_hz / self.tick_hz)} samples are discarded, "
+                        f"so a transient value can be missed entirely")
+        return out
 
     def _validate(self):
         produced = set()
@@ -269,6 +597,26 @@ class AdapterSpec:
                     raise ValueError(
                         f"{self.name}/{src.id}: step reads {sorted(bad_inputs)}, which the "
                         f"schema does not declare")
+                if step.on == "message":
+                    # A message-step chained onto another source's key reads a value
+                    # held from a different topic's cadence -- silently mixing two
+                    # time bases. A TICK-step legitimately reads the whole folded
+                    # observation, so the rule applies here only.
+                    foreign = set(step.inputs) - src.keys
+                    if foreign:
+                        raise ValueError(
+                            f"{self.name}/{src.id}: step {list(step.keys)} reads "
+                            f"{sorted(foreign)}, produced by another source; a "
+                            f"message-step may only chain on keys from its own source "
+                            f"(use 'on': \"tick\" to read the folded observation)")
+                for key in step.keys:
+                    default = self._defaults.get(key)
+                    if (step.aggregate in NUMERIC_AGGREGATES
+                            and isinstance(default, (str, bool))):
+                        raise ValueError(
+                            f"{self.name}/{src.id}: key {key!r} defaults to "
+                            f"{default!r} but is folded with the numeric aggregate "
+                            f"{step.aggregate!r}")
                 produced |= set(step.keys)
         missing_default = [
             k for k in set(self.schema) - produced
@@ -286,34 +634,159 @@ class SensorState:
     Nothing here knows about ROS: `update(source_id, payload)` takes an already
     decoded payload, which is exactly what makes the mapping testable with plain
     objects instead of a live graph.
+
+    The held values are TICK-STABLE. `update()` only appends to the open window;
+    `tick()` is the sole writer of the observation, and `sensor_eval()` is a pure read
+    of it. That separation is what makes the trace a function of the data rather than
+    of how many messages happened to arrive between two ticks.
     """
 
     def __init__(self, spec: AdapterSpec):
         self.spec = spec
         self.values = spec.defaults()
         self._by_id = {s.id: s for s in spec.sources}
+        self._aggregate = spec.aggregate_by_key()
+        self._quantile_by_key = {
+            k: step.q
+            for src in spec.sources for step in src.message_steps
+            for k in step.keys
+            if step.aggregate == "quantile"
+        }
+        #: key -> this tick's samples, in arrival order. Cleared by every tick.
+        self._window: dict[str, list] = {}
+        self._refreshed: frozenset = frozenset()
+        self._refreshed_sources: frozenset = frozenset()
+        self._window_sources: set = set()
+        #: Closed ticks. -1 until the first tick, so `ticks` is the index of the tick
+        #: `sensor_eval()` is currently describing.
+        self.ticks = -1
+        # Uncontended under the default single-threaded executor, and load-bearing the
+        # moment anyone adds a callback group, a MultiThreadedExecutor, or the server
+        # tier's network thread: without it a message landing mid-tick can append to a
+        # window that fold() has already read and clear() is about to drop, silently
+        # losing the sample.
+        self._lock = threading.Lock()
+
+    # -- write side ----------------------------------------------------------
 
     def update(self, source_id: str, payload) -> dict:
+        """Fold one decoded message into the OPEN window. Does not touch the held
+        values -- the observation changes only on `tick()`.
+
+        Returns this message's contribution layered over the held values: useful for
+        debugging and for a raw echo, but it is not the trace. The authoritative read
+        is `sensor_eval()`.
+        """
         src = self._by_id.get(source_id)
         if src is None:
             raise KeyError(f"unknown source {source_id!r}; have {sorted(self._by_id)}")
-        for step in src.steps:
-            self.values.update(step.apply(payload, self.values))
-        return self.values
+        with self._lock:
+            # Scratch in front of the held values: later steps of THIS message see
+            # what earlier steps of this same message produced, so upright_flag is
+            # computed from this message's roll/pitch/height and not last tick's.
+            scratch: dict = {}
+            chained = ChainMap(scratch, self.values)
+            for step in src.message_steps:
+                scratch.update(step.apply(payload, chained))
+            for key, value in scratch.items():
+                self._window.setdefault(key, []).append(value)
+            if scratch:
+                self._window_sources.add(source_id)
+            return dict(self.values) | scratch
+
+    def tick(self, t: float | None = None) -> dict:
+        """Close the open window and produce the observation for this tick.
+
+        fold -> capture refreshed -> commit atomically -> clear the window -> run
+        tick-steps -> freeze. The fold is built in full before anything is committed,
+        so a bad aggregator raises with the previous observation intact rather than
+        leaving half of it updated. The window is cleared BEFORE the tick-steps run,
+        so a tick-step's output goes straight to the held values and is never itself
+        windowed.
+
+        Fires whether or not any message arrived: a tick with no data is precisely the
+        tick that has to report that nothing arrived. A key with no sample holds its
+        previous value -- zero-order hold -- and `refreshed_keys()` is what says the
+        number is stale rather than steady.
+        """
+        with self._lock:
+            folded = {}
+            try:
+                for key, samples in self._window.items():
+                    step_aggregate = self._aggregate.get(key, DEFAULT_AGGREGATE)
+                    folded[key] = self._fold(key, step_aggregate, samples)
+            except Exception:
+                # Nothing has been committed yet, so the previous observation is
+                # intact. Drop the window anyway: a poisoned sample must cost exactly
+                # one window, not raise out of every tick from here on.
+                self._window.clear()
+                self._window_sources.clear()
+                raise
+
+            refreshed = frozenset(folded)
+            refreshed_sources = frozenset(self._window_sources)
+
+            self.values.update(folded)
+            self._window.clear()
+            self._window_sources.clear()
+
+            for step in self.spec.tick_steps():
+                self.values.update(step.apply(None, self.values))
+
+            self._refreshed = refreshed
+            self._refreshed_sources = refreshed_sources
+            self.ticks += 1
+            return dict(self.values)
+
+    def _fold(self, key: str, policy: str, samples: list):
+        try:
+            if policy == "quantile":
+                return _quantile(samples, self._quantile_by_key[key])
+            return AGGREGATORS[policy](samples)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{self.spec.name}: folding key {key!r} with {policy!r} over "
+                f"{len(samples)} sample(s) failed: {exc}") from exc
+
+    # -- read side (pure) ----------------------------------------------------
 
     def sensor_eval(self) -> dict:
-        return dict(self.values)
+        """The observation for the last closed tick. A PURE read: call it any number
+        of times between ticks and get the same dict, and calling it never consumes
+        the window."""
+        with self._lock:
+            return dict(self.values)
+
+    def refreshed_keys(self) -> frozenset:
+        """Keys that got a real sample in the tick just closed.
+
+        Everything else in `sensor_eval()` is held over from an earlier tick. This is
+        the seam three-valued APs will use: a held number is not a wrong number, but
+        it is not evidence either.
+        """
+        return self._refreshed
+
+    def refreshed_sources(self) -> frozenset:
+        """Source ids that delivered at least one message in the tick just closed."""
+        return self._refreshed_sources
+
+    def pending_samples(self) -> int:
+        """Samples sitting in the OPEN window. Zero right after any tick -- an idle
+        period must not accumulate."""
+        with self._lock:
+            return sum(len(v) for v in self._window.values())
 
 
 # ------------------------------------------------------------------- loading
 
 def load(name_or_path) -> AdapterSpec:
     """Load a descriptor by adapter name ('real_g1'), file name, or path."""
+    adapters = skill_monitor.adapters_dir()
     path = Path(name_or_path)
     if not path.suffix:
-        path = ADAPTERS_DIR / f"{name_or_path}.json"
+        path = adapters / f"{name_or_path}.json"
     elif not path.is_absolute() and not path.exists():
-        path = ADAPTERS_DIR / path.name
+        path = adapters / path.name
     if not path.exists():
         raise FileNotFoundError(
             f"no adapter descriptor {path.name!r} (have: {available()})")
@@ -321,7 +794,8 @@ def load(name_or_path) -> AdapterSpec:
     return from_dict(raw, base_dir=path.parent)
 
 
-def from_dict(raw: dict, base_dir: Path = ADAPTERS_DIR) -> AdapterSpec:
+def from_dict(raw: dict, base_dir: Path | None = None) -> AdapterSpec:
+    base_dir = skill_monitor.adapters_dir() if base_dir is None else base_dir
     schema = raw.get("schema")
     if isinstance(schema, str):
         schema = json.loads((base_dir / schema).read_text())["keys"]
@@ -332,4 +806,5 @@ def from_dict(raw: dict, base_dir: Path = ADAPTERS_DIR) -> AdapterSpec:
 
 def available() -> list:
     return sorted(
-        p.stem for p in ADAPTERS_DIR.glob("*.json") if not p.stem.endswith("_schema"))
+        p.stem for p in skill_monitor.adapters_dir().glob("*.json")
+        if not p.stem.endswith("_schema"))

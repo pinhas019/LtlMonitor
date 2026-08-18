@@ -6,11 +6,34 @@ No ROS import, unit-testable.
 
 from __future__ import annotations
 
+import math
+
 _BLOCKED_STATES = frozenset({"no_traversable", "unreachable", "no_path_found"})
 
 
 def is_blocked_state(state: str) -> bool:
     return state in _BLOCKED_STATES
+
+
+def threshold_from_seconds(debounce_s: float, tick_hz: float) -> int:
+    """A debounce duration in SECONDS -> the integer tick count that realises it.
+
+    The descriptor declares a duration because a duration is what the operator means
+    ("blocked for ten seconds"); the counter needs ticks. Resolving here, once, at
+    load, is what stops the two drifting: the resolved integer is published in
+    `AdapterSpec.manifest()`, so the "10+ consecutive ticks" prose in a spec can be
+    read off the wire instead of being maintained by hand.
+
+    Rounds UP -- a debounce must never fire earlier than declared -- and floors at one
+    tick, since a debounce shorter than the tick period is still one observation.
+    """
+    if not debounce_s > 0:
+        raise ValueError(f"debounce_s must be positive, got {debounce_s!r}")
+    if not tick_hz > 0:
+        raise ValueError(f"tick_hz must be positive, got {tick_hz!r}")
+    # round() before ceil(): 1.1 * 10 is 11.000000000000002 in binary floating point,
+    # and a bare ceil() would silently turn a declared 11 ticks into 12.
+    return max(1, math.ceil(round(debounce_s * tick_hz, 9)))
 
 
 class StuckStreak:

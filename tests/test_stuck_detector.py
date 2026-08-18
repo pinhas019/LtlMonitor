@@ -1,6 +1,18 @@
-"""Unit tests for stuck_detector.py. Run: python3 -m pytest test_stuck_detector.py"""
+"""Unit tests for stuck_detector.py. Run: python3 -m pytest tests/test_stuck_detector.py
 
-from skill_monitor.core.stuck_detector import is_blocked_state, StuckStreak
+`StuckStreak` counts whatever it is `update()`d with. Whether that is one message or
+one tick is the CALLER's choice, and getting it wrong is what made a declared 10 s
+debounce mean 2 s on a 5 Hz topic -- see tests/test_adapter_spec.py, which pins the
+adapter to advancing it once per tick. `threshold_from_seconds` is the other half of
+that fix: the descriptor declares a duration, and the tick count is derived from it
+exactly once, at load.
+"""
+
+import pytest
+
+from skill_monitor.core.stuck_detector import (
+    is_blocked_state, StuckStreak, threshold_from_seconds,
+)
 
 
 def test_is_blocked_state_matches_exact_vocabulary():
@@ -43,3 +55,43 @@ def test_streak_stays_stuck_while_state_remains_blocked():
     s.update("no_path_found")
     assert s.is_stuck
     assert s.count == 3
+
+
+# ------------------------------------------ seconds -> ticks, resolved at load
+
+def test_threshold_is_the_tick_count_the_duration_implies():
+    assert threshold_from_seconds(10.0, 1.0) == 10
+    assert threshold_from_seconds(10.0, 5.0) == 50
+    assert threshold_from_seconds(4.0, 0.5) == 2
+
+
+def test_threshold_rounds_up_so_a_debounce_never_fires_early():
+    assert threshold_from_seconds(2.5, 1.0) == 3
+    assert threshold_from_seconds(1.01, 1.0) == 2
+
+
+def test_threshold_floors_at_one_tick():
+    """A debounce shorter than the tick period is still one observation, not zero --
+    a zero threshold would make `is_stuck` true before any sample arrived."""
+    assert threshold_from_seconds(0.1, 1.0) == 1
+    assert threshold_from_seconds(1e-9, 1.0) == 1
+    assert StuckStreak(threshold=threshold_from_seconds(0.1, 1.0)).is_stuck is False
+
+
+def test_threshold_is_not_defeated_by_binary_floating_point():
+    """1.1 * 10 is 11.000000000000002; a bare ceil() would silently make it 12."""
+    assert threshold_from_seconds(1.1, 10.0) == 11
+    assert threshold_from_seconds(0.3, 10.0) == 3
+    assert threshold_from_seconds(0.7, 10.0) == 7
+
+
+@pytest.mark.parametrize("debounce_s", [0.0, -1.0])
+def test_non_positive_debounce_is_rejected(debounce_s):
+    with pytest.raises(ValueError, match="debounce_s"):
+        threshold_from_seconds(debounce_s, 1.0)
+
+
+@pytest.mark.parametrize("tick_hz", [0.0, -5.0])
+def test_non_positive_tick_hz_is_rejected(tick_hz):
+    with pytest.raises(ValueError, match="tick_hz"):
+        threshold_from_seconds(1.0, tick_hz)
