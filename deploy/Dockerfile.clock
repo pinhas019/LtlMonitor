@@ -1,0 +1,28 @@
+# The clock: the tick every other service advances on. One container per tier, because
+# both tiers need one and because a replay run swaps THIS image and nothing else.
+#
+# Deliberately the thinnest image in the stack: no adapters, no specs, no /config and no
+# /data. The clock reads nothing from disk -- a clock whose behaviour depended on a
+# mounted file would be a clock whose tick count depended on deployment.
+FROM ros:humble
+
+WORKDIR /app
+
+# No apt layer: std_msgs/String and rclpy are in ros-base, and everything else this
+# service needs (http.server, hashlib, struct) is the standard library. The WebSocket
+# stream is ~30 lines of RFC 6455 framing in clock_node.py rather than a pip dependency
+# in every tier's image.
+COPY skill_monitor/ ./skill_monitor/
+COPY pyproject.toml ./
+
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app:${PYTHONPATH}
+
+# Documentation only -- the compose files run this with network_mode: host, so the port
+# is the host's. 8081, because 8080 is the gateway.
+EXPOSE 8081
+
+# --tick-hz/--rate, --mode/--source, --paused, --port. The compose files pass the
+# --rate/--source spelling:
+#   docker run ... skill-monitor/clock --rate 1.0 --source wall
+#   docker run ... skill-monitor/clock --rate 1.0 --source replay --paused
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 -m skill_monitor.backend.clock_node \"$@\"", "--"]
