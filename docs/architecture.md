@@ -118,6 +118,17 @@ over completely different topics:
 | `mujoco` | `/odom`, `/scan`, `/navigate_to_pose/_action/status`, `/vision/goal_similarity` |
 | `isaac_lab` | `/odom`, `/g1/lidar/points`, `/navigate_to_pose/_action/status`, `/vision/goal_similarity` |
 
+**Superseded, and the reason matters.** The robot no longer runs Nav2 — navigation is the
+TRAV algorithm on a RealSense D435i, no lidar. That change alone would have broken the two
+sim descriptors above, and it exposed a deeper fault: the schema read the *planner's own
+status* (`nav_state`, `nav_mode`, `nav_stuck`, `mission_finished`, `num_waypoints`,
+`current_target_idx`), so swapping planners broke the monitor. A monitor that must be told
+by the planner whether the planner is stuck is not independent of it.
+
+[P12](packages/P12-planner-independent-schema.md) redesigns the schema around the robot's
+own sensors plus the commanded waypoints, and forbids every planner topic by test. Until it
+lands, treat the schema table below as describing the old, planner-coupled design.
+
 ```bash
 python3 -c "from skill_monitor.core import adapter_spec as a; \
   print({n: sorted(a.load(n).keys()) == sorted(a.load('real_g1').keys()) for n in a.available()})"

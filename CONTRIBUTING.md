@@ -45,12 +45,20 @@ alone — a manifest nobody reads is dead code.
 
 ### Non-negotiable
 
-1. **Never two live branches touching the same layer.** That is the merge conflict.
-2. **Rebase on `dev` before merging.** History here is linear; keep it that way.
-3. **Push at the end of every session.** An unpushed branch exists on one disk.
+1. **Merges happen only through a pull request, and the merge is fast-forward.**
+   Never `git merge` a feature branch into `dev` locally. The PR is the review
+   record; a local merge skips review and leaves nothing showing the change was
+   looked at.
+2. **Pull with `git pull --rebase`, always.** A plain `git pull` manufactures a
+   merge bubble and destroys the linear history that makes `git log` and `git
+   bisect` readable here.
+3. **Never two live branches touching the same layer.** That is the merge conflict.
+4. **Rebase on `dev` before opening the PR.** Fast-forward is only possible if the
+   branch is already ahead of `dev` and nothing else.
+5. **Push at the end of every session.** An unpushed branch exists on one disk.
    `~/TRAV-metric-map` is the cautionary tale: its long-lived branches reached
    *ahead 10, behind 8* of their remotes, in the repo the robot pulls from.
-4. **A branch you cannot name in one `<type>-<topic>` phrase is two branches.**
+6. **A branch you cannot name in one `<type>-<topic>` phrase is two branches.**
 
 ### Not doing
 

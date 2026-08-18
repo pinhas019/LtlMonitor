@@ -204,6 +204,12 @@ ticks"; `_fn_stuck_streak` ([adapter_spec.py:86](../skill_monitor/core/adapter_s
 advances inside `Step.apply`, i.e. once per incoming message. At a 5 Hz status topic that
 debounce is 2 s, not 10 s.
 
+**Superseded by [P12](packages/P12-planner-independent-schema.md):** `nav_stuck` is being
+removed altogether, along with every other key sourced from the planner's status stream. It
+becomes `no_progress`, derived from odometry against the commanded goal — which also fixes
+the deeper problem that a planner reporting `following` while physically wedged was
+structurally invisible. The debounce-in-ticks fix below still applies, to the new key.
+
 **In sim it never fires at all.** `mujoco.json` and `isaac_lab.json` attach the streak to
 the Nav2 source, whose `GoalStatusArray` publishes on status *transitions*, not periodically.
 The same spec on the same trajectory debounces for 10 s on the robot and never triggers in
