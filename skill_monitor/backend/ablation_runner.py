@@ -22,19 +22,43 @@ from rclpy.node import Node
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped
 
-from skill_monitor.core.episode_outcome import classify_outcome, safety_fault_from_state
+from skill_monitor.core import api
+from skill_monitor.core.episode_outcome import classify_outcome
+from skill_monitor.core.monitor_action import Action
+
+
+def safety_fault_from_verdict(verdict: dict) -> str | None:
+    """The name of the fault that stopped the robot, or None.
+
+    Read straight off the verdict's intervention token rather than re-graded here. The
+    monitor decides the rung; an episode driver that re-derived it from the raw failure
+    modes would be a third opinion on the same tick, and the one most likely to drift.
+    """
+    intervention = (verdict or {}).get("intervention") or {}
+    try:
+        action = Action[intervention.get("action", "CONTINUE")]
+    except KeyError:
+        return None
+    if action < Action.HALT:
+        return None
+    violated = next(
+        (fm for fm in (verdict.get("failure_modes") or [])
+         if fm.get("status") == "VIOLATED"),
+        None,
+    )
+    return (violated or {}).get("name") or intervention.get("category") or "fault"
 
 
 class G1EpisodeDriver(Node):
     def __init__(self):
         super().__init__("g1_episode_driver")
         self.nav_status = ""
-        self.state_desc: dict = {}
+        self.verdict: dict = {}
         self.reset_done = False
 
         self.reset_pub = self.create_publisher(String, "/g1/reset", 10)
         self.goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
-        self.create_subscription(String, "/ltl/state_description", self._on_state, 10)
+        self.create_subscription(String, api.VERDICT, self._on_verdict, 10)
         self.create_subscription(Bool, "/g1/reset_done", self._on_reset_done, 10)
         # Nav2 action status (GoalStatusArray) — imported lazily so this module parses
         # without the action_msgs dependency during offline inspection.
@@ -45,9 +69,9 @@ class G1EpisodeDriver(Node):
         )
 
     # ---- callbacks ----
-    def _on_state(self, msg: String):
+    def _on_verdict(self, msg: String):
         try:
-            self.state_desc = json.loads(msg.data)
+            self.verdict = json.loads(msg.data)
         except json.JSONDecodeError:
             pass
 
@@ -64,7 +88,7 @@ class G1EpisodeDriver(Node):
     # ---- one episode ----
     def run_episode(self, scenario: dict, goal_xy, timeout_s: float = 120.0) -> dict:
         """Reset to ``scenario``, drive to ``goal_xy``, return an outcome record."""
-        self.nav_status, self.state_desc, self.reset_done = "", {}, False
+        self.nav_status, self.verdict, self.reset_done = "", {}, False
 
         self.reset_pub.publish(String(data=json.dumps(scenario)))
         self._spin_until(lambda: self.reset_done, timeout_s=20.0)
@@ -84,7 +108,7 @@ class G1EpisodeDriver(Node):
         while rclpy.ok() and not outcome.terminal:
             rclpy.spin_once(self, timeout_sec=0.1)
             timed_out = (time.monotonic() - start) > timeout_s
-            fault = safety_fault_from_state(self.state_desc)
+            fault = safety_fault_from_verdict(self.verdict)
             outcome = classify_outcome(self.nav_status, fault, timed_out)
 
         return {
