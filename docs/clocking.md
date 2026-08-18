@@ -26,8 +26,11 @@ Three rates, named once so they are never conflated again:
 | `max_age_s`, `debounce_s`, `emit_delay_s` | durations | seconds |
 | `max_steps`, `progress_violation_limit` | legacy spec budgets | **ticks** — see P11 |
 
-**Tick *k* is the half-open interval `[B_k, B_k+1)` where `B_k = t₀ + k·Δ`**, measured on
-the active clock — wall clock live, replay clock offline. Half-open is the point: every
+**Tick *k* is the half-open interval `(B_k−1, B_k]` where `B_k = t₀ + k·Δ`**, measured on
+the active clock — wall clock live, replay clock offline. **A tick is named by the boundary
+that closes it**, so the pulse, the observation and the verdict carrying `seq=k` all describe
+the same interval: the one that just ended. Naming it by its opening boundary instead would
+put a permanent off-by-one between the pulse and everything downstream. Half-open is the point: every
 instant belongs to exactly one tick, so no sample is counted twice and none falls between
 ticks.
 

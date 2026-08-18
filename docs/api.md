@@ -14,7 +14,7 @@ Every `/monitor/*` topic is `std_msgs/String` carrying a JSON object with:
 | field | type | meaning |
 |---|---|---|
 | `schema_version` | int | bumped on any breaking change to a payload below |
-| `seq` | int | tick index since the clock started — monotonic, never reused |
+| `seq` | int | **closing boundary index** of the interval this payload describes. Everything carrying `seq=n` — pulse, observation, verdict — refers to the same interval, the one that just ended. Monotonic, never reused |
 | `t` | float | seconds on the active clock at the tick boundary |
 | `step` | int｜null | tick index *within the current episode*; resets on `arm`/`reset` |
 
@@ -48,12 +48,12 @@ sequenceDiagram
   Note over E: window k open at B_k
   S-->>E: samples, async, any rate
   S-->>E: samples
-  C->>E: /monitor/tick seq=k+1
-  C->>M: /monitor/tick seq=k+1
-  Note over E: close k — fold, commit,<br/>tick-steps, open k+1
+  C->>E: /monitor/tick seq=k
+  C->>M: /monitor/tick seq=k
+  Note over E: close interval k — fold, commit,<br/>tick-steps, open k+1
   E->>M: /monitor/observation seq=k
   E->>F: /monitor/observation seq=k
-  M->>M: automaton steps once for tick k
+  M->>M: automaton steps once for interval k
   M->>P: /monitor/verdict seq=k + intervention token
   M->>F: /monitor/verdict seq=k
   P->>P: enforce token if enabled
