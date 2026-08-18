@@ -1,0 +1,49 @@
+# The gateway: REST + WebSocket in front of the ROS graph, so the frontend needs no DDS.
+#
+#   docker compose -f deploy/docker-compose.server.yml up gateway
+#
+# SECURITY, stated rather than half-built: this service has NO AUTHENTICATION. Every
+# endpoint is open to anything that can reach the port, including
+# `POST /api/monitors/{ns}/command`, which can reset a live mission. It is meant for the
+# server tier's own network. If that network is not trusted, terminate TLS and
+# authenticate in a reverse proxy IN FRONT of this container -- see the module docstring
+# in skill_monitor/backend/gateway.py for why a token check bolted on here would be
+# worse than none.
+#
+# ros:humble and not python:slim, unlike the describer: this image is the one that
+# actually needs rclpy. Not the monitor base either -- the gateway forwards a JSON
+# string it never interprets, so it needs no Spot and none of that ~10 min source build.
+FROM ros:humble
+
+WORKDIR /app
+
+# Nothing to pip install. The HTTP server, the WebSocket framing (RFC 6455) and the
+# clock proxy are all stdlib -- see pyproject.toml, which deliberately declares no
+# install_requires. A websocket dependency would buy async plumbing and
+# permessage-deflate, neither of which a 1-5 Hz verdict stream wants, and would put a
+# pip install between `python3 -m pytest` and a green suite on a laptop with no ROS.
+COPY skill_monitor/ ./skill_monitor/
+COPY pyproject.toml ./
+
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app:${PYTHONPATH}
+
+# Artifacts on a volume, code in the image -- the same split every other service uses.
+# The gateway only reads them: it serves specs a client pushes and never writes one.
+ENV SKILL_MONITOR_CONFIG=/config
+VOLUME ["/config", "/data"]
+
+# Decorative under the host networking docker-compose.server.yml uses, but it is the
+# only place the default port is written down for anyone reading the image.
+EXPOSE 8080
+
+# Its own liveness, never the clock's: /api/clock/health answers for a DIFFERENT
+# process, and a healthcheck that proxies is how a dead service reports green. urllib
+# rather than curl, which is not in the base image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python3 -c "import urllib.request,sys; \
+sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4).status == 200 else 1)"
+
+# argv is appended, so `command: ["--port", "8080"]` in compose works and `--help`
+# lists the real flags (--host, --port, --clock-url, --stale-after, --queue,
+# --spec-timeout, --no-ros).
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && export PYTHONPATH=/app:${PYTHONPATH} && exec python3 -m skill_monitor.backend.gateway \"$@\"", "--"]
