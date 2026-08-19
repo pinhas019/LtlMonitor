@@ -226,8 +226,12 @@ def _path(obj, dotted: str):
 
 
 def _positive(value, label: str) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or not value > 0:
-        raise ValueError(f"{label} must be a positive number, got {value!r}")
+    """`inf` is excluded as well as zero: a rate of infinity makes max_age_s zero, so
+    every source is permanently late, and a bool is excluded because a JSON `true`
+    would otherwise pass as 1."""
+    if (not isinstance(value, (int, float)) or isinstance(value, bool)
+            or not math.isfinite(value) or not value > 0):
+        raise ValueError(f"{label} must be a positive, finite number, got {value!r}")
     return float(value)
 
 
@@ -303,6 +307,12 @@ class Step:
         self.declares_debounce_s = "debounce_s" in args
         self.debounce_s = args.pop("debounce_s", None)
         if self.declares_debounce_s:
+            if self.debounce_s is None:
+                # `"debounce_s": null` used to fall through to the extractor's own
+                # default of 10, in a file that raises on a misspelt "agregate".
+                raise ValueError(
+                    f"{source_id}: step {list(self.keys)} declares 'debounce_s': null; "
+                    f"declare a duration in seconds or omit the key entirely")
             if "threshold" in args:
                 raise ValueError(
                     f"{source_id}: step {list(self.keys)} declares both 'threshold' and "
@@ -314,7 +324,11 @@ class Step:
                     f"on {self.on!r}; a debounce in seconds is only meaningful on "
                     f'\'on\': "tick", otherwise it counts messages and scales with the '
                     f"topic's publish rate")
-            args["threshold"] = threshold_from_seconds(self.debounce_s, tick_hz)
+            try:
+                args["threshold"] = threshold_from_seconds(self.debounce_s, tick_hz)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{source_id}: step {list(self.keys)}: {exc}") from exc
         #: The resolved tick count, when this step debounces. Published in manifest().
         self.threshold = args.get("threshold")
 
@@ -582,28 +596,52 @@ class AdapterSpec:
 
     def _build_warnings(self) -> list:
         out = []
+        unrated: dict[str, list] = {}      # source id -> its unrateable 'last' keys
         for src in self.sources:
             if not src.declares_expected_hz:
                 out.append(
                     f"source {src.id!r} declares no expected_hz; assuming the tick rate "
                     f"({self.tick_hz} Hz), so its data-health report cannot detect a "
                     f"slow topic")
-        for key, policy in self._aggregate_by_key.items():
+        for key, policy in sorted(self._aggregate_by_key.items()):
             if policy != "last":
                 continue
-            # Only continuous measurements. `last` on a state-like value (a planner
-            # state string, a bool, a waypoint index) is not a bug, it is the right
-            # answer -- warning about those trains people to ignore the warnings.
-            if not isinstance(self._defaults.get(key), float):
+            # Only measurements. `last` on a state-like value (a planner state string
+            # or a bool) is not a bug, it is the right answer -- warning about those
+            # trains people to ignore the warnings. An int default is still a
+            # measurement: `isinstance(default, float)` alone silently exempted every
+            # `"default": 0` key, which is most of them.
+            default = self._defaults.get(key)
+            if not isinstance(default, (int, float)) or isinstance(default, bool):
                 continue
             for src in self.sources:
-                if key in src.windowed_keys and src.expected_hz > 2 * self.tick_hz:
+                if key not in src.windowed_keys:
+                    continue
+                if not src.declares_expected_hz:
+                    unrated.setdefault(src.id, []).append(key)
+                elif src.expected_hz > 2 * self.tick_hz:
                     out.append(
                         f"key {key!r} is folded with 'last' from {src.id!r} at "
                         f"{src.expected_hz} Hz against a {self.tick_hz} Hz tick: about "
                         f"{max(0, round(src.expected_hz / self.tick_hz) - 1)} of every "
                         f"{round(src.expected_hz / self.tick_hz)} samples are discarded, "
                         f"so a transient value can be missed entirely")
+
+        # One line per SOURCE, not per key: the discarded-samples test above is the
+        # thing that surfaces the transient-obstacle bug, and it can never fire on a
+        # source whose expected_hz silently defaulted to the tick rate -- which is
+        # exactly the descriptor that declares no rates at all, i.e. every descriptor
+        # shipped today. Saying nothing there reports a clean bill of health for the
+        # file the check exists to catch.
+        for src in self.sources:
+            keys = unrated.get(src.id)
+            if keys:
+                out.append(
+                    f"measured key(s) {sorted(keys)} are folded with 'last' from "
+                    f"{src.id!r}, which declares no expected_hz: the discarded-samples "
+                    f"check cannot run for {src.id!r} at all, so a transient value may "
+                    f"be being missed and nothing here can tell you. Declare "
+                    f"expected_hz on {src.id!r}, or declare the fold")
         return out
 
     def _validate(self):
@@ -649,6 +687,48 @@ class AdapterSpec:
             raise ValueError(
                 f"{self.name}: schema keys {sorted(missing_default)} are never produced by "
                 f"any source and have no default -- they would read as None at runtime")
+        self._validate_input_order()
+
+    def _validate_input_order(self):
+        """`inputs` must name values that are already computed when the step runs.
+
+        Nothing else enforces this. Steps execute in declaration order -- message-steps
+        within their source, then `tick_steps()`, which is source-order x step-order --
+        so a consumer declared before its producer reads LAST TICK's value, silently,
+        for the whole life of the descriptor. Swapping two `sources` entries, or
+        putting `upright_flag` above `base_height`, currently loads without complaint
+        and makes every derived value one tick stale.
+
+        A step reading a key it also writes is allowed: that is an accumulator reading
+        its own previous value, which is a real pattern and unambiguous. Only a
+        STRICTLY LATER producer is an error.
+        """
+        def offend(consumer, key, producer, why):
+            raise ValueError(
+                f"{self.name}: step {list(consumer.keys)} reads {key!r}, which is "
+                f"produced later in the same tick by step {list(producer.keys)} "
+                f"({why}); `inputs` may only name values already computed this tick, "
+                f"so as declared it reads the PREVIOUS tick's value")
+
+        for src in self.sources:
+            for i, step in enumerate(src.message_steps):
+                for key in step.inputs:
+                    for later in src.message_steps[i + 1:]:
+                        if key in later.keys:
+                            offend(step, key, later,
+                                   f"a later message-step of {src.id!r}")
+                    for tick_step in src.tick_steps:
+                        if key in tick_step.keys:
+                            offend(step, key, tick_step,
+                                   "a tick-step, which runs after every message-step")
+
+        ordered_tick_steps = self.tick_steps()
+        for i, step in enumerate(ordered_tick_steps):
+            for key in step.inputs:
+                for later in ordered_tick_steps[i + 1:]:
+                    if key in later.keys:
+                        offend(step, key, later,
+                               f"a later tick-step (from source {later.source_id!r})")
 
 
 class SensorState:
