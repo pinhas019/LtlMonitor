@@ -246,12 +246,16 @@ so the frontend has one origin.
 
 | endpoint | purpose |
 |---|---|
-| `GET /api/clock` | `{seq, t, t0, tick_hz, mode, uptime_s, subscribers}` |
+| `GET /api/clock` | `{seq, t, t0, tick_hz, mode, clock_time_s, subscribers}` |
 | `WS /api/clock/stream` | one frame per pulse, **identical payload to `/monitor/tick`** |
 | `POST /api/clock/mode` | `{"mode": "manual"}` |
-| `POST /api/clock/step` | advance exactly one tick — `manual` mode only |
-| `POST /api/clock/rate` | `{"tick_hz": 5.0}` |
+| `POST /api/clock/step` | advance exactly one tick — any **driven** clock, so `manual` *or* `replay`; `wall` is a 409 |
+| `POST /api/clock/rate` | `{"tick_hz": 5.0}`, `0 < tick_hz <= 1000` |
 | `GET /api/clock/health` | liveness, and whether anything consumes the pulse |
+
+`clock_time_s` is seconds advanced on the **active** clock, which is wall uptime only on
+a `wall` clock: a `manual` clock stepped three times reports 3.0 however long the process
+has been running. `GET /api/clock/health` carries both it and a true `uptime_s`.
 
 Two constraints that are part of the contract, not implementation detail:
 
