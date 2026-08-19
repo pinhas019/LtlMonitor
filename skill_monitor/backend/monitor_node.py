@@ -303,6 +303,11 @@ def spec_from_dict(data) -> SkillSpec:
 # Declared in core so the pure risk block and this node's phase machine cannot drift.
 _PHASE_VIOLATION_LIMIT = manifest_mod.PHASE_VIOLATION_LIMIT
 
+#: One warn line per this many consecutively refused observations, after the first.
+#: A refusal burst is bounded now, but "bounded" was 5001 lines before it was one lost
+#: tick, and a log that drowns its own signal is its own outage.
+_REFUSAL_LOG_EVERY = 100
+
 
 def _infer_state_annotations(
     mon: LTLMonitor, spec: "SkillSpec"
@@ -708,6 +713,9 @@ class LtlMonitorNode(Node):
         self._tick_seq = 0
         self._tick_t = 0.0
         self._missed_ticks = 0
+        #: Observations refused in a row since the last admitted step. Throttles the
+        #: refusal warning; see `_note_refusal`.
+        self._refused_run = 0
         #: Which observation topics have delivered at least once, so the dual-run
         #: window is announced once per wire instead of once per tick.
         self._wires_seen: set[str] = set()
@@ -1410,18 +1418,27 @@ class LtlMonitorNode(Node):
         # than deduplicated somewhere downstream where the counters already moved.
         # `epoch` is the clock's `t0`: a restarted clock renumbers from 0, and without
         # it every tick after a restart reads as stale forever.
-        admission = self.ledger.admit(obs.seq, epoch=self.clock_epoch)
+        #
+        # `clock_seq` bounds what the ledger will adopt as a first index. Both numbers
+        # are here, on the same object, so the check costs nothing: an observation that
+        # names a tick the clock has not published is the tail of the epoch that just
+        # ended, and adopting it as the high-water mark refuses the whole restarted
+        # stream underneath it -- 5001 consecutive refusals for an epoch that reached
+        # 5000, and never at all for a corrupt index.
+        admission = self.ledger.admit(
+            obs.seq,
+            epoch=self.clock_epoch,
+            clock_seq=self.clock_seq if self._clock_seen else None,
+        )
         if admission.reason == "epoch":
             self.get_logger().warn(
                 f"New tick epoch adopted at seq {admission.seq}; a backwards index is "
                 f"a restarted clock, not a stale message, and is stepped."
             )
         if not admission.step:
-            self.get_logger().warn(
-                f"Tick {admission.seq} {admission.reason}; already stepped through "
-                f"seq {self.ledger.last_seq} — not stepping again"
-            )
+            self._note_refusal(admission)
             return
+        self._note_step_resumed()
         if admission.missed:
             # Counted and published, never interpolated: fabricating the observations
             # that did not arrive would put invented evidence in the automaton's past.
@@ -1430,6 +1447,41 @@ class LtlMonitorNode(Node):
             )
 
         self._step_once(obs, admission)
+
+    def _note_refusal(self, admission) -> None:
+        """Say that an observation was refused, without saying it 5001 times.
+
+        The reason decides the sentence: `redelivered`/`stale` is a tick already stepped
+        past, while `ahead` is one the clock itself has not reached -- a different fault
+        with a different cause, and printing "already stepped through seq None" for it
+        was actively misleading.
+        """
+        self._refused_run += 1
+        if self._refused_run != 1 and self._refused_run % _REFUSAL_LOG_EVERY:
+            return
+        run = (
+            "" if self._refused_run == 1
+            else f" ({self._refused_run} refused in a row)"
+        )
+        if admission.reason == "ahead":
+            self.get_logger().warn(
+                f"Tick {admission.seq} is ahead of the clock's own seq "
+                f"{self.clock_seq}; it belongs to a stream this ledger is not in and "
+                f"is not adopted as the epoch's first tick{run}"
+            )
+        else:
+            self.get_logger().warn(
+                f"Tick {admission.seq} {admission.reason}; already stepped through "
+                f"seq {self.ledger.last_seq} — not stepping again{run}"
+            )
+
+    def _note_step_resumed(self) -> None:
+        """Close a refusal burst on the console, once, with its length."""
+        if self._refused_run:
+            self.get_logger().info(
+                f"Stepping again after {self._refused_run} refused observation(s)."
+            )
+            self._refused_run = 0
 
     def _step_once(self, obs, admission) -> None:
         """Advance the automata and the phase machine exactly one tick, then publish.

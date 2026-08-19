@@ -138,7 +138,7 @@ class Admission:
     step: bool
     seq: int
     missed: int
-    reason: str  # first | advanced | redelivered | stale | implicit | epoch
+    reason: str  # first | advanced | redelivered | stale | ahead | implicit | epoch
 
 
 def tick_epoch(tick) -> float | None:
@@ -211,11 +211,19 @@ class TickLedger:
     keeps stepping. An absent one (a clock that predates `t0`) means one epoch forever,
     which is exactly the behaviour above.
 
-    The residual, stated rather than engineered away: the epoch is carried on
-    `/monitor/tick` and the `seq` on `/monitor/observation`, so an observation from the
-    old epoch that arrives after the new clock's first pulse is adopted as the new
-    epoch's first tick. It costs the ticks between that index and the restart, once, on
-    a restart -- against going deaf permanently, which is what it replaces.
+    The residual, and the bound on it: the epoch is carried on `/monitor/tick` and the
+    `seq` on `/monitor/observation`, so an observation from the old epoch can arrive
+    after the new clock's first pulse. Left alone it becomes the new epoch's high-water
+    mark, and *every* genuine tick of the restarted stream is then below it and refused
+    as stale -- an old epoch that reached 5000 costs 5001 consecutive refusals, about
+    eight minutes of no stepping at 10 Hz, invisible because `missed_ticks` only moves
+    on an admitted step. One corrupt `seq` of 10^6 never recovers at all.
+
+    So a seq adopted with no high-water mark is checked against the clock's own index,
+    which the caller has in hand: an observation cannot describe a tick the clock has
+    not published. Above it, the index belongs to the old stream (or to nothing) and is
+    refused *without* being adopted, so the next genuine tick still starts the epoch.
+    The residual is then one lost tick per restart, not the rest of the run.
     """
 
     def __init__(self) -> None:
@@ -228,6 +236,8 @@ class TickLedger:
         self.total_missed: int = 0
         #: Ticks refused because they had already been stepped.
         self.redelivered: int = 0
+        #: Ticks refused for naming an index the clock has not reached. See `admit`.
+        self.ahead: int = 0
         #: Ticks admitted with a fabricated index, i.e. off the legacy wire.
         self.implicit: int = 0
         #: Clock restarts adopted.
@@ -249,15 +259,26 @@ class TickLedger:
         self.missed = 0
         self.total_missed = 0
         self.redelivered = 0
+        self.ahead = 0
         self.implicit = 0
         self._implicit_seq = None
 
-    def admit(self, seq, *, epoch: float | None = None) -> Admission:
+    def admit(
+        self, seq, *, epoch: float | None = None, clock_seq: int | None = None
+    ) -> Admission:
         """Decide whether `seq` may step the automaton, and count what was skipped.
 
         `epoch` is the clock's `t0`. A change in it is a clock restart: the ledger
         starts over rather than refusing the restarted stream as stale. None means the
         caller does not know, which leaves the ledger in whatever epoch it was in.
+
+        `clock_seq` is the latest index the clock itself published, and it bounds what
+        the ledger will adopt as a first index. An observation describes a tick that has
+        already closed, so one naming an index the clock has not reached is either the
+        tail of the epoch that just ended or a corrupt number -- and adopting it as the
+        high-water mark refuses every genuine tick below it for the rest of the run.
+        Refusing it costs one tick; adopting it cost 5001, or all of them. None means
+        the caller has no clock to check against, which leaves the old behaviour intact.
 
         A payload with no usable `seq` -- every legacy `/ltl/evaluations` message, which
         predates the envelope -- is given the next implicit index, so the legacy stack
@@ -286,6 +307,14 @@ class TickLedger:
             return Admission(True, self._implicit_seq, 0, "implicit")
 
         if self.last_seq is None:
+            if clock_seq is not None and seq > clock_seq:
+                # No high-water mark to compare against, so this index is about to
+                # become one. An index the clock has not published cannot be a tick that
+                # closed, and adopting it would refuse the whole restarted stream below
+                # it. Refused *without* adoption: the next genuine tick still starts the
+                # epoch, so the cost is one observation rather than the rest of the run.
+                self.ahead += 1
+                return Admission(False, seq, 0, "ahead")
             self.last_seq = seq
             self.missed = 0
             return Admission(True, seq, 0, "epoch" if new_epoch else "first")

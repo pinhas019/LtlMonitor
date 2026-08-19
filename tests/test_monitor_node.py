@@ -265,6 +265,50 @@ def test_a_restarted_clock_is_a_new_epoch_not_a_deaf_monitor():
     assert node.ledger.epochs == 1
 
 
+def test_one_straggler_from_the_old_epoch_does_not_cost_the_rest_of_the_run():
+    """The epoch rides `/monitor/tick` and the seq rides `/monitor/observation`, so an
+    observation from the old epoch can arrive after the new clock's first pulse. Adopted
+    as the new epoch's high-water mark it refused every genuine tick beneath it: 5001
+    consecutive refusals for an epoch that reached 5000 -- roughly eight minutes of no
+    stepping at 10 Hz -- and `missed_ticks` read 0 the whole way, because it only moves
+    on a step that happened."""
+    node = a_node()
+    for seq in (4998, 4999, 5000):
+        tick(node, seq, t0=1000.0)
+        observe(node, seq)
+    assert len(node.multi.steps) == 3
+
+    tick(node, 0, t0=2000.0)          # the clock restarts…
+    observe(node, 5000)               # …and the old epoch's tail arrives after it
+    assert len(node.multi.steps) == 3, "a straggler stepped as the new epoch's first tick"
+    assert node.ledger.ahead == 1
+    assert node.ledger.last_seq is None
+
+    for seq in range(1, 21):
+        tick(node, seq, t0=2000.0)
+        observe(node, seq)
+    assert len(node.multi.steps) == 23, "the restarted stream was refused underneath it"
+    assert [v["seq"] for v in verdicts(node)][-3:] == [18, 19, 20]
+
+
+def test_a_refusal_burst_does_not_become_its_own_outage_in_the_log():
+    """5001 unthrottled warn lines drown the one line that says what happened."""
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)
+    for _ in range(250):
+        observe(node, 1)
+
+    refusals = [w for w in node.get_logger().at("warn") if "not stepping again" in w]
+    assert len(refusals) == 3            # the first, then one per 100
+    assert "200 refused in a row" in refusals[-1]
+
+    # …and the burst is closed on the console when stepping resumes.
+    tick(node, 2)
+    observe(node, 2)
+    assert any("Stepping again after 250" in line for line in node.get_logger().at("info"))
+
+
 def test_a_clock_that_never_sends_t0_behaves_exactly_as_before():
     """P1 may land after this. Absent `t0` means one epoch forever, which is the
     behaviour that was already there -- backwards is stale and stays refused."""

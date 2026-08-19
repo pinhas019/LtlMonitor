@@ -197,6 +197,49 @@ def test_a_new_epoch_is_adopted_rather_than_refused_forever():
     assert ledger.admit(0, epoch=2000.0).reason == "stale"
 
 
+def test_the_epoch_residual_costs_one_tick_and_not_the_rest_of_the_run():
+    """The epoch rides `/monitor/tick` and the seq rides `/monitor/observation`, so one
+    observation from the old epoch can arrive after the new clock's first pulse. Adopted
+    as the high-water mark it refused every genuine tick underneath it: an old epoch that
+    reached 5000 cost 5001 consecutive refusals -- about eight minutes of no stepping at
+    10 Hz -- and `missed_ticks` stayed 0 throughout, because it only moves on a step."""
+    ledger = manifest.TickLedger()
+    for seq in range(4998, 5001):
+        ledger.admit(seq, epoch=1000.0, clock_seq=seq)
+
+    # The clock restarts. Its first pulse is seq 0; the straggler from the old epoch
+    # arrives after it.
+    straggler = ledger.admit(5000, epoch=2000.0, clock_seq=0)
+    assert straggler.step is False
+    assert straggler.reason == "ahead"
+    assert ledger.last_seq is None, "the old epoch's index became the new epoch's floor"
+
+    # …and the restarted stream steps from its very next tick.
+    stepped = [ledger.admit(seq, epoch=2000.0, clock_seq=seq).step for seq in range(200)]
+    assert all(stepped)
+    assert ledger.ahead == 1
+
+
+def test_a_corrupt_seq_is_refused_rather_than_believed_forever():
+    """10^6 as a first index is not a tick: adopting it refused every real one after it
+    for the life of the process, with nothing in the verdict stream to say why."""
+    ledger = manifest.TickLedger()
+    assert ledger.admit(10 ** 6, clock_seq=3).reason == "ahead"
+    assert ledger.admit(3, clock_seq=3).step is True
+    assert ledger.admit(4, clock_seq=4).step is True
+
+
+def test_without_a_clock_to_check_against_the_ledger_behaves_exactly_as_before():
+    """`clock_seq=None` is "no clock on the graph yet", not "seq 0". Bounding against a
+    number nobody published would refuse the first observation of every run."""
+    ledger = manifest.TickLedger()
+    assert ledger.admit(9000).step is True
+    assert ledger.last_seq == 9000
+    # …and an index equal to the clock's own is a tick that closed, not one ahead.
+    at_the_clock = manifest.TickLedger()
+    assert at_the_clock.admit(42, clock_seq=42).step is True
+
+
 def test_the_epoch_is_the_clocks_t0_and_nothing_else():
     """Not a heuristic on the size of the backwards jump: a big jump backwards is
     exactly what a badly delayed redelivery looks like too."""
