@@ -207,6 +207,32 @@ def test_the_epoch_is_the_clocks_t0_and_nothing_else():
     assert manifest.tick_epoch(None) is None
 
 
+def test_a_non_finite_t0_is_no_epoch_at_all():
+    """`isinstance(nan, float)` is True and `nan != nan`, so a NaN `t0` read as an epoch
+    compares unequal to itself on every later pulse: a clock restart declared every
+    tick, `last_seq` dropped every tick, and one-step-per-tick quietly becoming
+    one-step-per-message. Reachable, not theoretical: `json.dumps(float("nan"))` emits
+    bare `NaN` and `json.loads` accepts it, so an uninitialised `t0` round-trips."""
+    assert manifest.tick_epoch(json.loads('{"seq": 1, "t": 1.0, "t0": NaN}')) is None
+    assert manifest.tick_epoch({"t0": float("inf")}) is None
+    assert manifest.tick_epoch({"t0": float("-inf")}) is None
+
+
+def test_a_nan_epoch_does_not_readmit_every_redelivery():
+    """The consequence, at the ledger. Seven arrivals of five distinct indices -- three
+    redeliveries and two backwards jumps among them -- are two steps. Under a NaN epoch
+    they were seven, and `redelivered` stayed 0 so nothing in the record said so."""
+    nan = manifest.tick_epoch({"t0": float("nan")})
+    ledger = manifest.TickLedger()
+    stepped = [
+        ledger.admit(seq, epoch=nan).step
+        for seq in (10, 10, 10, 11, 9, 11, 5)
+    ]
+    assert sum(stepped) == 2
+    assert ledger.redelivered == 5
+    assert ledger.epochs == 0
+
+
 def test_a_field_a_newer_clock_adds_is_not_a_malformed_tick():
     """`api.validate_tick` closes the payload, so P1's `t0` reads as an unknown field --
     and a monitor that drops the pulse for that reason goes deaf to the very clock that
