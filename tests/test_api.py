@@ -85,8 +85,9 @@ def an_adapter() -> dict:
             "expected_hz": 15.0, "max_age_s": 0.5,
             "required": True, "tracked": True,
             "keys": ["min_range"],
-            "steps": [{"keys": ["min_range"], "aggregate": "min",
-                       "threshold": None, "on": "message"}],
+            # No `threshold`: it is optional on the wire, and this payload is the
+            # older producer that proves it. docs/api.md's example is the same shape.
+            "steps": [{"keys": ["min_range"], "aggregate": "min", "on": "message"}],
         }],
     )
 
@@ -401,6 +402,37 @@ def test_an_adapter_step_missing_its_aggregate_is_named():
     del payload["sources"][0]["steps"][0]["aggregate"]
     problems = api.validate_adapter(payload)
     assert any("steps[0]" in p and "aggregate" in p for p in problems)
+
+
+def test_a_step_may_omit_threshold_but_not_mistype_it():
+    """`threshold` was added after SCHEMA_VERSION 1 shipped. Required would have been
+    a wire break: every producer that predates it -- including docs/api.md's own
+    example -- becomes invalid, with no version bump to make the mismatch detectable."""
+    payload = an_adapter()
+    assert "threshold" not in payload["sources"][0]["steps"][0]
+    assert api.validate_adapter(payload) == []
+
+    payload["sources"][0]["steps"][0]["threshold"] = 10
+    assert api.validate_adapter(payload) == []
+    payload["sources"][0]["steps"][0]["threshold"] = None
+    assert api.validate_adapter(payload) == []
+
+    payload["sources"][0]["steps"][0]["threshold"] = "ten"
+    problems = api.validate_adapter(payload)
+    assert any("steps[0]" in p and "threshold" in p for p in problems), problems
+
+
+def test_the_adapter_example_in_the_wire_doc_still_validates():
+    """docs/api.md IS the wire contract as an integrator reads it. An example the
+    validator rejects means the doc and the code disagree about the payload, and the
+    doc is what someone writes a producer against."""
+    import re
+
+    doc = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "api.md").read_text()
+    section = doc[doc.index("## `/monitor/adapter`"):]
+    block = re.search(r"```json\n(.*?)\n```", section, re.S)
+    assert block, "the /monitor/adapter section lost its example"
+    assert api.validate_adapter(json.loads(block.group(1))) == []
 
 
 def test_an_unknown_command_is_rejected():

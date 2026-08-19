@@ -226,6 +226,25 @@ def _path(obj, dotted: str):
     return obj
 
 
+def _int(value, label: str, minimum: int) -> int:
+    """A plain integer, bools excluded because `True` is an int in Python and would
+    otherwise silently mean 1 -- a debounce of one observation, or a rounding to one
+    decimal place."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{label} must be an integer >= {minimum}, got {value!r}")
+    return value
+
+
+def _count(value, label: str) -> int:
+    """A streak length: at least 1. Zero means "already satisfied before any sample"."""
+    return _int(value, label, 1)
+
+
+def _index(value, label: str) -> int:
+    """A number of decimal places: at least 0."""
+    return _int(value, label, 0)
+
+
 def _positive(value, label: str) -> float:
     """`inf` is excluded as well as zero: a rate of infinity makes max_age_s zero, so
     every source is permanently late, and a bool is excluded because a JSON `true`
@@ -256,6 +275,10 @@ class Step:
         self.field = raw.get("field")
         self.inputs = tuple(raw.get("inputs") or ())
         self.round = raw.get("round")
+        if self.round is not None:
+            # `round(v, "2")` is a TypeError on the first message, in a callback, on
+            # the robot -- not at load, where every other descriptor error surfaces.
+            self.round = _index(self.round, f"{source_id}: step {list(keys)}: 'round'")
         self.cast = raw.get("cast")
         self.default = raw.get("default", _MISSING)
 
@@ -279,8 +302,15 @@ class Step:
             raise ValueError(
                 f"{source_id}: 'q' is only meaningful with aggregate 'quantile', "
                 f"not {self.aggregate!r}")
-        if self.q is not None and not 0.0 <= self.q <= 1.0:
-            raise ValueError(f"{source_id}: 'q' must be between 0.0 and 1.0, got {self.q!r}")
+        if self.q is not None:
+            if (isinstance(self.q, bool) or not isinstance(self.q, (int, float))
+                    or not math.isfinite(self.q)):
+                raise ValueError(
+                    f"{source_id}: 'q' must be a finite number between 0.0 and 1.0, "
+                    f"got {self.q!r}")
+            if not 0.0 <= self.q <= 1.0:
+                raise ValueError(
+                    f"{source_id}: 'q' must be between 0.0 and 1.0, got {self.q!r}")
 
         if self.on == "tick":
             # A tick-step has no message to read, so a field path is meaningless and
@@ -330,6 +360,12 @@ class Step:
             except ValueError as exc:
                 raise ValueError(
                     f"{source_id}: step {list(self.keys)}: {exc}") from exc
+        elif "threshold" in args:
+            # The number all three shipped descriptors actually use. '10', True, 0,
+            # -1, nan and None all loaded and then produced a debounce that never
+            # fires, or one satisfied before any sample arrived.
+            args["threshold"] = _count(
+                args["threshold"], f"{source_id}: step {list(self.keys)}: args.threshold")
         #: The resolved tick count, when this step debounces. Published in manifest().
         self.threshold = args.get("threshold")
 
@@ -342,8 +378,20 @@ class Step:
             raise ValueError(f"{source_id}: unknown cast {self.cast!r}")
         if fn_name is None and len(self.keys) != 1:
             raise ValueError(f"{source_id}: a step with no 'fn' produces exactly one key")
+        if fn_name is None and args:
+            raise ValueError(
+                f"{source_id}: step {list(self.keys)} passes args {sorted(args)} but "
+                f"declares no 'fn' to receive them")
         self.fn_name = fn_name
-        self.fn = EXTRACTORS[fn_name](**args) if fn_name else None
+        try:
+            self.fn = EXTRACTORS[fn_name](**args) if fn_name else None
+        except TypeError as exc:
+            # A misspelt kwarg -- `{"z_low": 0.1}` for `z_lo` -- reached the extractor
+            # as a TypeError out of the loader, escaping the handling every other bad
+            # descriptor gets, and silently left the real argument on its default.
+            raise ValueError(
+                f"{source_id}: extractor {fn_name!r} rejected args {sorted(args)}: "
+                f"{exc}") from exc
 
     def fold(self, samples: list):
         """Collapse this tick's samples of one key into the single value the trace sees."""
@@ -381,11 +429,26 @@ class Step:
                 f"keys {list(self.keys)}")
         return {k: self._coerce(v) for k, v in zip(self.keys, vals)}
 
+    def _stateful(self):
+        """This step's mutable extractor state, or None. Only `stuck_streak` has any
+        today; an extractor grows state by exposing an object with
+        snapshot/restore/reset, and everything below keeps working."""
+        return getattr(self.fn, "streak", None)
+
+    def snapshot(self):                                   # noqa: D102 - see Step._stateful
+        state = self._stateful()
+        return None if state is None else state.snapshot()
+
+    def restore(self, snapshot):
+        state = self._stateful()
+        if state is not None:
+            state.restore(snapshot)
+
     def reset(self):
         """Clear this step's extractor state, if it has any. See AdapterSpec.reset()."""
-        streak = getattr(self.fn, "streak", None)
-        if streak is not None:
-            streak.reset()
+        state = self._stateful()
+        if state is not None:
+            state.reset()
 
     def _coerce(self, v):
         if self.cast is not None:
@@ -528,6 +591,18 @@ class AdapterSpec:
 
     def _by_id(self) -> dict:
         return {s.id: s for s in self.sources}
+
+    def _all_steps(self) -> list:
+        return [step for src in self.sources for step in src.steps]
+
+    def snapshot(self) -> list:
+        """Every stateful extractor's state, in a stable order, so a tick that fails
+        part-way can be undone. See SensorState.tick()."""
+        return [step.snapshot() for step in self._all_steps()]
+
+    def restore(self, snapshot: list) -> None:
+        for step, state in zip(self._all_steps(), snapshot):
+            step.restore(state)
 
     def reset(self):
         """Clear every stateful extractor this descriptor loaded.
@@ -768,6 +843,12 @@ class SensorState:
 
     def __init__(self, spec: AdapterSpec):
         self.spec = spec
+        #: The held observation. REBOUND by every tick, never mutated in place, which
+        #: is what makes a tick atomic: a reader can never see a half-updated dict.
+        #: The consequence is that `values` is a SNAPSHOT, not a live view -- caching
+        #: the dict object gives you a frozen observation that will never change
+        #: again. Re-read the attribute, or use `sensor_eval()`, which returns a copy
+        #: under the lock and is the supported read.
         self.values = spec.defaults()
         self._by_id = {s.id: s for s in spec.sources}
         self._aggregate = spec.aggregate_by_key()
@@ -819,21 +900,15 @@ class SensorState:
         if src is None:
             raise KeyError(f"unknown source {source_id!r}; have {sorted(self._by_id)}")
         with self._lock:
-            # Scratch in front of the held values: later steps of THIS message see
-            # what earlier steps of this same message produced, so upright_flag is
-            # computed from this message's roll/pitch/height and not last tick's.
-            scratch: dict = {}
-            chained = ChainMap(scratch, self.values)
-            for step in src.message_steps:
-                scratch.update(step.apply(payload, chained))
-            for key, value in scratch.items():
-                self._window.setdefault(key, []).append(value)
-            # Unconditional: ARRIVAL and extraction YIELD are different questions. A
-            # Nav2 status whose status_list is empty, or a JSON status whose fields
-            # are all absent, decodes to nothing -- but the topic is alive and the
-            # source is not silent. Gating this on `scratch` would report the source
-            # as having delivered nothing, which under three-valued APs promotes
-            # every AP over it to UNKNOWN and freezes the automaton.
+            # Arrival is recorded BEFORE any step runs, and unconditionally. ARRIVAL
+            # and extraction YIELD are different questions: a Nav2 status whose
+            # status_list is empty decodes to nothing, and a step that RAISES --
+            # quat_to_roll_pitch on a malformed orientation -- produces nothing and
+            # never reaches the end of this method. In both cases the topic is alive.
+            # Recording it afterwards, or gating it on `scratch`, reports a live
+            # source as silent, which under three-valued APs promotes every AP over
+            # it to UNKNOWN and freezes the automaton. `refreshed_keys()` is what
+            # says no key got a sample.
             self._window_sources.add(source_id)
             self._updates_since_tick += 1
             if self._updates_since_tick > self._untick_budget and not self._warned_unticked:
@@ -845,6 +920,16 @@ class SensorState:
                     f"returning the schema defaults and the window is growing without "
                     f"bound -- whoever owns this SensorState is not driving the clock",
                     RuntimeWarning, stacklevel=2)
+
+            # Scratch in front of the held values: later steps of THIS message see
+            # what earlier steps of this same message produced, so upright_flag is
+            # computed from this message's roll/pitch/height and not last tick's.
+            scratch: dict = {}
+            chained = ChainMap(scratch, self.values)
+            for step in src.message_steps:
+                scratch.update(step.apply(payload, chained))
+            for key, value in scratch.items():
+                self._window.setdefault(key, []).append(value)
             return dict(self.values) | scratch
 
     def tick(self, t: float | None = None) -> dict:
@@ -866,11 +951,17 @@ class SensorState:
         previous value -- zero-order hold -- and `refreshed_keys()` is what says the
         number is stale rather than steady.
 
-        The one thing a rollback cannot undo is state INSIDE an extractor: if the
-        third tick-step raises, the first two have already advanced their own streaks.
-        That is inherent to a stateful extractor and is why `reset()` exists.
+        That includes state INSIDE an extractor. A tick-step's streak advances as a
+        side effect, so a tick that raises after `stuck_streak` has already counted
+        used to leave the advance behind permanently -- and since the streak is what
+        the debounce compares against, `nav_stuck` then fired N ticks EARLY, where N
+        is the number of failed ticks in its history. A declared ten-second debounce
+        firing after seven observations is the same false positive `reset()` exists to
+        prevent, arriving through a different door, on a safety-relevant AP. So the
+        extractors are checkpointed before the attempt and restored if it fails.
         """
         with self._lock:
+            extractors = self.spec.snapshot()
             try:
                 folded = {}
                 for key, samples in self._window.items():
@@ -885,8 +976,10 @@ class SensorState:
                     candidate.update(step.apply(None, candidate))
             except Exception:
                 # Nothing has been committed, so the previous tick is intact and
-                # self-consistent. Drop the window anyway: a poisoned sample must cost
-                # exactly one window, not raise out of every tick from here on.
+                # self-consistent -- including any streak a tick-step advanced before
+                # a later one raised. Drop the window anyway: a poisoned sample must
+                # cost exactly one window, not raise out of every tick from here on.
+                self.spec.restore(extractors)
                 self._window.clear()
                 self._window_sources.clear()
                 self._updates_since_tick = 0
@@ -978,6 +1071,13 @@ class SensorState:
         period must not accumulate."""
         with self._lock:
             return sum(len(v) for v in self._window.values())
+
+    @property
+    def untick_budget(self) -> int:
+        """How many messages may pile into one open window before `update()` warns.
+        Derived from the descriptor's declared rates; exposed so a caller can report
+        it rather than guess at it."""
+        return self._untick_budget
 
     @property
     def updates_since_tick(self) -> int:

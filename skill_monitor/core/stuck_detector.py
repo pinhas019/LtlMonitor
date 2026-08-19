@@ -73,6 +73,16 @@ class StuckStreak:
     def update(self, state: str) -> None:
         self._count = self._count + 1 if is_blocked_state(state) else 0
 
+    def snapshot(self) -> int:
+        """The whole of this counter's state, so an attempt that fails part-way can be
+        undone. `SensorState.tick()` uses it: a tick that raises AFTER this streak has
+        advanced would otherwise leave the advance behind permanently, and the debounce
+        then fires one tick early for every failed tick in its history."""
+        return self._count
+
+    def restore(self, snapshot: int) -> None:
+        self._count = snapshot
+
     def reset(self) -> None:
         """Forget the streak. An episode boundary (`arm`/`reset`, docs/clocking.md)
         is not a recovery -- without this the previous episode's nine blocked ticks

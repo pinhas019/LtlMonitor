@@ -184,12 +184,18 @@ def _check_fields(
 ) -> None:
     """Required fields present and well typed; unknown fields named.
 
+    `optional` names fields that are tolerated when absent and still type-checked when
+    present. That is what lets a payload gain a field without the addition being a
+    breaking change every older producer fails -- an added REQUIRED field is a wire
+    break and needs a SCHEMA_VERSION bump.
+
     `closed` off means the payload legitimately carries fields this engine version
     does not understand -- the skill manifest, which is passed through as authored.
     """
     for name, (pred, expected) in fields.items():
         if name not in payload:
-            problems.append(f"{label}: missing required field '{name}'")
+            if name not in optional:
+                problems.append(f"{label}: missing required field '{name}'")
             continue
         value = payload[name]
         if not pred(value):
@@ -605,6 +611,12 @@ _STEP_FIELDS: dict[str, _Check] = {
     "on": STRING,
 }
 
+#: `threshold` was added after SCHEMA_VERSION 1 shipped. Making it required would have
+#: been a wire break needing a version bump -- and would have invalidated the adapter
+#: example in docs/api.md, which is fed to validate_adapter verbatim. Optional means a
+#: producer that predates it still validates, while one that sends it is type-checked.
+_STEP_OPTIONAL = ("threshold",)
+
 _SOURCE_FIELDS: dict[str, _Check] = {
     "id": STRING,
     "topic": STRING,
@@ -678,7 +690,7 @@ def validate_adapter(payload: Any) -> list[str]:
                     if isinstance(step, dict):
                         _check_fields(
                             step, f"adapter.sources[{i}].steps[{j}]", _STEP_FIELDS,
-                            problems,
+                            problems, optional=_STEP_OPTIONAL,
                         )
             # A source that feeds a key the schema never declares is a descriptor bug
             # that would otherwise surface as a silently absent sensor field.

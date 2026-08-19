@@ -21,6 +21,7 @@ What is pinned is what the schema redesign does not touch -- the `odom`, `points
 ones being redesigned.
 """
 
+import inspect
 import json
 import math
 import sys
@@ -331,6 +332,107 @@ def test_a_raising_tick_step_rolls_the_whole_tick_back():
     assert st.ticks == ticks_before + 1
 
 
+def test_a_failed_tick_does_not_advance_the_debounce():
+    """Worse than "the streak advanced": each failed tick permanently INFLATES it, so
+    a declared ten-second debounce fires N ticks early where N is the number of failed
+    ticks in its history. Same false positive reset() exists to prevent, arriving
+    through a different door, on a safety-relevant AP.
+    """
+    status = _source(
+        [{"key": "nav_state", "field": "state"},
+         {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
+          "on": "tick", "args": {"debounce_s": 10.0}}],
+        sid="status", topic="/status", type_="std_msgs/msg/String")
+    # Declared second, so its tick-step runs AFTER the streak has already advanced --
+    # which is the ordering that leaves the advance behind when it raises.
+    raiser = _source(
+        [{"key": "base_height", "field": "h"},
+         {"key": "upright_flag", "fn": "upright", "on": "tick",
+          "inputs": ["base_roll", "base_pitch", "base_height"]}],
+        sid="odom", topic="/odom")
+    st = _state([status, raiser], tick_hz=1.0)
+    assert st.spec.resolved_thresholds()["nav_stuck"] == 10
+
+    successful_blocked_ticks = 0
+    for i in range(16):
+        st.update("status", {"state": "no_path_found"})
+        if i in (2, 5, 8):                                # three ticks that will fail
+            st.update("odom", {"h": "not a height"})
+            with pytest.raises(TypeError):
+                st.tick()
+            assert st.sensor_eval()["nav_stuck"] is False
+            continue
+
+        st.tick()
+        successful_blocked_ticks += 1
+        assert st.sensor_eval()["nav_stuck"] is (successful_blocked_ticks >= 10), (
+            f"fired after {successful_blocked_ticks} successful blocked ticks; "
+            f"the descriptor declares 10")
+
+
+def test_a_failed_tick_does_not_reset_the_debounce_either():
+    """The rollback restores the streak to its value at the START of the failed tick,
+    which is not the same as clearing it -- a failure must cost that tick, not the two
+    before it."""
+    status = _source(
+        [{"key": "nav_state", "field": "state"},
+         {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
+          "on": "tick", "args": {"debounce_s": 3.0}}],
+        sid="status", topic="/status", type_="std_msgs/msg/String")
+    raiser = _source(
+        [{"key": "base_height", "field": "h"},
+         {"key": "upright_flag", "fn": "upright", "on": "tick",
+          "inputs": ["base_roll", "base_pitch", "base_height"]}],
+        sid="odom", topic="/odom")
+    st = _state([status, raiser])
+
+    for _ in range(2):
+        st.update("status", {"state": "unreachable"})
+        st.tick()                                         # streak 2 of 3
+
+    st.update("odom", {"h": "not a height"})
+    with pytest.raises(TypeError):
+        st.tick()
+
+    st.update("status", {"state": "unreachable"})
+    st.tick()                                             # the third GOOD one
+    assert st.sensor_eval()["nav_stuck"] is True, (
+        "the failed tick threw away the two blocked ticks before it")
+
+
+def test_a_raising_message_step_still_reports_its_source_as_alive():
+    """A step that raises produces nothing and never reaches the end of update(), so
+    recording arrival at the bottom made a live topic report as silent -- which
+    promotes every AP over it to UNKNOWN and freezes the automaton. Reachable:
+    quat_to_roll_pitch on an orientation the decoder left malformed."""
+    st = _state([ODOM_SOURCE])
+    malformed = _ns(pose=_ns(pose=_ns(position=_ns(z=1.0), orientation="not a quat")),
+                    twist=_ns(twist=_ns(linear=_ns(x=0.0), angular=_ns(z=0.0))))
+
+    with pytest.raises(TypeError):
+        st.update("odom", malformed)
+    st.tick()
+
+    assert st.refreshed_sources() == {"odom"}, (
+        "a topic that delivered a message it could not map was reported as silent")
+    assert "base_roll" not in st.refreshed_keys(), "nothing was extracted, and says so"
+
+
+def test_values_is_a_snapshot_not_a_live_view():
+    """`values` is rebound by every tick rather than mutated, which is what makes a
+    tick atomic -- no reader can see a half-updated dict. The cost, documented on the
+    attribute: a consumer that CACHES the dict object freezes on a stale observation."""
+    st = _state([_range_source()])
+    cached = st.values
+
+    st.update("points", {"range": 2.0})
+    st.tick()
+
+    assert cached["min_range"] == 10.0, "values is documented as a snapshot"
+    assert st.values["min_range"] == 2.0, "re-reading the attribute is the contract"
+    assert st.sensor_eval()["min_range"] == 2.0
+
+
 def test_sensor_eval_returns_a_copy():
     st = _state([_range_source()])
     st.sensor_eval()["min_range"] = -1.0
@@ -631,24 +733,55 @@ def test_a_ticked_state_never_warns_however_fast_the_topic():
     assert caught == [], [str(w.message) for w in caught]
 
 
-def test_the_declarative_adapter_does_not_tick_yet():
+def test_nothing_in_the_declarative_adapter_drives_the_clock(monkeypatch):
     """Pinning the live regression itself, so merging cannot make it invisible.
 
-    DeclarativeAdapter._on_message calls update() and nothing calls tick(), so
-    get_sensor_eval() returns the defaults for the life of the process. P3 is the
-    package that drives the clock; when it does, THIS test is what has to change,
-    and its failure is the notification.
-    """
-    from skill_monitor.backend.adapters.declarative import DeclarativeAdapter
+    `DeclarativeAdapter._on_message` calls `update()` and nothing calls `tick()`, so
+    `get_sensor_eval()` returns the schema defaults for the life of the process. P3 is
+    the package that drives the clock; when it does, THIS test fails, and that failure
+    is the notification.
 
-    adapter = DeclarativeAdapter("real_g1")
+    It asserts on the MECHANISM, not on the values. A test that feeds messages and
+    checks the values did not move still passes once a `tick()` method and a
+    `register_clock()` exist, because a unit test spins no node and starts no timer --
+    so the notification it was supposed to deliver would never arrive.
+    """
+    from skill_monitor.backend.adapters import declarative
+
+    source = inspect.getsource(declarative)
+    assert ".tick(" not in source, (
+        "declarative.py now calls tick(): P3 has landed. Replace this test with one "
+        "that asserts the observation DOES advance")
+
+    adapter = declarative.DeclarativeAdapter("real_g1")
+    assert not hasattr(adapter, "tick"), "the adapter grew a tick() -- see above"
+    assert not hasattr(adapter, "register_clock"), (
+        "the adapter grew a clock hook -- see above")
+
+    # Registering subscriptions must not create a timer either: a timer that calls
+    # nothing is how this ends up half-wired and looking finished.
+    subscriptions, timers = [], []
+
+    class _FakeNode:
+        def create_subscription(self, *a, **kw):
+            subscriptions.append(a)
+
+        def create_timer(self, *a, **kw):
+            timers.append(a)
+
+    # The message CLASS lookup is the only part of this path that needs ROS.
+    monkeypatch.setattr(declarative, "_msg_class", lambda type_str: object)
+    adapter.register_subscriptions(_FakeNode())
+    assert len(subscriptions) == len(adapter.spec.sources), "sanity: it did subscribe"
+    assert timers == [], "a timer was created, but nothing calls tick()"
+
+    # ...and the consequence, through the real message path rather than around it.
+    odom = next(s for s in adapter.spec.sources if s.id == "odom")
     before = adapter.get_sensor_eval()
     for _ in range(50):
-        adapter.state.update("odom", _odom(z=0.2, vx=1.25))
+        adapter._on_message(odom, _shipped_odom(pz=0.2, vx=1.25))
 
-    assert adapter.get_sensor_eval() == before, (
-        "DeclarativeAdapter now moves its values -- if it calls tick(), delete this "
-        "test; if it does not, something else is writing the observation")
+    assert adapter.get_sensor_eval() == before, "something else is writing the values"
     assert adapter.state.updates_since_tick == 50, (
         "the window is where those 50 messages went, and it is not being closed")
 
@@ -892,6 +1025,67 @@ def test_a_bad_debounce_is_a_load_error_not_a_crash(bad):
     with pytest.raises(ValueError, match="debounce_s"):
         _spec([_source([{"key": "nav_stuck", "fn": "stuck_streak", "on": "tick",
                          "inputs": ["nav_state"], "args": {"debounce_s": bad}}])])
+
+
+@pytest.mark.parametrize("bad", ["10", True, 0, -1, 1.5, float("nan"), None])
+def test_a_bad_hand_written_threshold_is_rejected_at_load(bad):
+    """`args.threshold` is the number all three shipped descriptors actually use, and
+    it was entirely unvalidated: '10' and nan give a debounce that can never fire, 0
+    and True give one satisfied before any sample arrived, and every one of them
+    loaded and failed (or silently did not) at runtime instead."""
+    with pytest.raises(ValueError, match="threshold"):
+        _spec([_source([{"key": "nav_stuck", "fn": "stuck_streak",
+                         "inputs": ["nav_state"], "args": {"threshold": bad}}],
+                       sid="status", topic="/s", type_="std_msgs/msg/String")])
+
+
+def test_a_good_hand_written_threshold_still_loads():
+    spec = _spec([_source([{"key": "nav_state", "field": "state"},
+                           {"key": "nav_stuck", "fn": "stuck_streak",
+                            "inputs": ["nav_state"], "args": {"threshold": 4}}],
+                          sid="status", topic="/s", type_="std_msgs/msg/String")])
+    assert spec.manifest()["sources"][0]["steps"][1]["threshold"] == 4
+
+
+@pytest.mark.parametrize("bad", ["2", True, -1, 1.5])
+def test_a_bad_round_is_rejected_at_load(bad):
+    """`round(v, "2")` is a TypeError on the first message, in a callback, on the
+    robot -- not at load, where every other descriptor error surfaces."""
+    with pytest.raises(ValueError, match="round"):
+        _spec([_source([{"key": "min_range", "field": "range", "round": bad}],
+                       sid="points")])
+
+
+def test_round_null_means_no_rounding_and_is_not_an_error():
+    """Unlike `debounce_s: null`, which fell through to a DIFFERENT default of 10,
+    `"round": null` means exactly what omitting it means."""
+    st = _state([_source([{"key": "min_range", "field": "range", "round": None}],
+                         sid="points")])
+    st.update("points", {"range": 1.23456})
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 1.23456
+
+
+@pytest.mark.parametrize("bad", ["0.5", True, float("nan"), 1.5, -0.1])
+def test_a_bad_quantile_q_is_rejected_at_load(bad):
+    with pytest.raises(ValueError, match="q"):
+        _spec([_source([{"key": "min_range", "field": "range",
+                         "aggregate": "quantile", "q": bad}], sid="points")])
+
+
+def test_an_unknown_extractor_argument_is_rejected_at_load():
+    """A misspelt kwarg reached the extractor as a TypeError out of the loader,
+    escaping the handling every other bad descriptor gets -- and silently left the
+    real argument on its default, which for z_lo/z_hi is the obstacle band."""
+    with pytest.raises(ValueError, match="z_low"):
+        _spec([_source([{"key": "min_range", "fn": "min_range_points",
+                         "args": {"z_low": 0.1, "z_hi": 1.5}}], sid="points")])
+
+
+def test_args_with_no_extractor_to_receive_them_is_rejected_at_load():
+    with pytest.raises(ValueError, match="args"):
+        _spec([_source([{"key": "min_range", "field": "range",
+                         "args": {"threshold": 3}}], sid="points")])
 
 
 @pytest.mark.parametrize("bad", [0, -1.0, True, float("inf"), float("nan"), "5"])
