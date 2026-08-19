@@ -741,16 +741,95 @@ def test_threshold_and_debounce_together_are_rejected_at_load():
                          "args": {"threshold": 10, "debounce_s": 10.0}}])])
 
 
-@pytest.mark.parametrize("bad", [0, -1.0])
+def test_null_debounce_is_rejected_rather_than_falling_back_to_ten():
+    """`"debounce_s": null` used to fall through to the extractor's own default of 10
+    ticks -- in a file that raises on a misspelt "agregate"."""
+    with pytest.raises(ValueError, match="debounce_s"):
+        _spec([_source([{"key": "nav_stuck", "fn": "stuck_streak", "on": "tick",
+                         "inputs": ["nav_state"], "args": {"debounce_s": None}}])])
+
+
+@pytest.mark.parametrize("bad", ["10", float("inf"), float("nan"), True, 0, -1.0, []])
+def test_a_bad_debounce_is_a_load_error_not_a_crash(bad):
+    """Every rejection has to be a ValueError. `"10"` reached a multiplication as a
+    TypeError and `inf` reached math.ceil() as an OverflowError, escaping the
+    descriptor loader; `true` is an int in Python and silently resolved to one tick,
+    i.e. a debounce that fires on the first blocked observation."""
+    with pytest.raises(ValueError, match="debounce_s"):
+        _spec([_source([{"key": "nav_stuck", "fn": "stuck_streak", "on": "tick",
+                         "inputs": ["nav_state"], "args": {"debounce_s": bad}}])])
+
+
+@pytest.mark.parametrize("bad", [0, -1.0, True, float("inf"), float("nan"), "5"])
 def test_non_positive_tick_hz_is_rejected_at_load(bad):
     with pytest.raises(ValueError, match="tick_hz"):
         _spec([_range_source()], tick_hz=bad)
 
 
 @pytest.mark.parametrize("field", ["expected_hz", "max_age_s"])
-def test_non_positive_source_health_is_rejected_at_load(field):
+@pytest.mark.parametrize("bad", [0, -1.0, True, float("inf")])
+def test_non_positive_source_health_is_rejected_at_load(field, bad):
     with pytest.raises(ValueError, match=field):
-        _spec([_range_source(**{field: 0})])
+        _spec([_range_source(**{field: bad})])
+
+
+# ------------------------------------------------- `inputs` ordering, at load
+
+def test_a_message_step_declared_before_its_producer_is_rejected_at_load():
+    """Steps run in declaration order, so a consumer above its producer reads LAST
+    TICK's value -- silently, for the whole life of the descriptor. Putting
+    upright_flag above base_height used to load without complaint."""
+    with pytest.raises(ValueError, match="base_height"):
+        _spec([_source(
+            [{"keys": ["base_roll", "base_pitch"], "fn": "quat_to_roll_pitch",
+              "field": "pose.pose.orientation"},
+             {"key": "upright_flag", "fn": "upright",
+              "inputs": ["base_roll", "base_pitch", "base_height"]},
+             {"key": "base_height", "field": "pose.pose.position.z"}],
+            sid="odom", topic="/odom", type_="nav_msgs/msg/Odometry")])
+
+
+def test_a_message_step_reading_its_own_sources_tick_step_is_rejected_at_load():
+    """A tick-step runs after every message-step, so this reads the previous tick."""
+    with pytest.raises(ValueError, match="nav_stuck"):
+        _spec([_source(
+            [{"key": "nav_state", "field": "state"},
+             {"key": "linear_vel", "fn": "eq", "inputs": ["nav_stuck"],
+              "args": {"to": True}},
+             {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
+              "on": "tick", "args": {"debounce_s": 1.0}}],
+            sid="status", topic="/s", type_="std_msgs/msg/String")])
+
+
+def test_tick_steps_out_of_order_across_sources_are_rejected_at_load():
+    """`tick_steps()` is source-order x step-order, so swapping two `sources` entries
+    silently makes a consumer read a one-tick-stale value. Forever."""
+    producer = _source(
+        [{"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
+          "on": "tick", "args": {"debounce_s": 1.0}}], sid="a", topic="/a")
+    consumer = _source(
+        [{"key": "upright_flag", "fn": "eq", "inputs": ["nav_stuck"], "on": "tick",
+          "args": {"to": True}}], sid="b", topic="/b")
+
+    _spec([_status_source(), producer, consumer])         # producer first: fine
+    with pytest.raises(ValueError, match="nav_stuck"):
+        _spec([_status_source(), consumer, producer])     # swapped: one tick stale
+
+
+def test_a_step_may_read_the_key_it_writes():
+    """An accumulator reading its own previous value is a real pattern and is
+    unambiguous -- only a STRICTLY later producer is the bug."""
+    spec = _spec([_source(
+        [{"key": "nav_state", "field": "state"},
+         {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_stuck"],
+          "on": "tick", "args": {"debounce_s": 1.0}}],
+        sid="status", topic="/s", type_="std_msgs/msg/String")])
+    assert spec.tick_steps()[0].inputs == ("nav_stuck",)
+
+
+def test_every_shipped_descriptor_declares_its_steps_in_dependency_order():
+    for name in adapter_spec.available():
+        adapter_spec.load(name)                           # raises if it does not
 
 
 def test_cross_source_inputs_are_rejected_at_load():
@@ -851,6 +930,49 @@ def test_last_on_a_state_like_key_is_not_warned_about():
     Warning about those would train people to ignore the warnings."""
     spec = _spec([_status_source(expected_hz=30.0)], tick_hz=1.0)
     assert not any("discarded" in w for w in spec.warnings()), spec.warnings()
+
+
+def test_an_int_defaulted_key_is_still_a_measurement():
+    """`isinstance(default, float)` silently exempted every `"default": 0` key --
+    which on the shipped schema is num_waypoints and current_target_idx."""
+    schema = {"linear_vel": {"doc": "int, counts", "default": 0}}
+    spec = _spec([_source([{"key": "linear_vel", "field": "v"}], sid="s",
+                          expected_hz=30.0)], schema=schema, tick_hz=1.0)
+    assert any("linear_vel" in w and "discarded" in w for w in spec.warnings()), (
+        spec.warnings())
+
+
+def test_a_bool_defaulted_key_is_not_a_measurement():
+    """bool is a subclass of int, so widening the gate must not sweep flags in."""
+    schema = {"nav_stuck": {"doc": "bool", "default": False}}
+    spec = _spec([_source([{"key": "nav_stuck", "field": "f"}], sid="s",
+                          expected_hz=30.0)], schema=schema, tick_hz=1.0)
+    assert not any("discarded" in w for w in spec.warnings()), spec.warnings()
+
+
+def test_a_source_with_no_declared_rate_says_the_discard_check_cannot_run():
+    """The other half of the same hole: expected_hz defaults to tick_hz, so the rate
+    test can never trip on a descriptor that declares no rates -- which is every
+    descriptor shipped today. Reporting nothing there is a clean bill of health for
+    exactly the file the check exists to catch."""
+    spec = _spec([_range_source()], tick_hz=1.0)          # no expected_hz
+    assert any("min_range" in w and "points" in w and "expected_hz" in w
+               for w in spec.warnings()), spec.warnings()
+
+
+def test_real_g1_min_range_is_warned_about():
+    """The descriptor with the exact bug the warning exists to surface: a monocular
+    depth cloud, folded with `last`, against a 1 Hz tick, with no rate declared."""
+    warns = adapter_spec.load("real_g1").warnings()
+    assert any("min_range" in w and "points" in w for w in warns), warns
+
+
+def test_declaring_a_rate_or_a_fold_silences_it():
+    assert not any(
+        "min_range" in w and "expected_hz" in w
+        for w in _spec([_range_source(aggregate="min")]).warnings())
+    quiet = _spec([_range_source(expected_hz=1.0)], tick_hz=1.0).warnings()
+    assert not any("min_range" in w for w in quiet), quiet
 
 
 # --------------------------------------------------- manifest / wire contract

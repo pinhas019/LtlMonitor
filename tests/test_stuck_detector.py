@@ -95,3 +95,41 @@ def test_non_positive_debounce_is_rejected(debounce_s):
 def test_non_positive_tick_hz_is_rejected(tick_hz):
     with pytest.raises(ValueError, match="tick_hz"):
         threshold_from_seconds(1.0, tick_hz)
+
+
+# --------------------------------- every rejection is a ValueError, deliberately
+#
+# A descriptor is loaded by code that treats a bad descriptor as a ValueError. A
+# rejection that arrives as a TypeError or an OverflowError escapes that handling and
+# crashes the loader, from a file that raises cleanly on a misspelt key.
+
+@pytest.mark.parametrize("bad", ["10", None, [], {}, object()])
+def test_a_non_numeric_debounce_is_a_value_error_not_a_type_error(bad):
+    with pytest.raises(ValueError, match="debounce_s"):
+        threshold_from_seconds(bad, 1.0)
+    with pytest.raises(ValueError, match="tick_hz"):
+        threshold_from_seconds(1.0, bad)
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_a_non_finite_debounce_is_a_value_error_not_an_overflow_error(bad):
+    with pytest.raises(ValueError, match="debounce_s"):
+        threshold_from_seconds(bad, 1.0)
+    with pytest.raises(ValueError, match="tick_hz"):
+        threshold_from_seconds(1.0, bad)
+
+
+def test_a_product_that_overflows_is_a_value_error():
+    """Both factors finite, the product not. math.ceil(inf) is an OverflowError."""
+    with pytest.raises(ValueError, match="overflow"):
+        threshold_from_seconds(1e308, 10.0)
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_a_bool_is_not_a_duration(bad):
+    """bool is a subclass of int, so a JSON `true` used to resolve to a one-tick
+    debounce -- a debounce that is satisfied by the first blocked observation."""
+    with pytest.raises(ValueError, match="debounce_s"):
+        threshold_from_seconds(bad, 1.0)
+    with pytest.raises(ValueError, match="tick_hz"):
+        threshold_from_seconds(1.0, bad)
