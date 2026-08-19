@@ -601,6 +601,7 @@ def validate_verdict(payload: Any) -> list[str]:
 _STEP_FIELDS: dict[str, _Check] = {
     "keys": STRING_ARRAY,
     "aggregate": STRING,
+    "threshold": NUMBER_OR_NULL,   # streak length, in units of `on`; null if none
     "on": STRING,
 }
 

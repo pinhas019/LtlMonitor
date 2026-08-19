@@ -282,6 +282,43 @@ def test_a_bad_fold_leaves_the_observation_intact_and_recovers():
     assert st.sensor_eval()["min_range"] == 2.0, "the poisoned window wedged the tick"
 
 
+def test_a_raising_tick_step_rolls_the_whole_tick_back():
+    """The tick-steps used to run outside the try, after the fold was committed. A
+    tick-step that raised therefore left `values` describing tick k while `ticks` and
+    `refreshed_keys()` still described tick k-1 -- so the observation and the seam P10
+    is told to trust disagreed about which tick they were talking about.
+
+    Reachable: a decode edge case leaves a string where a float belongs, and `upright`
+    compares it.
+    """
+    src = _source(
+        [{"key": "base_height", "field": "h"},
+         {"key": "upright_flag", "fn": "upright", "on": "tick",
+          "inputs": ["base_roll", "base_pitch", "base_height"]}],
+        sid="odom", topic="/odom")
+    st = _state([src])
+
+    st.update("odom", {"h": 0.9})
+    st.tick()
+    before, ticks_before = st.sensor_eval(), st.ticks
+    assert before["base_height"] == 0.9 and before["upright_flag"] == 1.0
+
+    st.update("odom", {"h": "0.2"})                       # a str where a float belongs
+    with pytest.raises(TypeError):
+        st.tick()
+
+    assert st.sensor_eval() == before, "the fold was committed by a tick that failed"
+    assert st.ticks == ticks_before, "the tick index advanced past a tick that failed"
+    assert st.refreshed_keys() == {"base_height"}, (
+        "refreshed_keys described a different tick than sensor_eval did")
+    assert st.pending_samples() == 0, "the poisoned window survived"
+
+    st.update("odom", {"h": 0.3})
+    st.tick()
+    assert st.sensor_eval()["base_height"] == 0.3, "the failed tick wedged every tick"
+    assert st.ticks == ticks_before + 1
+
+
 def test_sensor_eval_returns_a_copy():
     st = _state([_range_source()])
     st.sensor_eval()["min_range"] = -1.0
@@ -327,6 +364,78 @@ def test_any_and_all_fold_booleans():
             st.update("s", {"flag": flag})
         st.tick()
         assert st.sensor_eval()["nav_stuck"] is expected
+
+
+def test_a_source_that_delivered_a_message_yielding_nothing_still_counts_as_refreshed():
+    """Arrival and extraction YIELD are different questions. A Nav2 status with an
+    empty status_list, or a JSON status whose fields are all absent, decodes to
+    nothing -- but the topic is alive. Reporting it as having delivered nothing
+    promotes every AP over that source to UNKNOWN and freezes the automaton."""
+    src = _source([{"key": "linear_vel", "field": "v"}], sid="odom", topic="/odom")
+    st = _state([src])
+
+    st.update("odom", {"nothing_we_read": 1.0})           # a real message, no fields
+    st.tick()
+    assert st.refreshed_sources() == {"odom"}, (
+        "a live topic was reported as silent because extraction yielded nothing")
+    assert st.refreshed_keys() == frozenset(), "no key got a sample, and says so"
+
+
+def test_a_source_that_sent_nothing_at_all_is_not_refreshed():
+    """The complement, so the rule above is not just 'always true'."""
+    st = _state([_source([{"key": "linear_vel", "field": "v"}], sid="odom")])
+    st.tick()
+    assert st.refreshed_sources() == frozenset()
+
+
+@pytest.mark.parametrize("samples", [
+    [1.0, float("nan"), 0.5],
+    [float("nan"), 1.0, 0.5],
+    [1.0, 0.5, float("nan")],
+])
+def test_non_finite_samples_do_not_make_min_depend_on_arrival_order(samples):
+    """`min([1.0, nan, 0.5])` is 0.5 but `min([nan, 1.0, 0.5])` is nan -- so without
+    this the observation depends on which frame of a depth cloud landed first."""
+    st = _state([_range_source(aggregate="min")])
+    for s in samples:
+        st.update("points", {"range": s})
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 0.5
+
+
+def test_non_finite_samples_do_not_defeat_the_quantile_sort():
+    src = _source([{"key": "min_range", "field": "range",
+                    "aggregate": "quantile", "q": 0.5}], sid="points")
+    st = _state([src])
+    for r in (9.0, float("nan"), 1.0, float("inf"), 2.0):
+        st.update("points", {"range": r})
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 2.0
+
+
+def test_a_window_of_only_non_finite_samples_holds_the_previous_value():
+    """Dropping every sample leaves NO measurement, which is a held value and an
+    unrefreshed key -- not a fabricated number."""
+    st = _state([_range_source(aggregate="min")])
+    st.update("points", {"range": 0.4})
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 0.4
+
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        st.update("points", {"range": bad})
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 0.4, "a non-finite sample became the trace"
+    assert "min_range" not in st.refreshed_keys()
+    assert st.refreshed_sources() == {"points"}, "the topic was alive and said so"
+
+
+def test_last_still_carries_a_non_finite_sample_through():
+    """`last` is byte-identical to the pre-window behaviour, and that is load-bearing:
+    it is not the fold's job to censor a value nobody asked it to order."""
+    st = _state([_range_source()])
+    st.update("points", {"range": float("nan")})
+    st.tick()
+    assert math.isnan(st.sensor_eval()["min_range"])
 
 
 def test_quantile_interpolates():
@@ -758,12 +867,56 @@ def test_manifest_is_json_serializable_and_self_describing():
     assert source["topic"] == "/points"
     assert source["expected_hz"] == 15.0 and source["required"] is True
     assert source["steps"] == [
-        {"keys": ["min_range"], "aggregate": "last", "on": "message"}]
+        {"keys": ["min_range"], "aggregate": "last", "threshold": None,
+         "on": "message"}]
 
 
 def test_manifest_reports_the_resolved_fold_policy():
     m = _spec([_range_source(aggregate="min")]).manifest()
     assert m["sources"][0]["steps"][0]["aggregate"] == "min"
+
+
+def test_manifest_publishes_debounce_ticks_only_for_a_tick_debounce():
+    """A hand-written `args.threshold` on a MESSAGE-step counts messages, so ten
+    messages inside one tick trip it. Announcing that as `debounce_ticks` tells the
+    frontend a ten-TICK debounce and is simply false -- and every shipped descriptor
+    still carries exactly that step."""
+    spec = _spec([_source(
+        [{"key": "nav_state", "field": "state"},
+         {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
+          "args": {"threshold": 10}}],
+        sid="status", topic="/status", type_="std_msgs/msg/String")])
+
+    assert spec.resolved_thresholds() == {}, (
+        "a message-counted streak was published as a tick count")
+    assert "debounce_ticks" not in spec.manifest()["schema"]["nav_stuck"]
+
+    # ...but the number the runtime actually uses is not hidden: it goes on the step,
+    # beside the `on` that says what unit it is in.
+    step = spec.manifest()["sources"][0]["steps"][1]
+    assert step["threshold"] == 10 and step["on"] == "message"
+
+
+def test_no_shipped_descriptor_announces_a_tick_debounce_it_does_not_have():
+    """The regression as it exists on disk: real_g1/mujoco/isaac_lab all attach
+    stuck_streak to a message-step with a hand-written threshold of 10."""
+    for name in adapter_spec.available():
+        spec = adapter_spec.load(name)
+        schema = spec.manifest()["schema"]
+        for key, entry in schema.items():
+            assert "debounce_ticks" not in entry, (
+                f"{name}: {key} announces a tick debounce but is counted per message")
+        for src in spec.manifest()["sources"]:
+            for step in src["steps"]:
+                if step["threshold"] is not None:
+                    assert step["on"] in ("message", "tick"), f"{name}: {step}"
+
+
+def test_manifest_publishes_debounce_ticks_for_a_real_tick_debounce():
+    spec = _spec([_status_source(debounce_s=10.0)], tick_hz=5.0)
+    assert spec.manifest()["schema"]["nav_stuck"]["debounce_ticks"] == 50
+    step = spec.manifest()["sources"][0]["steps"][1]
+    assert step["threshold"] == 50 and step["on"] == "tick"
 
 
 def test_manifest_feeds_the_wire_contract_directly():

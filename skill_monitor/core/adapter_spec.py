@@ -296,8 +296,13 @@ class Step:
                     f"value per tick and is never windowed")
 
         args = dict(raw.get("args") or {})
+        #: Whether the tick count below was DERIVED from a declared duration. A
+        #: hand-written `args.threshold` counts whatever the step's phase counts --
+        #: messages, on a message-step -- so it is not a tick count and must not be
+        #: published as one. See AdapterSpec.resolved_thresholds().
+        self.declares_debounce_s = "debounce_s" in args
         self.debounce_s = args.pop("debounce_s", None)
-        if self.debounce_s is not None:
+        if self.declares_debounce_s:
             if "threshold" in args:
                 raise ValueError(
                     f"{source_id}: step {list(self.keys)} declares both 'threshold' and "
@@ -475,12 +480,24 @@ class AdapterSpec:
         return self._by_id()[source_id].message_steps
 
     def resolved_thresholds(self) -> dict:
-        """key -> the integer tick count a declared `debounce_s` resolved to."""
+        """key -> the integer TICK count a declared `debounce_s` resolved to.
+
+        A hand-written `args.threshold` is deliberately not in here. It counts
+        whatever its step's phase counts -- MESSAGES, on `on: "message"` -- so
+        republishing it as a tick count announces a ten-tick debounce for a streak
+        that ten messages inside one tick already trip. Every shipped descriptor
+        still carries exactly that, which is why the gate is on the phase AND on the
+        provenance rather than on the number being present.
+
+        The runtime number is not hidden: `manifest()` puts it on the step, next to
+        the `on` that gives it its unit.
+        """
         return {
             k: step.threshold
             for src in self.sources for step in src.steps
             for k in step.keys
             if step.threshold is not None
+            and step.on == "tick" and step.declares_debounce_s
         }
 
     def warnings(self) -> list:
@@ -498,9 +515,11 @@ class AdapterSpec:
         from the wire contract.
 
         Resolved values only: a `debounce_s` declared in the descriptor appears here
-        as the integer tick count it resolved to, on the schema entry for the key it
-        governs, so "10+ consecutive ticks" can be read off the wire instead of being
-        maintained by hand in a spec's prose.
+        as `debounce_ticks` on the schema entry for the key it governs, so "10+
+        consecutive ticks" can be read off the wire instead of being maintained by
+        hand in a spec's prose. ONLY a duration-derived tick-step threshold appears
+        there -- a hand-written `args.threshold` is published on the step instead,
+        beside the `on` that says what it counts.
         """
         thresholds = self.resolved_thresholds()
         schema = {}
@@ -526,6 +545,10 @@ class AdapterSpec:
                       # A tick-step is not windowed; it yields one value per tick,
                       # which is what `last` means for a reader folding samples.
                       "aggregate": step.aggregate if step.on == "message" else "last",
+                      # The streak length this step actually counts, in units of
+                      # `on`: ticks for a tick-step, MESSAGES for a message-step.
+                      # null when the step does not debounce.
+                      "threshold": step.threshold,
                       "on": step.on}
                      for step in s.steps
                  ]}
@@ -690,55 +713,85 @@ class SensorState:
                 scratch.update(step.apply(payload, chained))
             for key, value in scratch.items():
                 self._window.setdefault(key, []).append(value)
-            if scratch:
-                self._window_sources.add(source_id)
+            # Unconditional: ARRIVAL and extraction YIELD are different questions. A
+            # Nav2 status whose status_list is empty, or a JSON status whose fields
+            # are all absent, decodes to nothing -- but the topic is alive and the
+            # source is not silent. Gating this on `scratch` would report the source
+            # as having delivered nothing, which under three-valued APs promotes
+            # every AP over it to UNKNOWN and freezes the automaton.
+            self._window_sources.add(source_id)
             return dict(self.values) | scratch
 
     def tick(self, t: float | None = None) -> dict:
         """Close the open window and produce the observation for this tick.
 
-        fold -> capture refreshed -> commit atomically -> clear the window -> run
-        tick-steps -> freeze. The fold is built in full before anything is committed,
-        so a bad aggregator raises with the previous observation intact rather than
-        leaving half of it updated. The window is cleared BEFORE the tick-steps run,
-        so a tick-step's output goes straight to the held values and is never itself
-        windowed.
+        fold -> run the tick-steps over a CANDIDATE observation -> publish everything
+        at once. The whole tick is atomic: nothing -- held values, `refreshed_keys()`,
+        `refreshed_sources()`, `ticks` -- is visible until every step of the tick has
+        succeeded. A tick-step that raises therefore leaves the previous observation
+        AND the seam that describes it consistent with each other; committing the fold
+        first would leave `sensor_eval()` returning tick k's values while
+        `refreshed_keys()` still described tick k-1.
+
+        A tick-step writes into the candidate, never into the window, so its output
+        goes straight to the held values and is never itself windowed.
 
         Fires whether or not any message arrived: a tick with no data is precisely the
         tick that has to report that nothing arrived. A key with no sample holds its
         previous value -- zero-order hold -- and `refreshed_keys()` is what says the
         number is stale rather than steady.
+
+        The one thing a rollback cannot undo is state INSIDE an extractor: if the
+        third tick-step raises, the first two have already advanced their own streaks.
+        That is inherent to a stateful extractor and is why `reset()` exists.
         """
         with self._lock:
-            folded = {}
             try:
+                folded = {}
                 for key, samples in self._window.items():
                     step_aggregate = self._aggregate.get(key, DEFAULT_AGGREGATE)
-                    folded[key] = self._fold(key, step_aggregate, samples)
+                    value = self._fold(key, step_aggregate, samples)
+                    if value is not _MISSING:
+                        folded[key] = value
+
+                candidate = dict(self.values)
+                candidate.update(folded)
+                for step in self.spec.tick_steps():
+                    candidate.update(step.apply(None, candidate))
             except Exception:
-                # Nothing has been committed yet, so the previous observation is
-                # intact. Drop the window anyway: a poisoned sample must cost exactly
-                # one window, not raise out of every tick from here on.
+                # Nothing has been committed, so the previous tick is intact and
+                # self-consistent. Drop the window anyway: a poisoned sample must cost
+                # exactly one window, not raise out of every tick from here on.
                 self._window.clear()
                 self._window_sources.clear()
                 raise
 
-            refreshed = frozenset(folded)
-            refreshed_sources = frozenset(self._window_sources)
-
-            self.values.update(folded)
+            self.values = candidate
+            self._refreshed = frozenset(folded)
+            self._refreshed_sources = frozenset(self._window_sources)
+            self.ticks += 1
             self._window.clear()
             self._window_sources.clear()
-
-            for step in self.spec.tick_steps():
-                self.values.update(step.apply(None, self.values))
-
-            self._refreshed = refreshed
-            self._refreshed_sources = refreshed_sources
-            self.ticks += 1
             return dict(self.values)
 
     def _fold(self, key: str, policy: str, samples: list):
+        """The single value this key's samples collapse to, or `_MISSING` when the
+        window held no usable sample -- in which case the key holds and is not
+        reported as refreshed."""
+        if policy in NUMERIC_AGGREGATES:
+            # NaN is not an ordering. `min([1.0, nan, 0.5])` is 0.5 but
+            # `min([nan, 1.0, 0.5])` is nan, and `sorted()` over a list with a NaN in
+            # it is not sorted -- so under `min` or `quantile` the ARRIVAL ORDER of a
+            # window would decide the observation. min_range is monocular-depth
+            # derived, so a non-finite sample is a thing that happens, not a
+            # hypothetical. Drop them explicitly instead.
+            usable = [
+                s for s in samples
+                if not (isinstance(s, float) and not math.isfinite(s))
+            ]
+            if not usable:
+                return _MISSING
+            samples = usable
         try:
             if policy == "quantile":
                 return _quantile(samples, self._quantile_by_key[key])
