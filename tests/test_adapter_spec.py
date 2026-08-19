@@ -4,18 +4,28 @@ What these protect: a descriptor is now the only thing standing between a robot'
 topics and every atomic proposition, so a silently-wrong field path or a schema key
 that no source ever writes is a monitor that reports plausible nonsense.
 
-The behavioural tests are written against INLINE descriptors defined here rather than
-against the shipped files in skill_monitor/adapters/. That is deliberate. The shipped
-navigation schema is being redesigned to stop depending on the planner's own status
-stream, and a test that pins its field paths would have to be rewritten with it --
-whereas the window/fold/tick semantics below are embodiment-agnostic and must not
-change. Only the structural invariants at the bottom iterate the shipped descriptors,
-and they assert nothing about any particular robot's topics.
+The window/fold/tick SEMANTICS are exercised against inline descriptors defined here,
+because they are embodiment-agnostic: pinning them to a particular robot's field paths
+would mean rewriting them when the navigation schema is redesigned to stop depending on
+the planner's own status stream.
+
+The shipped descriptors are pinned separately, at the bottom, and that half is not
+optional. A descriptor is the only thing standing between a robot's topics and every
+atomic proposition, and it is a JSON file with no type checker, no linter and no
+compiler behind it: `twist.twist.linear.y`, a `dta` instead of `data`, a dropped
+`"frame": "optical"` or a mistyped topic name all load cleanly and produce a monitor
+reporting plausible nonsense. Only a test that reads the shipped file catches those.
+What is pinned is what the schema redesign does not touch -- the `odom`, `points`,
+`range` and `vision` sources, and every source's topic, type, decode and qos. The
+`status`/`nav2` FIELD paths are deliberately not pinned here, because those are the
+ones being redesigned.
 """
 
 import json
 import math
+import sys
 import threading
+import time
 import warnings
 
 import pytest
@@ -1202,6 +1212,280 @@ def test_every_shipped_descriptor_announces_a_valid_manifest():
         spec = adapter_spec.load(name)
         problems = api.validate_adapter(api.build_adapter(**spec.manifest()))
         assert problems == [], f"{name}: {problems}"
+
+
+# ------------------------------------------------------------- the lock, exercised
+#
+# The lock is the only thing between this design and silent sample loss the moment
+# anyone adds a callback group, a MultiThreadedExecutor, or the server tier's network
+# thread. Under the default single-threaded executor it is uncontended and these tests
+# prove nothing about production -- which is the point: they are what stops someone
+# removing it as dead weight.
+
+def _run(targets, timeout=30.0):
+    """Start every callable on its own thread, join them, and re-raise anything that
+    escaped -- an exception in a worker thread is otherwise just a message on stderr
+    and a green test."""
+    errors = []
+
+    def guard(fn):
+        def run():
+            try:
+                fn()
+            except BaseException as exc:                  # noqa: BLE001 - re-raised below
+                errors.append(exc)
+        return run
+
+    threads = [threading.Thread(target=guard(fn)) for fn in targets]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout)
+    assert not any(t.is_alive() for t in threads), "a worker deadlocked"
+    if errors:
+        raise errors[0]
+
+
+def test_concurrent_writers_lose_no_samples():
+    """Four writers, two thousand messages each, one open window.
+
+    CPython's GIL makes a single list append atomic, so this one may well pass with
+    the lock removed -- it pins the no-loss property, not the lock. The test below is
+    the one the lock is load-bearing for.
+    """
+    st = _state([_range_source(aggregate="min")])
+    writers, per_writer = 4, 2000
+    start = threading.Barrier(writers)
+
+    def writer(i):
+        def run():
+            start.wait()
+            for n in range(per_writer):
+                st.update("points", {"range": float(i * per_writer + n)})
+        return run
+
+    with warnings.catch_warnings():
+        # This test deliberately never ticks, which is exactly what the un-ticked
+        # guard warns about. Filters are restored before the assertions.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        _run([writer(i) for i in range(writers)])
+        pending = st.pending_samples()
+
+    assert pending == writers * per_writer, (
+        f"{writers * per_writer - pending} sample(s) were dropped on the way into "
+        f"the window")
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 0.0
+    assert st.pending_samples() == 0
+
+
+def test_a_tick_concurrent_with_writers_does_not_tear_the_window():
+    """The other half, and the one the lock is really for: `tick()` iterates the
+    window while `update()` is writing into it.
+
+    Each message here contributes ONE key of many, so the window's size changes as
+    messages land and the fold is long enough to be preempted part-way through --
+    which turns the race into a hard `RuntimeError: dictionary changed size during
+    iteration` instead of an occasional lost sample nobody ever notices. The switch
+    interval is shortened for the same reason: without it CPython can run the whole
+    fold between two thread switches and the race simply never gets a chance.
+    """
+    keys = [f"k{i}" for i in range(64)]
+    schema = {k: {"doc": "float", "default": 0.0} for k in keys}
+    src = _source([{"key": k, "field": k} for k in keys], sid="s", topic="/s")
+    st = _state([src], schema=schema)
+
+    ticks_wanted, stop = 200, threading.Event()
+    start = threading.Barrier(4)
+    overlapped = []
+
+    def writer():
+        start.wait()
+        i = 0
+        while not stop.is_set():
+            st.update("s", {keys[i % len(keys)]: 1.0})
+            i += 1
+
+    def ticker():
+        start.wait()
+        try:
+            for _ in range(ticks_wanted):
+                # A real tick is paced by a clock. Without SOME pause the ticker runs
+                # all its iterations before the writers are scheduled at all, and the
+                # test overlaps nothing -- which the assertion below catches.
+                time.sleep(0.0005)
+                st.tick()
+                overlapped.append(bool(st.refreshed_keys()))
+        finally:
+            stop.set()
+
+    previous_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        with warnings.catch_warnings():
+            # Spin-loop writers outrun 200 ticks by more than the un-ticked budget.
+            # That is an artefact of a test with no sleep in it, not the state the
+            # guard is for -- the ticker below asserts the ticks really happened.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            _run([writer, writer, writer, ticker])
+    finally:
+        sys.setswitchinterval(previous_interval)
+
+    assert st.ticks == ticks_wanted - 1, "a tick was lost or double-counted"
+    assert sum(overlapped) > ticks_wanted // 2, (
+        "the writers and the ticker did not actually overlap, so this proved nothing")
+    st.tick()
+    assert st.pending_samples() == 0
+    assert set(st.sensor_eval()) == set(st.spec.keys()), "the observation lost a key"
+
+
+# ------------------------------------ shipped descriptors, pinned field by field
+#
+# Everything below reads skill_monitor/adapters/*.json. Sabotage any one of them --
+# `twist.twist.linear.x` -> `.y`, `data` -> `dta`, drop `"frame": "optical"`, point
+# the status topic somewhere else -- and this section is what fails.
+
+#: id -> (topic, type, decode, qos, tracked). A wrong topic subscribes to nothing and
+#: the adapter reports its defaults forever; a wrong decode hands the steps a message
+#: they cannot read; the nav2 qos is TRANSIENT_LOCAL because an action status topic
+#: publishes on transitions, so a plain depth silently misses the goal you subscribed
+#: after. None of that raises at load, and none of it is visible in a running system
+#: except as a monitor that looks fine.
+SHIPPED_SOURCES = {
+    "real_g1": {
+        "odom": ("/t265/odom/sample", "nav_msgs/msg/Odometry", None, 10, True),
+        "points": ("/depth_anything/points", "sensor_msgs/msg/PointCloud2",
+                   "pointcloud_xyz", 10, True),
+        "status": ("/path_manager/status", "std_msgs/msg/String", "json", 10, True),
+        "vision": ("/vision/goal_similarity", "std_msgs/msg/Float32", None, 10, False),
+    },
+    "mujoco": {
+        "odom": ("/odom", "nav_msgs/msg/Odometry", None, 10, True),
+        "range": ("/scan", "sensor_msgs/msg/LaserScan", "laserscan_ranges", 10, True),
+        "nav2": ("/navigate_to_pose/_action/status", "action_msgs/msg/GoalStatusArray",
+                 "goal_status", "action_status", False),
+        "vision": ("/vision/goal_similarity", "std_msgs/msg/Float32", None, 10, False),
+    },
+    "isaac_lab": {
+        "odom": ("/odom", "nav_msgs/msg/Odometry", None, 10, True),
+        "range": ("/g1/lidar/points", "sensor_msgs/msg/PointCloud2",
+                  "pointcloud_xyz", 10, True),
+        "nav2": ("/navigate_to_pose/_action/status", "action_msgs/msg/GoalStatusArray",
+                 "goal_status", "action_status", False),
+        "vision": ("/vision/goal_similarity", "std_msgs/msg/Float32", None, 10, False),
+    },
+}
+
+
+def _shipped_odom(px=0.0, py=0.0, pz=1.0, vx=0.0, vy=0.0, vz=0.0,
+                  wx=0.0, wy=0.0, wz=0.0, q=(0.0, 0.0, 0.0, 1.0)):
+    """A full Odometry stand-in. Every component is separately settable so a test can
+    make each one distinct -- a field path that reads `.y` where it should read `.x`
+    is only catchable if the two hold different numbers."""
+    return _ns(
+        pose=_ns(pose=_ns(position=_ns(x=px, y=py, z=pz),
+                          orientation=_ns(x=q[0], y=q[1], z=q[2], w=q[3]))),
+        twist=_ns(twist=_ns(linear=_ns(x=vx, y=vy, z=vz),
+                            angular=_ns(x=wx, y=wy, z=wz))),
+    )
+
+
+def test_shipped_source_topics_types_and_decoders_are_pinned():
+    assert set(adapter_spec.available()) == set(SHIPPED_SOURCES), (
+        "a descriptor was added or removed; pin its topics here too")
+    for name, expected in SHIPPED_SOURCES.items():
+        spec = adapter_spec.load(name)
+        actual = {s.id: (s.topic, s.type, s.decode, s.qos, s.tracked)
+                  for s in spec.sources}
+        assert actual == expected, name
+
+
+def test_shipped_odom_field_paths_are_pinned():
+    """All six odom keys, from one message whose every component is distinct."""
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+        st.update("odom", _shipped_odom(px=11.0, py=22.0, pz=0.9,
+                                        vx=0.5123, vy=-7.0, vz=-8.0,
+                                        wx=-3.0, wy=-4.0, wz=-0.2))
+        st.tick()
+        v = st.sensor_eval()
+        assert v["linear_vel"] == 0.51, f"{name}: not twist.twist.linear.x"
+        assert v["angular_vel"] == -0.2, f"{name}: not twist.twist.angular.z"
+        assert v["base_height"] == 0.9, f"{name}: not pose.pose.position.z"
+        assert v["base_roll"] == 0.0 and v["base_pitch"] == 0.0, name
+        assert v["upright_flag"] == 1.0, name
+
+
+def test_shipped_upright_flag_falls_on_height_and_on_tilt():
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+
+        st.update("odom", _shipped_odom(pz=0.2))          # collapsed on the floor
+        st.tick()
+        assert st.sensor_eval()["upright_flag"] == 0.0, name
+        assert st.sensor_eval()["base_height"] == 0.2, name
+
+        half = math.sin(0.9 / 2), math.cos(0.9 / 2)       # rolled over, height fine
+        st.update("odom", _shipped_odom(pz=1.0, q=(half[0], 0.0, 0.0, half[1])))
+        st.tick()
+        v = st.sensor_eval()
+        assert v["upright_flag"] == 0.0, name
+        assert v["base_roll"] == pytest.approx(0.9, abs=1e-3), name
+
+
+def test_real_g1_points_source_requests_the_optical_remap():
+    """real_g1.json asks for `"frame": "optical"` on /depth_anything/points. Drop that
+    one key and the descriptor still loads, still validates, and reads a wall two
+    metres ahead as an empty corridor."""
+    st = adapter_spec.SensorState(adapter_spec.load("real_g1"))
+
+    # Optical frame is (x right, y down, z forward): a wall 2 m ahead at chest height
+    # is (0, -0.8, 2.0). Unremapped, its z is 2.0, outside the 0.1-1.5 m band, so it
+    # is discarded as ceiling and min_range reads 10.0 -- "nothing detected".
+    st.update("points", [(0.0, -0.8, 2.0)])
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 2.0, "the optical remap is not being applied"
+
+    st.update("points", [(0.0, 1.1, 0.5)])                # ground, outside the band
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 10.0
+
+
+def test_isaac_lab_range_source_does_not_remap():
+    """The complement, and the documented difference between the two descriptors:
+    /g1/lidar/points is assumed Z-up body-planar already."""
+    st = adapter_spec.SensorState(adapter_spec.load("isaac_lab"))
+
+    st.update("range", [(2.0, 0.0, 0.8)])                  # body frame: 2 m ahead
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 2.0
+
+    st.update("range", [(0.0, -0.8, 2.0)])                 # the optical spelling
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 10.0, "isaac_lab grew an optical remap"
+
+
+def test_mujoco_range_source_ignores_the_no_return_encodings():
+    st = adapter_spec.SensorState(adapter_spec.load("mujoco"))
+    # inf/NaN/0.0 are LaserScan's "no return", not obstacles at 0 m.
+    st.update("range", [float("inf"), 0.0, float("nan"), 3.25])
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 3.25
+    st.update("range", [float("inf"), 0.0])
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 10.0
+
+
+def test_shipped_vision_source_reads_the_float32_data_field():
+    """`std_msgs/msg/Float32` carries its value in `data` and nowhere else, and the
+    step declares no default -- so a typo makes the key silently hold 0.0, which
+    reads as "the goal is not in view" for the whole run."""
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+        st.update("vision", _ns(data=0.8712))
+        st.tick()
+        assert st.sensor_eval()["image_similarity_to_goal"] == 0.871, name
+        assert st.refreshed_keys() == {"image_similarity_to_goal"}, name
 
 
 def test_every_shipped_descriptor_ticks_without_data():
