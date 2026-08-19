@@ -85,7 +85,8 @@ def an_adapter() -> dict:
             "expected_hz": 15.0, "max_age_s": 0.5,
             "required": True, "tracked": True,
             "keys": ["min_range"],
-            "steps": [{"keys": ["min_range"], "aggregate": "min", "on": "message"}],
+            "steps": [{"keys": ["min_range"], "aggregate": "min",
+                       "threshold": None, "on": "message"}],
         }],
     )
 
