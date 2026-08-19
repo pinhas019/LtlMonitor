@@ -277,6 +277,28 @@ def test_a_clock_that_never_sends_t0_behaves_exactly_as_before():
     assert node.ledger.epoch is None
 
 
+def test_a_nan_t0_does_not_void_one_step_per_tick():
+    """A clock with an uninitialised `t0` publishes bare `NaN` -- `json.dumps` emits it
+    and `json.loads` accepts it. `nan != nan`, so `epoch != self.clock_epoch` was true on
+    every pulse: a new epoch adopted each tick, `last_seq` back to None each tick, and
+    every observation admitted. These seven arrivals of five indices -- three
+    redeliveries and two backwards jumps -- were seven steps, with `redelivered` reading
+    0 so nothing in the verdict stream indicated it."""
+    node = a_node()
+    for seq in (10, 10, 10, 11, 9, 11, 5):
+        node.tick_callback(ros_stub.Message(
+            '{"schema_version": 1, "seq": %d, "t": %d.0, "tick_hz": 1.0, '
+            '"mode": "wall", "t0": NaN}' % (seq, seq)
+        ))
+        observe(node, seq)
+
+    assert len(node.multi.steps) == 2, "a NaN t0 re-admitted every redelivery"
+    assert node.clock_epoch is None
+    assert node.ledger.epochs == 0
+    assert node.ledger.redelivered == 5
+    assert [v["seq"] for v in verdicts(node)] == [10, 11]
+
+
 def test_a_tick_carrying_a_field_this_build_does_not_know_is_still_a_tick():
     """`api.validate_tick` closes the payload, so P1's `t0` reads as an unknown field.
     Dropping the pulse for that reason would make the monitor deaf to the very clock

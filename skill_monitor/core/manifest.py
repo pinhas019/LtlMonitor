@@ -29,6 +29,7 @@ Three things this module refuses to do:
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -150,11 +151,21 @@ def tick_epoch(tick) -> float | None:
 
     Tolerant of its absence: P1 may land after this, and a clock that never sends `t0`
     simply has one epoch forever -- which is the behaviour this monitor already had.
+
+    A non-finite `t0` is *no* epoch, not a strange one. `nan != nan`, so a NaN adopted
+    as the epoch compares unequal to itself on every subsequent pulse: the monitor
+    declares a clock restart every tick, the ledger drops `last_seq` every tick, and
+    one-step-per-tick silently becomes one-step-per-message -- redeliveries and
+    backwards jumps included, with `redelivered` reading 0 so nothing says so. It is
+    reachable rather than theoretical: `json.dumps(float("nan"))` emits bare `NaN` and
+    `json.loads` accepts it, so a clock with an uninitialised `t0` round-trips intact.
     """
     if not isinstance(tick, dict):
         return None
     t0 = tick.get("t0")
     if isinstance(t0, bool) or not isinstance(t0, (int, float)):
+        return None
+    if not math.isfinite(t0):
         return None
     return float(t0)
 
