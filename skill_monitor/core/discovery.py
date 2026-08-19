@@ -7,8 +7,16 @@ appears, and one that dies stops appearing on its own.
 These functions live in ``core/`` because **two** processes answer the same question
 about the same graph -- the gateway (P6) over HTTP and the Skill Center (P7) on the
 operator's desktop -- and an operator watching both must never see two answers to "is
-this monitor alive". They were duplicated once; the copy that drifts is the bug this
-module exists to prevent.
+this monitor alive".
+
+**This is not yet the only implementation, and this docstring will not pretend it is.**
+``frontend/skill_center.py`` still carries its own copies. That file belongs to P7 and
+lands in a later wave, so P6 imported from here and deleted *its own* copy rather than
+editing someone else's file mid-flight. The honest claim today is that the gateway did
+not add a third one. P7 finishes the move by importing ``parse_namespaces`` and
+``health`` from this module and deleting its copies -- note ``key_topic``, which exists
+precisely so P7 can share this implementation while its discovery is still keyed off the
+pre-migration topic name.
 
 Pure, ROS-free and network-free, per the rule on ``core``: everything here is testable
 with a list of strings and a float.

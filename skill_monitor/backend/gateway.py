@@ -14,31 +14,46 @@ this process** -- a reverse proxy -- the same way it would be done for any other
 unauthenticated backend.
 
 Because "anything that can reach the port" is the whole security model, this module is
-careful about *who can reach the port*, and there are exactly three defences, all of
-them about reach and none of them about identity:
+careful about *who can reach the port*, and about requests that are not what they look
+like. None of these is identity; every one of them is about reach:
 
 1. **The default bind is ``127.0.0.1``.** Exposing the control surface of a robot to a
    network is a decision, so it is spelled ``--host 0.0.0.0`` by someone who meant it,
    not inherited from a default.
-2. **A browser on another origin cannot drive a state-changing route.** The read-only
-   ``GET``s carry ``Access-Control-Allow-Origin: *`` -- they are worth sharing and there
-   are no credentials to steal. Every method that is not ``GET`` (``POST .../command``,
-   ``POST .../spec`` and the proxied ``/api/clock/{mode,step,rate}``) additionally
-   requires the ``X-Skill-Monitor`` request header, which no cross-origin ``fetch`` or
-   HTML form can set without a preflight, and the preflight for those routes does not
-   grant it unless the origin was named with ``--allow-origin``. Without that, a page an
-   operator happens to visit while on the robot's network can no longer POST to the
-   robot; with the old wildcard preflight it could, and could not read the response but
-   did not need to -- for ``{"command": "pause"}`` the write *is* the payoff.
-3. **A namespace from a URL is checked before it becomes a topic name**, and streams are
-   capped, so an anonymous client cannot drive publisher creation on arbitrary names or
-   open unbounded threads. See ``Gateway.resolve_ns`` and ``--max-streams``.
+2. **A request must be addressed to this gateway.** The ``Host`` header is checked
+   against loopback plus whatever ``--host``, ``--allow-origin`` and ``--allow-host``
+   name, *before* routing. Without it the same-origin policy -- which is what every
+   browser defence here rests on -- is defeated by DNS rebinding: a page on
+   ``evil.example`` whose name is re-pointed at 127.0.0.1 after it loads is
+   *same-origin* with a loopback gateway, sends no preflight, and sets whatever headers
+   it likes. See ``Gateway.host_allowed``.
+3. **A request must be unambiguously framed.** ``Transfer-Encoding`` is refused with a
+   400 and the connection is closed. This handler frames by ``Content-Length`` alone,
+   while a reverse proxy in front of it must prefer ``Transfer-Encoding`` (RFC 9112), so
+   accepting both is a CL.TE desync -- and since the documented deployment is
+   "authenticate in a proxy in front of this process", the desync lands on the
+   authentication boundary, smuggling a second request the proxy never sees, with
+   whatever headers the attacker cares to write. See ``_Handler._admissible``.
+4. **A browser gets nothing unless the deployment named it.** There is no CORS wildcard,
+   not even on the reads: ``/api/monitors``, ``manifest`` and ``adapter`` are the
+   robot's sensor topology and resolved schema. Every method that is not ``GET``, plus
+   *every* proxied clock request, additionally requires the ``X-Skill-Monitor`` header,
+   which no cross-origin ``fetch`` or HTML form can set without a preflight this gateway
+   does not grant. A websocket upgrade carrying an ``Origin`` -- which only a browser
+   sends -- is refused the same way, because the same-origin policy does not apply to
+   WebSockets and a stream is live sensor values and AP truth. ``--allow-origin`` is the
+   one switch that opens all three for a console that knows its own origin.
+5. **Nothing a client sends decides how much of this process it gets.** A namespace from
+   a URL is checked against the ROS name grammar before it can become a topic
+   (``Gateway.resolve_ns``); the proxied clock path is normalised and confined under
+   ``/api/clock/``; streams, in-flight requests and body size are each capped; and a
+   socket read that stalls is timed out, because ``MAX_BODY_BYTES`` can see a declared
+   length but never an arrival rate.
 
-Two things those defences deliberately do NOT cover, so nobody mistakes them for auth:
-a non-browser client (curl, a script, anything on the network) can set any header it
-likes and is only kept out by 1; and a browser can open ``WS .../stream`` cross-origin,
-because the same-origin policy does not apply to WebSockets -- the streams are read-only,
-but their contents are readable by any page the operator visits if the port is exposed.
+What this deliberately does NOT cover, so nobody mistakes it for authentication: a
+non-browser client -- curl, a script, anything that can route to the port -- sets any
+header it likes and is kept out by 1 alone. Everything from 2 down assumes the attacker
+is driving the operator's *browser* rather than sending packets themselves.
 
 Pass-through, not translator
 ----------------------------
@@ -97,9 +112,11 @@ Client-facing API
     GET  /api/monitors/{seg}/adapter        verbatim /monitor/adapter payload
     GET  /api/monitors/{seg}/spec_status    verbatim /monitor/spec_status payload
     WS   /api/monitors/{seg}/stream         observation + verdict frames
-    POST /api/monitors/{seg}/command        -> /monitor/command
+    POST /api/monitors/{seg}/command        -> /monitor/command            [header]
     POST /api/monitors/{seg}/spec           -> /monitor/load_spec, replies spec_status
+                                                                           [header]
     *    /api/clock*                        proxied to the clock, same paths
+                                                                           [header]
 
 ``{seg}`` is the ROS namespace with its leading slash stripped, or ``_`` for the
 unnamespaced monitor (``/api/monitors/_/manifest``). A nested namespace keeps its
@@ -108,9 +125,13 @@ work this out -- every entry of ``GET /api/monitors`` carries both ``ns`` and th
 ``path`` segment to use. A segment that is not a legal ROS name is a 400 and one no
 discovery has ever seen is a 404: neither reaches ``create_publisher``.
 
-Every ``POST`` above must carry ``X-Skill-Monitor: 1`` (any value). See the note on the
-trust boundary at the top -- it is not authentication, it is the reason a browser on
-another origin cannot send it.
+``[header]`` marks the routes that must carry ``X-Skill-Monitor: 1`` (any value): the two
+POSTs, and *every* clock request including ``GET``. The clock proxy is deliberately
+path- and method-transparent, so this gateway cannot know which of the clock's ``GET``s
+have side effects -- ``GET /api/clock/step`` advances a tick and is reachable from an
+``<img>`` tag. Treating the whole proxied surface as state-changing is the only policy
+consistent with not enumerating it. The websocket routes are exempt, because a browser
+cannot set a header on a handshake at all; they are gated on ``Origin`` instead.
 
 Run it::
 
@@ -127,6 +148,7 @@ import hashlib
 import json
 import logging
 import os
+import posixpath
 import socket
 import struct
 import sys
@@ -186,9 +208,23 @@ MAX_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_STREAMS = 64
 
 # The header a state-changing request must carry. Its value is never read: the point is
-# that setting a header at all takes a preflight, and the preflight for these routes
-# grants nothing unless --allow-origin named the origin. See the module docstring.
+# that setting a header at all takes a preflight, and the preflight grants nothing
+# unless --allow-origin named the origin. See the module docstring.
 CLIENT_HEADER = "X-Skill-Monitor"
+
+# In-flight requests. A stream is not the only thread a client can park: `POST .../spec`
+# blocks for up to `spec_timeout` waiting for a monitor that may be mute, and a body
+# that arrives one byte at a time blocks for as long as the client likes. Both are
+# capped here; streams hand this slot back and are bounded by DEFAULT_MAX_STREAMS.
+DEFAULT_MAX_REQUESTS = 64
+
+# Seconds a single socket read or write may take while this is still a *request*. It is
+# cleared at the websocket handshake, where a silent socket becomes the normal case.
+REQUEST_TIMEOUT_S = 20.0
+
+# Host header values that always name this process. A deployment adds its own with
+# --allow-host; '*' turns the check off for a deployment that has a proxy doing it.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 # What a stream carries. Exactly the two per-tick topics: the latched ones are REST,
 # because a client that reconnects wants their current value, not to wait for a change
@@ -257,6 +293,40 @@ def segment_problem(segment: str) -> str | None:
 def topic_for(ns: str, topic: str) -> str:
     """The fully qualified topic name under ``ns``. ``ns=''`` is the global namespace."""
     return f"{ns}{topic}" if ns else topic
+
+
+def bare_host(value: str) -> str:
+    """A ``Host`` header or a configured name, lowercased and without its port.
+
+    ``127.0.0.1:8080`` and ``127.0.0.1`` are the same host and must compare equal, or
+    the allowlist would depend on which port a deployment happens to use. IPv6 keeps its
+    brackets, which is what makes ``[::1]:8080`` separable from ``::1`` at all.
+    """
+    host = (value or "").strip().lower()
+    if host.startswith("["):
+        head, sep, _rest = host.partition("]")
+        return head + sep if sep else host
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+def clock_proxy_path(raw_path: str) -> str | None:
+    """The path to forward to the clock, or None if it does not address the clock.
+
+    The proxy deliberately does not enumerate the clock's endpoints -- that is how "the
+    same paths the clock serves" keeps holding for endpoints P1 has not written. The
+    cost is that ``/api/clock/../../secret`` was also "whatever arrived under
+    /api/clock", and this gateway would have fetched it from an upstream it does not
+    police and handed the body back to an anonymous client.
+
+    So: normalise, then require the result to still be under the prefix. Checked twice,
+    once on the raw path and once percent-decoded, because ``%2e%2e`` survives
+    ``normpath`` here and may not survive it at the other end.
+    """
+    for candidate in (raw_path, urllib.parse.unquote(raw_path or "")):
+        normalised = posixpath.normpath(candidate or "/")
+        if normalised != CLOCK_PREFIX and not normalised.startswith(CLOCK_PREFIX + "/"):
+            return None
+    return posixpath.normpath(raw_path)
 
 
 # ============================================================== the ROS seam
@@ -869,6 +939,17 @@ class ClientStream:
 _PAYLOAD_SEPARATOR = ', "payload": '
 
 
+def _reject_json_constant(token: str):
+    """``json.loads(..., parse_constant=)``: NaN and the infinities are not JSON.
+
+    Python's decoder accepts them and its encoder emits them, so a float('nan') on a
+    monitor's side becomes a bare ``NaN`` on the wire that only a Python client can
+    read. Raising here routes it into the same ``problems`` path as any other malformed
+    payload instead of letting it break the envelope in the browser.
+    """
+    raise ValueError(f"{token} is not valid JSON")
+
+
 def stream_frame(ns: str, topic: str, payload_text: str, dropped: int) -> str:
     """One WS frame, with the topic payload embedded **verbatim**.
 
@@ -882,9 +963,15 @@ def stream_frame(ns: str, topic: str, payload_text: str, dropped: int) -> str:
     ``problems``, because embedding it would make the *envelope* unparseable and take
     ``dropped`` down with it -- the client would lose the one field telling it that it
     is losing frames.
+
+    "Well-formed" here means well-formed *to the client*, which is the whole point of
+    the guard, so ``parse_constant`` refuses the three tokens Python's json accepts and
+    JSON.parse does not. A monitor that publishes ``confidence: float('nan')`` emits a
+    bare ``NaN``; without this it sailed through the guard, was embedded verbatim, and
+    made every browser on the stream throw on the frame that carries ``dropped``.
     """
     try:
-        json.loads(payload_text)
+        json.loads(payload_text, parse_constant=_reject_json_constant)
     except (ValueError, TypeError):
         return json.dumps({
             "ns": ns, "topic": topic, "dropped": dropped, "payload": None,
@@ -922,7 +1009,9 @@ class Gateway:
         queue_size: int = DEFAULT_QUEUE,
         spec_timeout: float = DEFAULT_SPEC_TIMEOUT,
         max_streams: int = DEFAULT_MAX_STREAMS,
+        max_requests: int = DEFAULT_MAX_REQUESTS,
         allowed_origins=(),
+        allowed_hosts=(),
     ):
         self.bus = bus or NullBus()
         self.clock = clock or NullClockBackend()
@@ -930,13 +1019,23 @@ class Gateway:
         self.queue_size = queue_size
         self.spec_timeout = spec_timeout
         self.max_streams = max(1, int(max_streams))
-        # Browser origins allowed to drive a state-changing route. Empty by default:
-        # the frontend this package was written for is a desktop client, and a browser
-        # console is a deployment that knows its own origin and says so.
+        self.max_requests = max(1, int(max_requests))
+        # Browser origins allowed to read across origins, to drive a state-changing
+        # route, and to open a stream. Empty by default: the frontend this package was
+        # written for is a desktop client, and a browser console is a deployment that
+        # knows its own origin and says so.
         self.allowed_origins = frozenset(allowed_origins or ())
+        # Host header values this process answers to. Loopback always, plus whatever the
+        # deployment names -- see host_allowed.
+        self.allowed_hosts = frozenset(
+            bare_host(entry) for entry in (*LOOPBACK_HOSTS, *(allowed_hosts or ()))
+            if entry
+        )
         self.started_at = time.time()
         self._streams = 0
         self._streams_lock = threading.Lock()
+        self._requests = 0
+        self._requests_lock = threading.Lock()
 
     # -- admission ---------------------------------------------------------
 
@@ -964,6 +1063,51 @@ class Gateway:
     def open_streams(self) -> int:
         with self._streams_lock:
             return self._streams
+
+    def acquire_request(self) -> bool:
+        """Take one of the ``max_requests`` in-flight slots, or False.
+
+        The stream cap covered one kind of parked thread and the reasoning applied to
+        every other kind: ``POST .../spec`` parks a thread for ``spec_timeout`` waiting
+        on a monitor that may be mute, and a body arriving one byte at a time parks one
+        for as long as the client cares to dribble. Both are requests, so both are
+        counted here; a stream hands its slot back once it is admitted to its own
+        budget.
+        """
+        with self._requests_lock:
+            if self._requests >= self.max_requests:
+                return False
+            self._requests += 1
+            return True
+
+    def release_request(self) -> None:
+        with self._requests_lock:
+            self._requests = max(0, self._requests - 1)
+
+    @property
+    def open_requests(self) -> int:
+        with self._requests_lock:
+            return self._requests
+
+    def host_allowed(self, host_header) -> bool:
+        """Whether a request's ``Host`` names this gateway.
+
+        The browser defence in this file is the same-origin policy, and the same-origin
+        policy does not know which address a name resolves to. A page on ``evil.example``
+        whose DNS is flipped to 127.0.0.1 after the page loads is *same-origin* with a
+        loopback gateway: no preflight, no CORS, and it sets ``X-Skill-Monitor`` itself.
+        Refusing a Host this deployment was never configured for is the standard
+        mitigation and the only one that works, because every other signal here is under
+        the attacker's control.
+
+        A missing Host is refused too: HTTP/1.1 requires one, and a request without it
+        is not a browser.
+        """
+        if "*" in self.allowed_hosts:
+            return True
+        if not host_header:
+            return False
+        return bare_host(host_header) in self.allowed_hosts
 
     def resolve_ns(self, segment: str):
         """``(ns, None)`` for a usable namespace, or ``(None, (status, body))``.
@@ -1006,6 +1150,7 @@ class Gateway:
             # So an operator whose next panel is refused can see the cap rather than
             # guess at it, and a deployment can alarm on approaching it.
             "streams": {"open": self.open_streams, "max": self.max_streams},
+            "requests": {"open": self.open_requests, "max": self.max_requests},
             "services": self.services(),
         }
 
@@ -1234,6 +1379,13 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "skill-monitor-gateway/1"
 
+    # socketserver applies this to the connection in setup(), which is the only thing
+    # that bounds a client dribbling a request a byte at a time: MAX_BODY_BYTES checks
+    # the *declared* length, never the arrival rate, so thirty slowloris bodies used to
+    # be thirty threads that never came back. Generous enough for a spec push over a
+    # slow link; a stream clears it at the handshake, where silence becomes normal.
+    timeout = REQUEST_TIMEOUT_S
+
     # -- plumbing ----------------------------------------------------------
 
     def log_message(self, fmt, *args):
@@ -1243,45 +1395,45 @@ class _Handler(BaseHTTPRequestHandler):
     def gateway(self) -> Gateway:
         return self.server.gateway  # type: ignore[attr-defined]
 
-    def _cors(self, *, state_changing: bool):
-        """The CORS grant, which is deliberately not the same for reads and writes.
+    def _cors(self):
+        """The CORS grant: nothing, to anyone the deployment did not name.
 
-        Reads get ``*``: they carry no credentials, there is no session to protect, and
-        a viewer served from anywhere should be able to read a verdict.
+        There is no wildcard, not even on the reads. ``GET /api/monitors``, ``manifest``
+        and ``adapter`` are the robot's sensor topology and resolved schema, and the
+        stream beside them carries live sensor values and AP truth -- continuous
+        telemetry of what the robot senses and whether it is about to fail. That is not
+        something to hand to every page an operator happens to visit, and the wildcard
+        was doing exactly that.
 
-        Writes get nothing unless the origin was named with ``--allow-origin``. The
-        wildcard preflight this replaces was the whole vulnerability: with
-        ``Allow-Origin: *``, ``Allow-Methods: POST`` and ``Allow-Headers: Content-Type``,
-        a browser will happily send a cross-origin ``application/json`` POST, so any
-        page an operator visited while on the robot's network could pause a mission or
-        replace the spec that defines what a failure is. The attacker never reads the
-        response; for a write that is not the payoff.
+        A browser console is a deployment that knows its own origin and says so with
+        ``--allow-origin``; a named origin gets reads, writes and the header it needs to
+        preflight. Nothing here affects a non-browser client: CORS is enforced by the
+        browser, and curl, the desktop console and the tests never consult it.
         """
-        if not state_changing:
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            self.send_header("Vary", "Origin")
-            return
-        origin = self.headers.get("Origin")
-        if origin and origin in self.gateway.allowed_origins:
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", f"Content-Type, {CLIENT_HEADER}")
-            self.send_header("Access-Control-Max-Age", "600")
-        # No wildcard fallback: an origin that was not named gets no grant at all, and
-        # the browser refuses the request before it is sent.
+        # Vary regardless, so a cache cannot serve one origin's answer to another.
         self.send_header("Vary", "Origin")
+        origin = self.headers.get("Origin")
+        if not origin or origin not in self.gateway.allowed_origins:
+            return
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", f"Content-Type, {CLIENT_HEADER}")
+        self.send_header("Access-Control-Max-Age", "600")
 
-    def _send(self, status: int, body, content_type: str = "application/json",
-              *, state_changing: bool | None = None):
+    def _send(self, status: int, body, content_type: str = "application/json"):
         if isinstance(body, str):
             body = body.encode("utf-8")
-        if state_changing is None:
-            state_changing = self.command not in ("GET", "HEAD")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self._cors(state_changing=state_changing)
+        if self.close_connection:
+            # Said on the wire, not merely done. `close_connection` drops the socket
+            # after this response, but under HTTP/1.1 a client -- or an intermediary
+            # with its own idea of where the last request ended -- treats the connection
+            # as reusable unless told otherwise. On the framing-refusal path that
+            # intermediary is precisely what is being defended against.
+            self.send_header("Connection", "close")
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
@@ -1291,6 +1443,11 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._send(400, _error("Content-Length is not an integer"))
             return None
+        if length < 0:
+            # `rfile.read(-1)` reads to EOF, so a negative length is a request to park
+            # this thread until the client feels like closing the socket.
+            self._send(400, _error("Content-Length is negative"))
+            return None
         if length > MAX_BODY_BYTES:
             self._send(413, _error(f"body larger than {MAX_BODY_BYTES} bytes"))
             return None
@@ -1298,6 +1455,56 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _is_upgrade(self) -> bool:
         return "websocket" in (self.headers.get("Upgrade") or "").lower()
+
+    # -- admission: who is allowed to be talking to us at all ---------------
+
+    def _admissible(self) -> bool:
+        """Framing and Host checks, before a single route is considered.
+
+        Both are about a request that is not what it appears to be, and both are
+        checked here rather than per-route because a route that forgets them is the
+        whole vulnerability.
+        """
+        if self.headers.get("Transfer-Encoding") is not None:
+            # CL.TE request smuggling. This handler reads exactly Content-Length bytes
+            # and does not implement chunked framing, while a reverse proxy in front of
+            # it must (RFC 9112) prefer Transfer-Encoding -- so proxy and gateway
+            # disagree about where the first request ends, and the bytes after it become
+            # a second request the proxy never saw. Since the documented deployment is
+            # "authenticate in a reverse proxy in front of this process", the desync
+            # lands precisely on the authentication boundary, and the smuggled request
+            # carries whatever headers the attacker types, including the one the CSRF
+            # gate asks for.
+            #
+            # Refusing the whole request is the only safe answer: having decided the
+            # framing is ambiguous, we cannot know where this request ends, so the
+            # connection cannot be reused either.
+            self.close_connection = True
+            self._send(400, _error(
+                "Transfer-Encoding is not supported; send Content-Length",
+                why=("this server frames requests by Content-Length only. Accepting "
+                     "both is how a proxy in front of it and this process end up "
+                     "disagreeing where a request ends"),
+            ))
+            return False
+
+        host = self.headers.get("Host")
+        if not self.gateway.host_allowed(host):
+            # DNS rebinding. The browser defence above is the same-origin policy, and
+            # the same-origin policy has no idea which IP a name resolves to: a page on
+            # evil.example whose DNS flips to 127.0.0.1 is *same-origin* with a loopback
+            # gateway, so it sends no preflight and sets any header it likes, including
+            # X-Skill-Monitor. Binding the service to the names it is actually served
+            # under is the standard mitigation, and it is the one thing that stops a
+            # request whose Host is a name this deployment never uses.
+            self._send(400, _error(
+                f"Host {host!r} is not served here",
+                why=("a request whose Host header is a name this gateway was not "
+                     "configured for is a DNS rebinding attempt; name the host with "
+                     "--allow-host if it is legitimate"),
+            ))
+            return False
+        return True
 
     # -- routing -----------------------------------------------------------
 
@@ -1325,11 +1532,11 @@ class _Handler(BaseHTTPRequestHandler):
         return False
 
     def do_OPTIONS(self):  # noqa: N802 -- BaseHTTPRequestHandler's naming
-        # The preflight answers for the method the browser is *about* to use, not for
-        # OPTIONS itself, so a preflight for POST gets the write policy and one for GET
-        # gets the read policy.
-        requested = (self.headers.get("Access-Control-Request-Method") or "GET").upper()
-        self._send(204, b"", "text/plain", state_changing=(requested not in ("GET", "HEAD")))
+        if not self._admissible():
+            return
+        # One preflight answer for every method, because the grant is now decided by
+        # the origin alone: named or not.
+        self._send(204, b"", "text/plain")
 
     def do_GET(self):  # noqa: N802
         self._route("GET")
@@ -1344,20 +1551,58 @@ class _Handler(BaseHTTPRequestHandler):
         self._route("DELETE")
 
     def _route(self, method: str):
+        if not self._admissible():
+            return
+        # One in-flight request per slot, released the moment a stream takes over its
+        # own budget. Without this the stream cap was a cap on one kind of parked
+        # thread while `POST .../spec` parked another for `spec_timeout` seconds,
+        # uncapped, and a dribbled body parked a third for as long as the client liked.
+        if not self.gateway.acquire_request():
+            self._send(503, _error(
+                f"too many requests in flight; this gateway serves "
+                f"{self.gateway.max_requests} at once",
+                max_requests=self.gateway.max_requests,
+            ))
+            return
+        self._holds_request = True
+        try:
+            self._dispatch(method)
+        finally:
+            self._release_request()
+
+    def _release_request(self):
+        """Idempotent: a stream hands its request slot back at handover, and the
+        ``finally`` in :meth:`_route` must not then release a second time."""
+        if getattr(self, "_holds_request", False):
+            self._holds_request = False
+            self.gateway.release_request()
+
+    def _dispatch(self, method: str):
         parts = urllib.parse.urlsplit(self.path)
         path = parts.path.rstrip("/") or "/"
+        is_clock = path == CLOCK_PREFIX or path.startswith(CLOCK_PREFIX + "/")
 
         # Applied here rather than per-route, so it covers the two ingress POSTs, the
         # proxied clock writes, and any method a future route adds -- forgetting it on
         # one route is exactly how this class of hole reappears.
-        if method not in ("GET", "OPTIONS") and not self._may_change_state():
-            return
+        #
+        # The *whole* clock proxy is gated, GET included, because this gateway
+        # deliberately does not enumerate the clock's endpoints and therefore cannot
+        # know which of its GETs are side-effect free. `GET /api/clock/step` advances a
+        # tick and is reachable from an <img> tag; treating the proxied surface as
+        # state-changing is the only answer consistent with not enumerating it.
+        #
+        # A websocket handshake is exempt because a browser cannot set a header on one
+        # at all -- see _origin_admits_a_stream, which is that route's gate.
+        if not self._is_upgrade() and (method != "GET" or is_clock):
+            if not self._may_change_state():
+                return
 
         if path == f"{API_PREFIX}/health" and method == "GET":
             self._send(200, json.dumps(self.gateway.gateway_health()))
             return
 
-        if path == CLOCK_PREFIX or path.startswith(CLOCK_PREFIX + "/"):
+        if is_clock:
             self._clock(method, parts)
             return
 
@@ -1431,7 +1676,16 @@ class _Handler(BaseHTTPRequestHandler):
     # -- clock proxy -------------------------------------------------------
 
     def _clock(self, method: str, parts):
-        path = parts.path
+        path = clock_proxy_path(parts.path)
+        if path is None:
+            self._send(400, _error(
+                f"{parts.path!r} does not address the clock",
+                why=("the proxy forwards whatever arrives under /api/clock, so it is "
+                     "confined to that prefix after normalisation -- otherwise "
+                     "/api/clock/../../anything is a request to an arbitrary path on "
+                     "an upstream this gateway does not police"),
+            ))
+            return
         if parts.query:
             path = f"{path}?{parts.query}"
         if self._is_upgrade():
@@ -1472,18 +1726,47 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- websocket ---------------------------------------------------------
 
+    def _origin_admits_a_stream(self) -> bool:
+        """The websocket's own origin gate, because CORS is not one.
+
+        The same-origin policy does not apply to WebSockets: a page on any origin may
+        open one and read every frame. On the default loopback deployment that is a live
+        feed of raw sensor values and AP truth -- what the robot senses and whether it is
+        about to fail -- handed to any page the operator happens to visit.
+
+        A browser is required to send ``Origin`` on a handshake and cannot forge it; a
+        non-browser client (the desktop console, a script, this file's own
+        ``ws_connect``) sends none. So: no ``Origin`` passes, and an ``Origin`` must have
+        been named with ``--allow-origin``. Same switch as the writes, defaulting to no
+        browser.
+        """
+        origin = self.headers.get("Origin")
+        if origin is None or origin in self.gateway.allowed_origins:
+            return True
+        self._send(403, _error(
+            f"origin {origin!r} may not open a stream",
+            why=("a websocket is exempt from the same-origin policy, so this gateway "
+                 "checks the origin itself; name it with --allow-origin"),
+        ))
+        return False
+
     def _admit_stream(self) -> bool:
         """Take a stream slot, or answer 503 and say so. Refused *before* the 101, so a
         client sees an HTTP status it can act on rather than a websocket that opens and
         immediately closes for no stated reason."""
-        if self.gateway.acquire_stream():
-            return True
-        self._send(503, _error(
-            f"too many open streams; this gateway serves {self.gateway.max_streams} "
-            "at once",
-            max_streams=self.gateway.max_streams,
-        ))
-        return False
+        if not self._origin_admits_a_stream():
+            return False
+        if not self.gateway.acquire_stream():
+            self._send(503, _error(
+                f"too many open streams; this gateway serves {self.gateway.max_streams} "
+                "at once",
+                max_streams=self.gateway.max_streams,
+            ))
+            return False
+        # This request is now a stream and is bounded by the stream cap, so its
+        # in-flight slot goes back rather than being held for the life of the socket.
+        self._release_request()
+        return True
 
     def _handshake(self) -> bool:
         key = self.headers.get("Sec-WebSocket-Key")
@@ -1491,12 +1774,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, _error("missing Sec-WebSocket-Key"))
             return False
         self.close_connection = True  # the socket is ours now, not the server loop's
+        # The read timeout exists to stop a client dribbling a *request* forever. A
+        # stream is a socket that is supposed to be silent for minutes at a time, so it
+        # is cleared here, at the moment this stops being a request.
+        try:
+            self.connection.settimeout(None)
+        except OSError:  # pragma: no cover -- a socket already gone
+            pass
         self.wfile.write(
             b"HTTP/1.1 101 Switching Protocols\r\n"
             b"Upgrade: websocket\r\n"
             b"Connection: Upgrade\r\n"
-            b"Sec-WebSocket-Accept: " + ws_accept_key(key).encode("ascii") + b"\r\n"
-            b"Access-Control-Allow-Origin: *\r\n\r\n"
+            b"Sec-WebSocket-Accept: " + ws_accept_key(key).encode("ascii") + b"\r\n\r\n"
         )
         self.wfile.flush()
         return True
@@ -1582,6 +1871,19 @@ class GatewayServer(ThreadingHTTPServer):
         super().__init__((host, port), _Handler)
         self.gateway = gateway
 
+    def handle_error(self, request, client_address):
+        """One log line, not a traceback.
+
+        socketserver's default prints a full traceback to stderr for every exception in
+        a handler, and the commonest exception here is a client resetting the connection
+        during a handshake -- which anyone can do in a loop. Twenty aborted probes were
+        hundreds of lines of stderr; that is a log-exhaustion primitive handed out for
+        free, and it buries the exceptions that do matter. The detail is kept at debug
+        for whoever is actually debugging.
+        """
+        exc = sys.exc_info()[1]
+        log.debug("client %s: %s: %s", client_address, type(exc).__name__, exc)
+
     @property
     def port(self) -> int:
         return self.server_address[1]
@@ -1620,6 +1922,28 @@ def build_bus(use_ros: bool = True) -> MonitorBus:
         return NullBus(f"rclpy unavailable: {exc}")
 
 
+def host_allowlist(bind_host: str, origins=(), extra=()) -> set[str]:
+    """Host header values this deployment answers to, derived from what it was told.
+
+    Loopback is added by :class:`Gateway` itself. On top of it: the address it was told
+    to bind (unless that is a wildcard, which names nothing), the host part of every
+    ``--allow-origin`` -- an origin the deployment trusts as a *page* is one it will be
+    reached as -- and anything named outright with ``--allow-host``.
+
+    A gateway bound to 0.0.0.0 and reached by DNS name therefore needs one
+    ``--allow-host``. That is the intended shape: exposing it was already a deliberate
+    act, and naming what it is reached as is the other half of the same decision.
+    """
+    allowed = set(extra or ())
+    if bind_host and bind_host not in ("0.0.0.0", "::", "*"):
+        allowed.add(bind_host)
+    for origin in origins or ():
+        hostname = urllib.parse.urlsplit(origin).hostname
+        if hostname:
+            allowed.add(hostname)
+    return allowed
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The command line, separate from :func:`main` so a test can assert what the
     defaults are without starting a server -- and the default that matters most is
@@ -1645,10 +1969,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="seconds POST .../spec waits for the monitor's spec_status")
     parser.add_argument("--max-streams", type=int, default=DEFAULT_MAX_STREAMS,
                         help="concurrent websocket clients; the rest get a 503")
+    parser.add_argument("--max-requests", type=int, default=DEFAULT_MAX_REQUESTS,
+                        help="concurrent in-flight requests; the rest get a 503")
     parser.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
-                        help="browser origin permitted to POST (repeatable, exact match, "
-                             "e.g. https://console.lab). Without one, no cross-origin "
-                             "page can drive a state-changing route")
+                        help="browser origin permitted to read across origins, to POST "
+                             "and to open a stream (repeatable, exact match, e.g. "
+                             "https://console.lab). Without one, no browser on another "
+                             "origin gets anything")
+    parser.add_argument("--allow-host", action="append", default=[], metavar="HOST",
+                        help="Host header this gateway answers to, beyond loopback and "
+                             "--host (repeatable; '*' disables the check). A request "
+                             "whose Host is a name you never configured is a DNS "
+                             "rebinding attempt")
     parser.add_argument("--no-ros", action="store_true",
                         help="serve with no ROS side at all (an empty monitor list)")
     parser.add_argument("--log-level", default="INFO")
@@ -1667,7 +1999,10 @@ def main(argv=None) -> int:
     clock = HttpClockBackend(args.clock_url) if args.clock_url else NullClockBackend()
     gateway = Gateway(bus, clock, stale_after=args.stale_after,
                       queue_size=args.queue, spec_timeout=args.spec_timeout,
-                      max_streams=args.max_streams, allowed_origins=args.allow_origin)
+                      max_streams=args.max_streams, max_requests=args.max_requests,
+                      allowed_origins=args.allow_origin,
+                      allowed_hosts=host_allowlist(args.host, args.allow_origin,
+                                                   args.allow_host))
     server = GatewayServer(gateway, args.host, args.port)
 
     log.info("gateway on http://%s:%d  (NO AUTHENTICATION -- trusted network only)",
