@@ -30,9 +30,14 @@ Three rates, named once so they are never conflated again:
 the active clock — wall clock live, replay clock offline. **A tick is named by the boundary
 that closes it**, so the pulse, the observation and the verdict carrying `seq=k` all describe
 the same interval: the one that just ended. Naming it by its opening boundary instead would
-put a permanent off-by-one between the pulse and everything downstream. Half-open is the point: every
-instant belongs to exactly one tick, so no sample is counted twice and none falls between
-ticks.
+put a permanent off-by-one between the pulse and everything downstream.
+
+Half-open is the other half of the point: every instant belongs to exactly one tick, so no
+sample is counted twice and none falls between ticks.
+
+**`seq` counts closed intervals, so it starts at 1.** `seq = 0` means no interval has closed
+yet — it is the value `GET /api/clock` returns before the first pulse, and it is not an
+interval anyone can describe. Interval 0 would have to end at `t₀`, before the clock existed.
 
 ```
         B_k                         B_k+1                       B_k+2

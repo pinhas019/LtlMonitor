@@ -47,6 +47,14 @@ None of its own. It redefines the data the evaluator (P3) subscribes to.
 | `/next_waypoint` | `geometry_msgs/PointStamped` | the current intermediate target on the way to it |
 | `/vision/goal_similarity` | `std_msgs/Float32` | monitor-side CLIP score, not planner output |
 
+`/next_waypoint` is admitted despite being *derived* from the planner's chosen path
+(`simple_path_manager_realtime.py:603` publishes it as a lookahead point on
+`traversable_path`). It is admitted as a **goal at a shorter horizon**, not as a report on
+the planner's health: it says where the robot is being sent, never whether the planner
+thinks it is succeeding. That is a judgement call rather than a bright line, and it is
+recorded here because the next person adding a topic will apply the stated rule and needs
+to know which side of it this one sits on.
+
 **Forbidden** — the planner talking about itself:
 
 | topic | why |
@@ -144,7 +152,11 @@ Also P3, whose evaluator subscribes to the new topics.
 - `test_no_progress_ignores_motion_that_is_not_toward_the_goal` — circling at constant
   distance is not progress
 - `test_goal_reached_at_the_arrival_radius`
-- `test_distance_keys_are_none_until_a_goal_arrives` — no goal is not distance zero
+- `test_distance_keys_are_none_until_a_goal_arrives` — no goal is not distance zero.
+  `null` is a legal sensor value on the wire (`api.validate_observation` accepts it), and
+  the distinction that matters is "present but unknown" versus "absent": every schema key is
+  always present, and `null` is how it says it has nothing to report. A key that is *absent*
+  is a contract violation
 - `test_regenerated_spec_validates_against_the_new_schema` — `spec_contract.validate()`
   clean against the new keys
 - schema parity across shipped descriptors still holds
