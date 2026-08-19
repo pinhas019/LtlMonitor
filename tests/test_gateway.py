@@ -688,7 +688,7 @@ def test_an_absent_clock_is_503_with_the_reason(serve):
 def test_clock_stream_is_proxied_frame_for_frame(serve):
     """docs/api.md: the clock's stream frame is the identical payload to /monitor/tick,
     so wrapping it here would make the proxied path differ from the direct one."""
-    tick = json.dumps(api.build_tick(seq=7, t=7.0, tick_hz=1.0), indent=2)
+    tick = json.dumps(api.build_tick(seq=7, t=7.0, t0=0.0, tick_hz=1.0), indent=2)
     clock = FakeClock(frames=[tick])
     client = serve(FakeBus(), clock)
 
