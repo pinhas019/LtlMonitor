@@ -308,6 +308,20 @@ _PHASE_VIOLATION_LIMIT = manifest_mod.PHASE_VIOLATION_LIMIT
 #: tick, and a log that drowns its own signal is its own outage.
 _REFUSAL_LOG_EVERY = 100
 
+#: Clock pulses with no admitted step before the monitor says so on api.VERDICT.
+#: The clock is a *different* publisher from the evaluator, so it keeps pulsing through
+#: every cause of stepping silence -- a dead evaluator, a demoted wire, a refused epoch
+#: -- and it is the only thing in this process that knows time is still passing.
+_STALL_TICKS = 5
+
+#: Clock pulses with no admitted step before the legacy wire is allowed to step again.
+#: Longer than `_STALL_TICKS` on purpose: the indication is free and the re-admission is
+#: not. Legacy arrivals carry no `seq` and are numbered from their own counter, so they
+#: are not deduplicated against envelope indices -- re-admitting a merely *slow*
+#: envelope double-steps the tick they share. Five seconds of silence at 2 Hz is not a
+#: slow envelope, and the demotion is restored by the next envelope that arrives.
+_LEGACY_READMIT_TICKS = 10
+
 
 def _infer_state_annotations(
     mon: LTLMonitor, spec: "SkillSpec"
@@ -716,6 +730,14 @@ class LtlMonitorNode(Node):
         #: Observations refused in a row since the last admitted step. Throttles the
         #: refusal warning; see `_note_refusal`.
         self._refused_run = 0
+        #: The clock index at the last admitted step, i.e. where the current stretch of
+        #: stepping silence began. None until a clock is on the graph. See
+        #: `_watch_for_stepping_silence` -- this is what makes a monitor that has
+        #: stopped stepping say so instead of publishing nothing.
+        self._silent_since: int | None = None
+        #: True while the stall is being announced on api.VERDICT, so entering and
+        #: leaving it are one log line each rather than one per tick.
+        self._stalled = False
         #: Which observation topics have delivered at least once, so the dual-run
         #: window is announced once per wire instead of once per tick.
         self._wires_seen: set[str] = set()
@@ -771,6 +793,9 @@ class LtlMonitorNode(Node):
         #: True once api.OBSERVATION has delivered. From then on the legacy copy of the
         #: same tick is not stepped -- see `_on_observation`.
         self._envelope_seen = False
+        #: True while the demotion above is suspended because the envelope wire went
+        #: quiet for `_LEGACY_READMIT_TICKS` clock pulses. Cleared by the next envelope.
+        self._legacy_readmitted = False
 
         # The manifest is the whole spec, latched: a GUI or any other client that
         # connects mid-mission gets it immediately instead of having to find the file
@@ -884,6 +909,9 @@ class LtlMonitorNode(Node):
                     f"stream begins again and the ledger starts over."
                 )
             self.clock_epoch = epoch
+
+        # Last, so it judges against this pulse rather than the one before it.
+        self._watch_for_stepping_silence()
 
     def command_callback(self, msg: String) -> None:
         """`arm` | `reset` | `pause` | `resume` from the frontend."""
@@ -1404,13 +1432,18 @@ class LtlMonitorNode(Node):
         # it describes. Its control keys are still honoured above (the LLM client's
         # `__done__`/`__reset__` ride the legacy wire), but it does not step.
         if wire == api.OBSERVATION:
+            if self._legacy_readmitted:
+                self._legacy_readmitted = False
+                self.get_logger().info(
+                    f"{api.OBSERVATION} is back; the legacy copy stops stepping again."
+                )
             if not self._envelope_seen:
                 self._envelope_seen = True
                 self.get_logger().info(
                     f"{api.OBSERVATION} is live; the legacy copy of each tick will no "
                     f"longer step the automaton."
                 )
-        elif self._envelope_seen:
+        elif self._envelope_seen and not self._legacy_readmitted:
             return
 
         # The tick index decides, not the arrival. A redelivered tick must not advance
@@ -1483,12 +1516,79 @@ class LtlMonitorNode(Node):
             )
             self._refused_run = 0
 
+    def _watch_for_stepping_silence(self) -> None:
+        """Say so on api.VERDICT when the clock advances and the automaton does not.
+
+        Called from the pulse, because the clock is a *different* publisher from the
+        evaluator: it keeps ticking through a dead evaluator, a demoted wire and a
+        refused epoch alike, and so it is the only thing in this process that knows
+        time is passing while nothing is being decided.
+
+        Without this the monitor's failure mode is silence, which on a topic that is
+        quiet whenever nothing is wrong is indistinguishable from health. A supervisor
+        cannot tell "no verdict because the run is calm" from "no verdict because the
+        monitor stopped a minute ago".
+        """
+        if self.halted or self.clock_seq is None:
+            # A halted monitor is *supposed* to be quiet; crying wolf there would teach
+            # an operator to ignore the one indication that matters.
+            return
+        if self._silent_since is None:
+            self._silent_since = self.clock_seq
+            return
+
+        silent = self.clock_seq - self._silent_since
+        if silent >= _STALL_TICKS and not self._stalled:
+            self._stalled = True
+            self.get_logger().error(
+                f"{silent} clock pulses with no step: the automaton is not advancing. "
+                f"Announcing it on {api.VERDICT}."
+            )
+        if self._stalled:
+            self._publish_stall_verdict(silent)
+
+        # Re-admitting the legacy wire is deliberately slower than announcing, because
+        # the indication is free and this is not: legacy arrivals carry no `seq` and are
+        # numbered from their own counter, so they are not deduplicated against envelope
+        # indices. Re-admitting a merely *slow* envelope double-steps the tick they
+        # share. The next envelope restores the demotion.
+        if (silent >= _LEGACY_READMIT_TICKS and self._envelope_seen
+                and not self._legacy_readmitted):
+            self._legacy_readmitted = True
+            self.get_logger().warn(
+                f"No step for {silent} pulses and {api.OBSERVATION} is quiet; letting "
+                f"the legacy wire step again until it returns."
+            )
+
+    def _publish_stall_verdict(self, silent: int) -> None:
+        """A verdict carrying the CLOCK's index, saying this tick decided nothing.
+
+        The seq is the clock's rather than the last observation's: the point of the
+        frame is that no observation arrived for it, and repeating a stale index would
+        make the stall look like a redelivery of the tick before it.
+        """
+        self.publish_verdict(
+            seq=self.clock_seq, t=self.clock_t, missed_ticks=silent, has_data=False,
+        )
+
+    def _note_stepping_resumed(self) -> None:
+        """Clear a stall, once, when a step finally lands."""
+        if self._stalled:
+            self.get_logger().info("Stepping again; the stall is over.")
+            self._stalled = False
+        self._silent_since = self.clock_seq
+
     def _step_once(self, obs, admission) -> None:
         """Advance the automata and the phase machine exactly one tick, then publish.
 
         Publishing happens here, once, at the end -- including on the paths that end
         the run, so a recorded stream always finishes with the verdict that finished it.
         """
+        # A step landed, so whatever stretch of silence was running is over. Recorded
+        # before any of the work below, so an exception mid-step cannot leave the node
+        # believing it is still stalled.
+        self._note_stepping_resumed()
+
         self._confidence = obs.confidence
         self._stale_sources = list(obs.stale_sources)
         self.sensors = dict(obs.sensors)
@@ -1704,12 +1804,25 @@ class LtlMonitorNode(Node):
 
     # -- the verdict ----------------------------------------------------------
 
-    def verdict(self) -> dict:
+    def verdict(
+        self,
+        *,
+        seq: int | None = None,
+        t: float | None = None,
+        missed_ticks: int | None = None,
+        has_data: bool | None = None,
+    ) -> dict:
         """This tick's api.VERDICT payload.
 
         Assembled entirely by `manifest.build_verdict_payload`, so no field name in the
         wire contract is spelled out in this node -- and so the same payload can be
         built, and validated, in a test with no ROS on the machine.
+
+        The four overrides exist for one caller, `_publish_stall_verdict`: a frame that
+        describes a tick the automaton did *not* step is stamped with the clock's own
+        index and time rather than the last stepped tick's, and says so through the two
+        fields that already mean it. Nothing else may pass them -- every other frame is
+        this node's own state, unedited.
         """
         phases = self.spec.execution_phases
         in_phase = 0 <= self.phase_idx < len(phases)
@@ -1724,8 +1837,8 @@ class LtlMonitorNode(Node):
             violations_to_fault = limit - self.phase_violation_count
 
         return manifest_mod.build_verdict_payload(
-            seq=self._tick_seq,
-            t=self._tick_t,
+            seq=self._tick_seq if seq is None else seq,
+            t=self._tick_t if t is None else t,
             step=self.step_idx,
             skill_name=self.spec.skill_name,
             phase=self.current_phase or None,
@@ -1746,12 +1859,12 @@ class LtlMonitorNode(Node):
             violations_seen=self.phase_violation_count,
             tick_hz=self.tick_hz,
             terminal=self._terminal,
-            missed_ticks=self._missed_ticks,
-            has_data=self._has_data,
+            missed_ticks=self._missed_ticks if missed_ticks is None else missed_ticks,
+            has_data=self._has_data if has_data is None else has_data,
         )
 
-    def publish_verdict(self) -> None:
-        payload = self.verdict()
+    def publish_verdict(self, **overrides) -> None:
+        payload = self.verdict(**overrides)
         problems = api.validate_verdict(payload)
         if problems:
             # A verdict that fails its own schema is a bug in this node, not at the
