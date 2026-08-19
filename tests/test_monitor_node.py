@@ -203,9 +203,16 @@ def a_node(spec_dict=None, *, monitors=None, adapter=None):
     return node
 
 
-def tick(node, seq, *, t0=None, tick_hz=1.0):
-    payload = api.build_tick(seq=seq, t=float(seq), tick_hz=tick_hz, mode="wall")
-    if t0 is not None:
+#: Passed as `t0` to omit the field entirely -- a clock predating P1. `None` cannot mean
+#: this: `None` is a legal JSON value and would be a *malformed* t0, not an absent one.
+NO_T0 = object()
+
+
+def tick(node, seq, *, t0=0.0, tick_hz=1.0):
+    payload = api.build_tick(seq=seq, t=float(seq), tick_hz=tick_hz, t0=0.0, mode="wall")
+    if t0 is NO_T0:
+        payload.pop("t0")
+    else:
         payload["t0"] = t0
     node.tick_callback(ros_stub.Message(json.dumps(payload)))
 
@@ -309,16 +316,20 @@ def test_a_refusal_burst_does_not_become_its_own_outage_in_the_log():
     assert any("Stepping again after 250" in line for line in node.get_logger().at("info"))
 
 
-def test_a_clock_that_never_sends_t0_behaves_exactly_as_before():
-    """P1 may land after this. Absent `t0` means one epoch forever, which is the
-    behaviour that was already there -- backwards is stale and stays refused."""
+def test_a_clock_that_never_sends_t0_is_refused_without_taking_the_run_with_it():
+    """P1 has landed: `t0` is a required field, so a pulse without one is a producer
+    that cannot be told apart from any other producer -- the exact ambiguity `t0`
+    exists to prevent -- and it is refused. What must NOT happen is the refusal
+    propagating: the observation stream carries its own `seq` and keeps stepping the
+    automaton, so a clock too old to talk to costs the epoch, not the monitoring."""
     node = a_node()
     for seq in (10, 11):
-        tick(node, seq)
+        tick(node, seq, t0=NO_T0)
         observe(node, seq)
     observe(node, 9)
-    assert len(node.multi.steps) == 2
-    assert node.ledger.epoch is None
+    assert len(node.multi.steps) == 2       # still monitoring
+    assert node.ledger.epoch is None        # but it never adopted an epoch
+    assert node.clock_seq != 11             # and the pulse itself never landed
 
 
 def test_a_nan_t0_does_not_void_one_step_per_tick():
