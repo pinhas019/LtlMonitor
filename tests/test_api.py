@@ -29,7 +29,10 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # =============================================================================
 
 def a_tick() -> dict:
-    return api.build_tick(seq=1041, t=1041.0, tick_hz=1.0, mode="wall")
+    # `t0` has no default, deliberately: a producer that omitted it would emit a frame
+    # claiming the clock started at the epoch, and two such producers would be
+    # indistinguishable -- the one thing the field exists to prevent.
+    return api.build_tick(seq=1041, t=1041.0, tick_hz=1.0, mode="wall", t0=1700000000.0)
 
 
 def an_observation() -> dict:

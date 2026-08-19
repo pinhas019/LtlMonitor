@@ -70,24 +70,24 @@ from skill_monitor.core import api
 # tolerance, `ManualClock` would occasionally swallow a step -- the one failure mode that
 # would make single-stepping useless for debugging. One nanosecond is far below any
 # meaningful tick period and far above the accumulated error.
+#
+# Absolute, and that is only safe because `MAX_TICK_HZ` bounds the period from below:
+# the overshoot a boundary test can produce is `_EPS/Delta` ticks, so at the finest legal
+# Delta of 1 ms it is a millionth of a tick. `tick_hz=1e11` used to be accepted and made
+# that overshoot 100 whole ticks -- the bound is what fixed that, and a relative
+# tolerance on top of it would be arithmetic no legal Delta can reach. If `MAX_TICK_HZ`
+# ever rises past ~1 MHz, this has to become a fraction of Delta. Not before.
 _EPS = 1e-9
-
-#: The tolerance is never more than this fraction of a period. An *absolute* tolerance
-#: is a bug waiting for a small enough Delta: `_boundary_at` accepts a boundary that is
-#: up to the tolerance in the future, so the overshoot it can produce is exactly
-#: `tolerance / Delta` ticks. At 1 Hz that is a billionth of a tick and invisible; at a
-#: Delta below a microsecond a fixed 1 ns would start counting boundaries that have not
-#: happened. Relative, it is a millionth of a tick at every rate, by construction.
-_EPS_FRACTION = 1e-6
 
 #: Upper bound on the declared rate, matching the descriptor's own bound (P2).
 #:
-#: Not a performance opinion: it is what keeps `_boundary_at`'s correction loop bounded.
-#: The loop walks one boundary per iteration, so a rate absurd enough that the initial
-#: floor-divide lands thousands of boundaries away turns a request into a hang -- and
-#: `POST /api/clock/rate` is reachable by anything that can open the port. `tick_hz`
-#: ships at 1.0 and the poll timer cannot usefully resolve a Delta below a millisecond
-#: anyway (see `backend/clock_node.poll_period`), so the ceiling costs nothing real.
+#: Not a performance opinion: it is what keeps `_boundary_at`'s correction loop bounded
+#: and keeps `_EPS` meaningful. The loop walks one boundary per iteration, so a rate
+#: absurd enough that the initial floor-divide lands thousands of boundaries away turns
+#: a request into a hang -- and `POST /api/clock/rate` is reachable by anything that can
+#: open the port. `tick_hz` ships at 1.0 and the poll timer cannot usefully resolve a
+#: Delta below a millisecond anyway (see `backend/clock_node.poll_period`), so the
+#: ceiling costs nothing real.
 MAX_TICK_HZ = 1000.0
 
 
@@ -95,18 +95,17 @@ class ClockError(RuntimeError):
     """An operation the active clock cannot perform (stepping a wall clock)."""
 
 
-def tolerance(delta: float) -> float:
-    """Boundary-comparison slack for a tick period of `delta` seconds.
-
-    Bounded *both* ways on purpose: never more than `_EPS` (so it stays far below any
-    meaningful duration) and never more than `_EPS_FRACTION` of a period (so it cannot
-    grow into a whole tick as `delta` shrinks).
-    """
-    return min(_EPS, abs(delta) * _EPS_FRACTION)
-
-
 def valid_tick_hz(value) -> float:
-    """The declared rate, or `ValueError` saying why it is not one."""
+    """The declared rate, or `ValueError` saying why it is not one.
+
+    Bounded at *both* ends, because both ends are reachable through an unauthenticated
+    `POST /api/clock/rate`. The ceiling is `MAX_TICK_HZ`. The floor is expressed as the
+    thing that actually breaks -- **the period must be finite** -- rather than as a
+    second magic number: `tick_hz=5e-324` is a positive, finite float whose reciprocal
+    is `inf`, so `delta` became infinite and `step()` emitted `Pulse(t=inf)`. That frame
+    passes `validate_tick`, because `inf` is a number, and every consumer's arithmetic
+    on it silently becomes `nan`.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"tick_hz must be a number, got {value!r}")
     hz = float(value)
@@ -117,6 +116,13 @@ def valid_tick_hz(value) -> float:
             f"tick_hz must be <= {MAX_TICK_HZ:g}, got {value!r}: above that the tick "
             f"period is finer than the poll timer can resolve and the boundary "
             f"arithmetic stops being cheap"
+        )
+    delta = 1.0 / hz
+    if delta != delta or delta in (float("inf"), float("-inf")):
+        raise ValueError(
+            f"tick_hz must be large enough that 1/tick_hz is finite, got {value!r}: "
+            f"the period is what every boundary is computed from, and an infinite one "
+            f"puts inf in the pulse and nan in every consumer downstream"
         )
     return hz
 
@@ -402,18 +408,16 @@ class TickEngine:
     def _boundary_at(self, now: float) -> int:
         """Index of the latest boundary at or before `now`."""
         delta = self.delta
-        eps = tolerance(delta)
         seq = self._epoch_seq + int((now - self._epoch_t) // delta)
         if seq < self._epoch_seq:
             seq = self._epoch_seq
         # Float correction, both directions. `(3 * 0.1) / 0.1` is 2.9999999999999996,
         # and a clock that quietly skipped every 30th manual step would be worse than
-        # no manual mode at all. The slack is relative (see `tolerance`): a fixed one
-        # would let a fine enough Delta walk this loop past boundaries that have not
-        # happened, and the walk is what makes it slow as well as wrong.
-        while self._t_of(seq + 1) <= now + eps:
+        # no manual mode at all. `_EPS` is safe as an absolute slack only because
+        # `MAX_TICK_HZ` bounds Delta from below -- see the comment on `_EPS`.
+        while self._t_of(seq + 1) <= now + _EPS:
             seq += 1
-        while seq > self._epoch_seq and self._t_of(seq) > now + eps:
+        while seq > self._epoch_seq and self._t_of(seq) > now + _EPS:
             seq -= 1
         return seq
 
@@ -592,10 +596,16 @@ class ClockService:
         armed: Callable[[], bool] = lambda: False,
         subscribers: Callable[[], int] = lambda: 0,
         monotonic: Callable[[], float] = time.monotonic,
+        on_rate_change: Callable[[float], None] = lambda tick_hz: None,
     ):
         self._engine = engine
         self._armed = armed
         self._subscribers = subscribers
+        # Called with the new rate after an ACCEPTED `POST /api/clock/rate`. The node
+        # uses it to re-tune its poll timer, which is created from the period and would
+        # otherwise keep the one it was born with: `poll()` emits at most one pulse per
+        # call, so a timer left at the old period silently caps the tick rate.
+        self._on_rate_change = on_rate_change
         # Wall seconds this process has been up, which is a different quantity from the
         # engine's clock time and only coincides on a `WallClock`. Injected, and read
         # once here, so `GET /api/clock/health` can report both without a test having
@@ -732,6 +742,9 @@ class ClockService:
                 "tick_hz": self._engine.tick_hz,
             }
         self._engine.set_rate(tick_hz)
+        # After the engine, so a hook that inspects the engine sees the new rate; and
+        # only on the accepted path, so a refused change re-tunes nothing.
+        self._on_rate_change(self._engine.tick_hz)
         return 200, self.get_state()
 
     # --------------------------------------------------------------- routing

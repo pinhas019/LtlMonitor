@@ -17,13 +17,15 @@ The four, from docs/packages/P1-clock.md:
 from __future__ import annotations
 
 import io
+import json
+import socket
 
 import pytest
 
 from skill_monitor.core import api
 from skill_monitor.core.clock import (
     MAX_TICK_HZ, ArmedTracker, ClockError, ClockService, ManualClock, Pulse, ReplayClock,
-    SOURCES, TickEngine, WallClock, tolerance,
+    SOURCES, TickEngine, WallClock,
 )
 
 
@@ -476,7 +478,7 @@ def test_an_impossible_rate_is_a_400_not_a_crash(bad):
 
 
 # =============================================================================
-# The rate is bounded above, and the boundary tolerance is relative
+# The rate is bounded at both ends
 # =============================================================================
 
 def test_the_rate_is_bounded_above():
@@ -500,23 +502,41 @@ def test_the_rate_is_bounded_above():
     assert TickEngine(tick_hz=MAX_TICK_HZ).tick_hz == MAX_TICK_HZ
 
 
-def test_the_boundary_tolerance_is_relative_to_the_period():
-    """An absolute slack is a bug waiting for a small enough Delta.
+def test_the_rate_is_bounded_below_too():
+    """`tick_hz` is a rate, but the arithmetic runs on its RECIPROCAL.
 
-    `_boundary_at` accepts a boundary up to the tolerance in the future, so the
-    overshoot it can produce is exactly `tolerance/Delta` ticks. Fixed at 1 ns that is
-    100 whole ticks at a 10 ps period; relative it is a millionth of a tick at every
-    period there is.
+    `5e-324` is positive, finite, and passes every check that looks only at the rate --
+    while `1/5e-324` is `inf`, so `delta` became infinite and `step()` emitted a pulse
+    with `t=inf`. `validate_tick` accepts that frame, because `inf` is a number, and
+    every consumer's arithmetic on it silently becomes `nan`. Reachable through the same
+    unauthenticated POST the ceiling was added for.
+
+    Stated as the thing that actually breaks -- the period must be finite -- rather than
+    as a second magic number to keep in step with the first.
     """
-    assert tolerance(1.0) == 1e-9                     # unchanged where it always was
-    assert tolerance(1e-6) == pytest.approx(1e-12)
-    assert tolerance(1e-9) == pytest.approx(1e-15)
-    for delta in (100.0, 1.0, 1e-3, 1e-6, 1e-9, 1e-12):
-        assert 0.0 < tolerance(delta) <= delta * 1e-6
+    for denormal in (5e-324, 1e-320):
+        with pytest.raises(ValueError, match="finite"):
+            TickEngine(tick_hz=denormal)
+        with pytest.raises(ValueError, match="finite"):
+            TickEngine(tick_hz=1.0).set_rate(denormal)
+
+    service, engine, _ = _service()
+    assert service.handle("POST", "/api/clock/rate", {"tick_hz": 5e-324})[0] == 400
+    assert engine.tick_hz == 1.0
+
+    # A genuinely slow clock is still legal: it is only the infinite period that is not.
+    slow = TickEngine(ManualClock(), tick_hz=0.001)
+    assert slow.delta == 1000.0
+    assert slow.step().t == 1000.0
 
 
 def test_no_overshoot_at_the_highest_permitted_rate():
-    """Exactly N ticks for N periods of elapsed time, with no slack-induced extras."""
+    """Exactly N ticks for N periods of elapsed time, with no slack-induced extras.
+
+    This is the test that proves the overshoot fix. `_EPS` is absolute, and safe as
+    such *because* of the bound: the overshoot a boundary test can produce is
+    `_EPS/Delta` ticks, which at the finest legal Delta of 1 ms is a millionth of one.
+    """
     engine, fake = _wall(tick_hz=MAX_TICK_HZ)
     fake.advance(1.0)
     pulse = engine.poll()
@@ -526,7 +546,7 @@ def test_no_overshoot_at_the_highest_permitted_rate():
 
 
 def test_stepping_is_still_exact_at_the_highest_permitted_rate():
-    """The tolerance got smaller; it must still be large enough to not swallow a step.
+    """And the slack is still large enough to not swallow a step at that same rate.
 
     This is the failure mode `_EPS` existed for in the first place -- a driven clock
     advanced by Delta a few hundred times lands a few ULPs short of where it aimed.
@@ -799,8 +819,10 @@ def test_the_poll_timer_costs_a_fixed_fraction_of_the_tick():
         period = clock_node.poll_period(delta)
         assert 0.0 < period <= delta / 5.0
 
-    # Both clamps bind in the direction their names claim.
-    assert clock_node.poll_period(1e-6) == clock_node._POLL_FLOOR_S
+    # The floor binds at the finest LEGAL period, leaving five polls per tick. (There
+    # is no point asserting anything about a Delta below 1 ms: `valid_tick_hz` refuses
+    # every rate that could produce one.)
+    assert clock_node.poll_period(1.0 / MAX_TICK_HZ) == clock_node._POLL_FLOOR_S
     assert clock_node.poll_period(10_000.0) == clock_node._POLL_CEILING_S == 1.0
 
 
@@ -845,23 +867,39 @@ def test_the_cli_refuses_a_rate_the_service_would_refuse():
 
 
 class _FakeBody:
-    """Just enough of a request for `_read_body`: headers, a socket, and an answer."""
+    """Just enough of a request for `_read_body`: headers, a socket, and an answer.
 
-    def __init__(self, raw: bytes, content_length=None):
+    Fabricated with `object.__new__`, so it can observe what the handler *decides* --
+    the status, the payload, and whether it asked to hang up -- but never what the
+    socket actually does with that decision. The pipelining test below is the one that
+    checks the decision is honoured.
+    """
+
+    def __init__(self, raw: bytes, content_length=None, headers=None):
         from skill_monitor.backend import clock_node
 
         self._handler = object.__new__(clock_node.ClockRequestHandler)
         self._handler.headers = {
+            # A loopback Host, so these cases exercise the body path rather than the
+            # rebinding check; that check has its own tests over a real socket.
+            "Host": "127.0.0.1:8081",
             "Content-Length": (str(len(raw)) if content_length is None
-                               else content_length)
+                               else content_length),
+            **(headers or {}),
         }
         self._handler.rfile = io.BytesIO(raw)
         self._handler.path = "/api/clock/rate"
+        self._handler.close_connection = False
         self._handler._respond = self._capture
         self.answered = None
 
-    def _capture(self, status, payload):
+    def _capture(self, status, payload, *, close=False):
         self.answered = (status, payload)
+        self._handler.close_connection = close
+
+    @property
+    def hung_up(self) -> bool:
+        return self._handler.close_connection
 
     def read(self):
         return self._handler._read_body()
@@ -878,6 +916,7 @@ def test_a_malformed_content_length_is_a_400_not_a_500():
     assert request.read() is None
     assert request.answered[0] == 400
     assert "Content-Length" in request.answered[1]["error"]
+    assert request.hung_up is True
 
 
 def test_an_oversized_body_is_a_413_and_is_never_read():
@@ -891,6 +930,33 @@ def test_an_oversized_body_is_a_413_and_is_never_read():
     assert str(clock_node.MAX_BODY_BYTES) in request.answered[1]["error"]
     # Nothing was consumed from the socket: the ceiling is the point.
     assert request._handler.rfile.tell() == 0
+    assert request.hung_up is True
+
+
+def test_a_negative_content_length_is_refused():
+    """`-5` fell through `length > MAX` and `if length`, becoming a silent empty body.
+
+    The declared body then stayed in the socket -- the smuggle below, spelled with a
+    minus sign instead of a large number.
+    """
+    request = _FakeBody(b"", content_length="-5")
+    assert request.read() is None
+    assert request.answered[0] == 400
+    assert "negative" in request.answered[1]["error"]
+    assert request.hung_up is True
+
+
+def test_a_chunked_body_is_refused_rather_than_ignored():
+    """`http.server` does not decode chunked, so ignoring it left the body in the socket.
+
+    Same desync as an oversized body, reached through a header instead of a length.
+    """
+    request = _FakeBody(b"", content_length=None,
+                        headers={"Transfer-Encoding": "chunked"})
+    assert request.read() is None
+    assert request.answered[0] == 400
+    assert "Transfer-Encoding" in request.answered[1]["error"]
+    assert request.hung_up is True
 
 
 def test_a_body_within_the_limit_still_routes():
@@ -905,3 +971,260 @@ def test_a_body_within_the_limit_still_routes():
 
     # And a body that is not JSON is still the 400 it always was.
     assert _FakeBody(b"{not json").post(service)[0] == 400
+
+
+# =============================================================================
+# One real socket -- the only way to see a connection-level bug
+# =============================================================================
+#
+# Everything else in this file runs against injected fakes, deliberately. This one
+# cannot: request smuggling IS the gap between what the handler decides and what the
+# connection does, and a fabricated handler can only ever show the decision. It binds
+# 127.0.0.1 on an ephemeral port, sends bytes, and closes; no ROS, no fixed port, and
+# every socket carries a timeout so a regression fails the test instead of hanging it.
+
+def _pipelined(raw: bytes, service, timeout: float = 2.0, **kwargs) -> bytes:
+    """Send `raw` down one connection and read until the server hangs up."""
+    from skill_monitor.backend import clock_node
+
+    server = clock_node.serve_http(service, host="127.0.0.1", port=0, **kwargs)
+    try:
+        sock = socket.create_connection(("127.0.0.1", server.server_address[1]),
+                                        timeout=timeout)
+        with sock:
+            sock.sendall(raw)
+            sock.shutdown(socket.SHUT_WR)
+            chunks = []
+            try:
+                while (chunk := sock.recv(4096)):
+                    chunks.append(chunk)
+            except (TimeoutError, OSError):
+                pass          # a server that refuses to hang up is itself the failure
+            return b"".join(chunks)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_an_oversized_body_cannot_smuggle_a_second_request():
+    """The 413 must close the connection, or the undrained body becomes a request.
+
+    `protocol_version = "HTTP/1.1"` means keep-alive. Answering 413 without draining
+    the declared body -- which cannot be drained, it is unbounded and attacker-chosen --
+    and without closing leaves those bytes in the socket, where the server parses them
+    as the NEXT request. Observed before the fix:
+
+        HTTP/1.1 413 Request Entity Too Large
+        HTTP/1.1 200 OK
+        >>> engine paused: True
+
+    A fronting proxy authorises one request; the clock executes two, and the second
+    stops the tick for every service on the tier. That defeats precisely the mitigation
+    this module's docstring prescribes.
+    """
+    engine = TickEngine(WallClock(now=FakeWall()), tick_hz=1.0, started_at=lambda: 1000.0)
+    service = ClockService(engine)
+
+    smuggled = json.dumps({"mode": "manual", "paused": True}).encode()
+    raw = (
+        b"POST /api/clock/rate HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: 99999999\r\n"
+        b"\r\n"
+        # Not a body: the next request, waiting to be re-parsed.
+        b"POST /api/clock/mode HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: " + str(len(smuggled)).encode() + b"\r\n"
+        b"\r\n" + smuggled
+    )
+    received = _pipelined(raw, service)
+
+    assert b"413" in received
+    # The whole point: exactly one response, and the smuggled request never ran.
+    assert received.count(b"HTTP/1.1") == 1
+    assert b"200 OK" not in received
+    assert engine.paused is False
+    assert engine.mode == "wall"
+
+
+def test_a_legitimate_request_still_gets_an_answer_over_a_real_socket():
+    """The harness above proves a negative; this proves it is not proving it by accident."""
+    engine = TickEngine(WallClock(now=FakeWall()), tick_hz=1.0, started_at=lambda: 1000.0)
+    service = ClockService(engine)
+
+    received = _pipelined(b"GET /api/clock HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", service)
+    assert b"200 OK" in received
+    body = json.loads(received.split(b"\r\n\r\n", 1)[1])
+    assert body["t0"] == 1000.0
+    assert body["tick_hz"] == 1.0
+
+
+# =============================================================================
+# DNS rebinding: the loopback bind is necessary and not sufficient
+# =============================================================================
+
+def test_the_host_header_is_parsed_the_way_browsers_write_it():
+    from skill_monitor.backend import clock_node
+
+    assert clock_node.hostname_of("127.0.0.1:8081") == "127.0.0.1"
+    assert clock_node.hostname_of("localhost") == "localhost"
+    assert clock_node.hostname_of("LocalHost:8081") == "localhost"
+    assert clock_node.hostname_of("[::1]:8081") == "[::1]"       # brackets survive
+    assert clock_node.hostname_of("[::1]") == "[::1]"
+    assert clock_node.hostname_of("evil.example:8081") == "evil.example"
+    assert clock_node.hostname_of("") == ""
+    assert clock_node.hostname_of(None) == ""
+
+
+def test_the_allowlist_is_loopback_plus_what_the_operator_named():
+    from skill_monitor.backend import clock_node
+
+    assert clock_node.allowed_hosts("127.0.0.1") == clock_node.LOOPBACK_HOSTS
+    # A wildcard bind names no host, so it adds nothing: an exposed deployment has to
+    # say what it is reachable as.
+    assert clock_node.allowed_hosts("0.0.0.0") == clock_node.LOOPBACK_HOSTS
+    assert clock_node.allowed_hosts("::") == clock_node.LOOPBACK_HOSTS
+    assert "robot.local" in clock_node.allowed_hosts("0.0.0.0", ["robot.local"])
+    assert "10.0.0.7" in clock_node.allowed_hosts("10.0.0.7")
+    # Loopback never stops being allowed, whatever else is added.
+    assert clock_node.LOOPBACK_HOSTS <= clock_node.allowed_hosts("10.0.0.7", ["a.b"])
+
+
+def test_a_rebound_browser_tab_cannot_pause_the_clock():
+    """The loopback bind does not stop a browser on the operator's own machine.
+
+    A DNS-rebinding page re-resolves its own hostname to 127.0.0.1; the request is then
+    same-origin with this service, so there is no preflight, any method and any header
+    are available, and CORS is irrelevant. `Host` is the one value the page cannot
+    choose -- the browser writes it from the name it dialled -- so it is checked before
+    anything routes. Pausing this clock stops the tick for every service on the tier.
+    """
+    engine = TickEngine(WallClock(now=FakeWall()), tick_hz=1.0, started_at=lambda: 1000.0)
+    service = ClockService(engine)
+
+    body = json.dumps({"mode": "manual", "paused": True}).encode()
+    received = _pipelined(
+        b"POST /api/clock/mode HTTP/1.1\r\n"
+        b"Host: evil.example:8081\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body,
+        service,
+    )
+
+    assert b"400" in received
+    assert b"200 OK" not in received
+    assert engine.paused is False
+    assert engine.mode == "wall"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:PORT", "localhost:PORT", "[::1]:PORT",
+                                  "127.0.0.1", "LOCALHOST:PORT"])
+def test_every_spelling_of_loopback_is_served(host):
+    """The check must not break the clients that legitimately reach a loopback clock."""
+    engine = TickEngine(WallClock(now=FakeWall()), tick_hz=1.0, started_at=lambda: 1000.0)
+    service = ClockService(engine)
+
+    received = _pipelined(
+        b"GET /api/clock HTTP/1.1\r\nHost: " + host.encode() + b"\r\n\r\n", service)
+    assert b"200 OK" in received
+
+
+def test_an_exposed_clock_answers_to_the_name_it_was_given():
+    """`--allowed-host` is what makes a deliberate exposure usable, and it is checked."""
+    engine = TickEngine(WallClock(now=FakeWall()), tick_hz=1.0, started_at=lambda: 1000.0)
+    service = ClockService(engine)
+
+    named = _pipelined(b"GET /api/clock HTTP/1.1\r\nHost: robot.local\r\n\r\n",
+                       service, extra_hosts=["robot.local"])
+    assert b"200 OK" in named
+
+    # ...and only that name; the allowlist is not a switch that turns the check off.
+    other = _pipelined(b"GET /api/clock HTTP/1.1\r\nHost: evil.example\r\n\r\n",
+                       service, extra_hosts=["robot.local"])
+    assert b"400" in other
+    assert b"200 OK" not in other
+
+
+def test_a_missing_host_header_is_refused():
+    """HTTP/1.1 requires one, and an absent Host is not a value on the allowlist."""
+    engine = TickEngine(WallClock(now=FakeWall()), tick_hz=1.0, started_at=lambda: 1000.0)
+    received = _pipelined(b"GET /api/clock HTTP/1.1\r\n\r\n", ClockService(engine))
+    assert b"400" in received
+    assert b"200 OK" not in received
+
+
+def test_the_cli_takes_repeated_allowed_hosts():
+    from skill_monitor.backend import clock_node
+
+    args = clock_node.build_parser().parse_args(
+        ["--host", "0.0.0.0", "--allowed-host", "robot.local", "--allowed-host", "a.b"])
+    assert args.allowed_hosts == ["robot.local", "a.b"]
+    assert clock_node.build_parser().parse_args([]).allowed_hosts == []
+
+
+# =============================================================================
+# The poll timer follows the rate
+# =============================================================================
+
+def test_an_accepted_rate_change_notifies_the_node():
+    """`ClockService` has no timer; it has a hook, so the node can re-tune its own."""
+    seen = []
+    engine, fake = _wall(tick_hz=1.0)
+    service = ClockService(engine, on_rate_change=seen.append)
+
+    assert service.handle("POST", "/api/clock/rate", {"tick_hz": 5.0})[0] == 200
+    assert seen == [5.0]
+
+    # Not on a refused change, and not on a rejected one.
+    armed_service = ClockService(engine, armed=lambda: True, on_rate_change=seen.append)
+    assert armed_service.handle("POST", "/api/clock/rate", {"tick_hz": 9.0})[0] == 409
+    assert service.handle("POST", "/api/clock/rate", {"tick_hz": -1})[0] == 400
+    assert seen == [5.0]
+
+
+def test_the_poll_timer_follows_the_rate_it_was_not_created_with():
+    """The timer is created once, from the starting period, and `set_rate` is not it.
+
+    `poll()` emits at most one pulse per call, so a timer left at the old period caps
+    the tick rate at its own frequency. Measured before the fix: 1 -> 1000 Hz gave 20
+    pulses/s instead of 1000, with `skipped=49` on every pulse and a stall warning in
+    the log each time -- the clock accurately reporting that it could not keep up with
+    itself.
+    """
+    from skill_monitor.backend import clock_node
+
+    tuner = clock_node.PollTimerTuner(1.0)                  # a 1 Hz clock
+    assert tuner.period == pytest.approx(0.05)
+
+    applied = []
+    assert tuner.apply(applied.append) is None              # nothing asked for yet
+    assert applied == []
+
+    tuner.request(MAX_TICK_HZ)                              # POST /api/clock/rate
+    # Recorded, not applied: the HTTP thread does not touch the executor's timer.
+    assert tuner.period == pytest.approx(0.05)
+
+    assert tuner.apply(applied.append) == pytest.approx(clock_node._POLL_FLOOR_S)
+    assert applied == [pytest.approx(clock_node._POLL_FLOOR_S)]
+    assert tuner.period == pytest.approx(clock_node._POLL_FLOOR_S)
+
+    # Idempotent: the next pulse must not re-arm the timer for no reason.
+    assert tuner.apply(applied.append) is None
+    assert len(applied) == 1
+
+    # And it follows the rate back down again.
+    tuner.request(1.0)
+    assert tuner.apply(applied.append) == pytest.approx(0.05)
+
+
+def test_the_poll_timer_is_fast_enough_for_every_rate_it_can_be_retuned_to():
+    """Whatever the rate change, the timer that results still polls 5x per period."""
+    from skill_monitor.backend import clock_node
+
+    tuner = clock_node.PollTimerTuner(1.0)
+    for tick_hz in (0.05, 0.1, 1.0, 2.5, 10.0, 250.0, MAX_TICK_HZ):
+        tuner.request(tick_hz)
+        tuner.apply(lambda period: None)
+        assert 0.0 < tuner.period <= (1.0 / tick_hz) / 5.0

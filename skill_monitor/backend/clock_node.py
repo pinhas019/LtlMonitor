@@ -35,6 +35,12 @@ gateway that proxies `/api/clock*` -- and by nothing else. Publishing it to a ne
 compose file. CORS stays `*`: a same-origin policy is not a security boundary when there
 are no credentials to protect, and pretending otherwise only breaks the browser client.
 
+A loopback bind is necessary and **not sufficient**, so the `Host:` header is checked
+against an allowlist before anything routes. A DNS-rebinding page re-resolves its own
+hostname to 127.0.0.1 and is then same-origin with this service -- no preflight, any
+method, any header -- and CORS is irrelevant to it. `Host` is the one value the page
+cannot choose. See `LOOPBACK_HOSTS`.
+
 The HTTP surface is stdlib `http.server` plus ~30 lines of RFC 6455 framing rather than a
 web framework: the clock must build in a bare `ros:humble` image with no pip install, and
 one send-only WebSocket is not worth a dependency in every tier's image.
@@ -49,6 +55,7 @@ import json
 import struct
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Callable
 
 from skill_monitor.core import api
 from skill_monitor.core.clock import (
@@ -62,12 +69,32 @@ DEFAULT_PORT = 8081
 #: module docstring for why an unauthenticated `pause` is worth that friction.
 DEFAULT_HOST = "127.0.0.1"
 
+#: `Host:` values a loopback-bound clock answers to.
+#:
+#: Binding 127.0.0.1 stops a *remote* attacker reaching the port. It does nothing about
+#: a browser on the operator's own machine: a DNS-rebinding page re-resolves its own
+#: hostname to 127.0.0.1, at which point the request is **same-origin** with this
+#: service -- no preflight, any method, any header -- and `POST /api/clock/mode
+#: {"paused": true}` stops the tick for every service on the tier. The `Host` header is
+#: the one thing the page cannot forge, because the browser sets it from the name it
+#: dialled, so an allowlist checked before routing is the standard mitigation.
+#:
+#: This is the clock's ONLY browser defence: unlike the gateway there is no
+#: custom-header gate here to fall back on. The gateway (P6, PR #5) is fixing its own
+#: copy of this in parallel -- separate image, separate lifetime, deliberately not
+#: shared code.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]", "::1"})
+
 #: The largest request body this service will read. Every payload it accepts is a few
 #: dozen bytes (`{"tick_hz": 5.0}`), so this is pure denial-of-service ceiling rather
 #: than a real limit; without it a declared `Content-Length` is an allocation request
-#: from anyone who can open the port. The other copy of this shape is
-#: `skill_monitor/backend/gateway.py` (`MAX_BODY_BYTES`, `_read_body`), whose ceiling is
-#: 8 MiB because it accepts pushed skill specs. Two call sites is not a shared helper.
+#: from anyone who can open the port.
+#:
+#: The gateway (P6) *will* carry the other copy of this shape -- `MAX_BODY_BYTES` and
+#: `_read_body` in `skill_monitor/backend/gateway.py`, whose ceiling is 8 MiB because it
+#: accepts pushed skill specs. That file is on PR #5 and is NOT on this branch yet; when
+#: it merges the two have to stay in step, and this comment is the only link between
+#: them. Two call sites in two processes with two ceilings is not a shared helper.
 MAX_BODY_BYTES = 64 * 1024
 
 #: How much finer than the tick period the poll timer runs.
@@ -96,6 +123,36 @@ _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 # ------------------------------------------------------------------ websocket
+
+def hostname_of(header: str) -> str:
+    """The host part of a `Host:` header, lowercased, without its port.
+
+    `[::1]:8081` keeps its brackets (that is how an IPv6 literal is spelled in a Host
+    header, and splitting it on `:` would leave `[`); everything else splits on the
+    first colon.
+    """
+    value = (header or "").strip().lower()
+    if value.startswith("["):
+        end = value.find("]")
+        return value if end == -1 else value[:end + 1]
+    return value.split(":", 1)[0]
+
+
+def allowed_hosts(bind: str, extra=()) -> frozenset[str]:
+    """`Host:` values to answer to when bound to `bind`.
+
+    Loopback always, plus the bind address when it names a real interface, plus
+    anything `--allowed-host` added. A wildcard bind cannot name the host a client will
+    dial, so an exposed deployment has to say what it is reachable as -- that is what
+    `--allowed-host` is for, and it is the same act of deliberate exposure `--host` is.
+    """
+    names = set(LOOPBACK_HOSTS)
+    for name in (bind, *extra):
+        cleaned = hostname_of(name)
+        if cleaned and cleaned not in {"0.0.0.0", "::", "[::]"}:
+            names.add(cleaned)
+    return frozenset(names)
+
 
 def ws_accept(key: str) -> str:
     """The `Sec-WebSocket-Accept` value for a client's `Sec-WebSocket-Key`."""
@@ -149,17 +206,25 @@ class ClockRequestHandler(BaseHTTPRequestHandler):
     #: Set by `serve_http` on the generated subclass.
     service: ClockService = None  # type: ignore[assignment]
     log_line = staticmethod(lambda message: None)
+    allowed_hosts: frozenset = LOOPBACK_HOSTS
 
     STREAM_PATH = "/api/clock/stream"
 
     def log_message(self, fmt, *args):  # noqa: A003 - stdlib hook
         type(self).log_line(fmt % args)
 
-    def _respond(self, status: int, payload: dict) -> None:
+    def _respond(self, status: int, payload: dict, *, close: bool = False) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if close:
+            # Both the header (so the client knows) and the flag (so the server acts on
+            # it). `send_header("Connection", "close")` sets `close_connection` itself,
+            # but it is set explicitly too: the flag is what actually prevents the
+            # desync in `_refuse`, and it must not depend on a stdlib side effect.
+            self.send_header("Connection", "close")
+            self.close_connection = True
         # The frontend may be served from anywhere, and the clock is queryable
         # standalone -- with no gateway in front of it there is no other origin to
         # inherit. Not because the endpoints are harmless (`mode` pauses the tick) but
@@ -172,32 +237,83 @@ class ClockRequestHandler(BaseHTTPRequestHandler):
     def _path(self) -> str:
         return self.path.split("?", 1)[0]
 
+    def _foreign_host(self) -> bool:
+        """True (having answered 400) if the `Host` header is not one of ours.
+
+        Checked before ANY routing, on every verb including the WebSocket upgrade: a
+        DNS-rebinding page is same-origin with this service, so it needs no preflight
+        and `do_OPTIONS` is not a chokepoint. `Host` is the one header the page cannot
+        choose -- the browser fills it in from the name it dialled.
+        """
+        header = self.headers.get("Host")
+        if hostname_of(header) in self.allowed_hosts:
+            return False
+        self._refuse(400, f"Host {header!r} is not served here; this clock answers to "
+                          f"{sorted(self.allowed_hosts)}. Name it with --allowed-host "
+                          f"if it should.")
+        return True
+
     def do_GET(self):  # noqa: N802 - stdlib hook
+        if self._foreign_host():
+            return
         path = self._path()
         if path.rstrip("/") == self.STREAM_PATH:
             self._stream()
             return
         self._respond(*self.service.handle("GET", path))
 
+    def _refuse(self, status: int, message: str) -> None:
+        """Answer, then hang up. **Always hang up.**
+
+        This is a `keep-alive` server (`protocol_version = "HTTP/1.1"`), so refusing a
+        request without either draining its body or closing the connection leaves the
+        undrained bytes in the socket to be parsed as the NEXT request -- classic
+        request smuggling. One connection carrying `Content-Length: 99999999` followed
+        by `POST /api/clock/mode {"paused": true}` would get a 413 for the first and a
+        200 for the second, and the tick every service on the tier advances on would
+        stop. That defeats the exact mitigation this module's docstring prescribes: a
+        fronting proxy sees and authorises one request while the clock executes two.
+
+        Draining instead of closing is not an option: the excess is unbounded and
+        entirely attacker-controlled, which is the reason there is a limit at all.
+        """
+        self._respond(status, {"error": message}, close=True)
+
     def _read_body(self) -> bytes | None:
         """The request body, or `None` having already answered why there is not one.
 
-        Same shape as `skill_monitor/backend/gateway.py:_read_body` -- 400 on a
-        `Content-Length` that is not an integer, 413 above `MAX_BODY_BYTES` -- and
-        deliberately a second copy rather than a shared helper, because two call sites
-        in two processes with two different ceilings is not an abstraction.
+        Same shape as `_read_body` in the gateway (P6, PR #5, not yet on this branch) --
+        400 on a `Content-Length` that is not an integer, 413 above `MAX_BODY_BYTES` --
+        and deliberately a second copy rather than a shared helper, because two call
+        sites in two processes with two different ceilings is not an abstraction. When
+        that lands, the two must stay in step; this comment is the only link between
+        them.
         """
+        # Refused rather than implemented: `http.server` does not decode chunked bodies,
+        # so ignoring the header leaves the whole body unread in the socket -- the same
+        # desync as an oversized one, reached by a header instead of a length.
+        if (self.headers.get("Transfer-Encoding") or "").strip():
+            self._refuse(400, "Transfer-Encoding is not supported; send Content-Length")
+            return None
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
-            self._respond(400, {"error": "Content-Length is not an integer"})
+            self._refuse(400, "Content-Length is not an integer")
+            return None
+        # A negative length silently became an empty body, so the real body stayed in
+        # the socket: the smuggle again, spelled `-5`.
+        if length < 0:
+            self._refuse(400, "Content-Length is negative")
             return None
         if length > MAX_BODY_BYTES:
-            self._respond(413, {"error": f"body larger than {MAX_BODY_BYTES} bytes"})
+            self._refuse(413, f"body larger than {MAX_BODY_BYTES} bytes")
             return None
         return self.rfile.read(length) if length > 0 else b""
 
     def do_POST(self):  # noqa: N802 - stdlib hook
+        # Before the body is even read: a foreign Host is refused whatever it carries.
+        if self._foreign_host():
+            return
         raw = self._read_body()
         if raw is None:
             return
@@ -213,6 +329,8 @@ class ClockRequestHandler(BaseHTTPRequestHandler):
         self._respond(*self.service.handle("POST", self._path(), body))
 
     def do_OPTIONS(self):  # noqa: N802 - stdlib hook
+        if self._foreign_host():
+            return
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -260,7 +378,7 @@ class ClockRequestHandler(BaseHTTPRequestHandler):
 
 
 def serve_http(service: ClockService, *, host: str = DEFAULT_HOST,
-               port: int = DEFAULT_PORT,
+               port: int = DEFAULT_PORT, extra_hosts=(),
                log=lambda message: None) -> ThreadingHTTPServer:
     """Start the HTTP surface on a daemon thread and return the server.
 
@@ -270,10 +388,13 @@ def serve_http(service: ClockService, *, host: str = DEFAULT_HOST,
 
     `host` defaults to loopback. There is no authentication on any of these endpoints
     and one of them pauses the tick the safety monitor advances on, so binding to a
-    network is a caller's explicit decision, never this function's default.
+    network is a caller's explicit decision, never this function's default. `Host`
+    headers are checked against `allowed_hosts(host, extra_hosts)` before routing,
+    because a loopback bind alone does not stop a rebound browser tab.
     """
     handler = type("BoundClockRequestHandler", (ClockRequestHandler,),
-                   {"service": service, "log_line": staticmethod(log)})
+                   {"service": service, "log_line": staticmethod(log),
+                    "allowed_hosts": allowed_hosts(host, extra_hosts)})
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, name="clock-http", daemon=True).start()
@@ -323,6 +444,13 @@ def build_parser() -> argparse.ArgumentParser:
                              f"pause the tick every service advances on, so publishing "
                              f"it to a network is an explicit --host 0.0.0.0 behind a "
                              f"proxy that authenticates")
+    parser.add_argument("--allowed-host", dest="allowed_hosts", action="append",
+                        default=[], metavar="NAME",
+                        help="extra Host: header value to answer to; repeatable. "
+                             "Loopback and --host are always allowed. Needed only when "
+                             "the clock is exposed and reached by a name it cannot "
+                             "infer, because Host is what stops a DNS-rebinding page "
+                             "in the operator's browser from driving this API")
     parser.add_argument("--no-http", action="store_true",
                         help="topic only; for a tier that reaches the clock over DDS")
     return parser
@@ -342,6 +470,54 @@ def poll_period(delta: float) -> float:
     return min(_POLL_CEILING_S, max(_POLL_FLOOR_S, delta / _POLL_DIVISOR))
 
 
+class PollTimerTuner:
+    """Keeps the poll timer's period in step with a rate that can change at runtime.
+
+    The timer is created once, from the period the clock started at. `set_rate` changes
+    the engine's Delta but not the timer, and `poll()` emits **at most one pulse per
+    call** -- so a timer left at the old period silently caps the tick rate at its own
+    frequency. Measured: `POST /api/clock/rate` from 1 Hz to 1000 Hz produced 20
+    pulses/s instead of 1000, with `skipped=49` on every pulse and a stall warning in
+    the log each time. The clock would report, accurately and uselessly, that it was
+    failing to keep up with itself.
+
+    Two threads, so the hand-off is explicit: `request` is called on the HTTP thread
+    (from `ClockService`'s rate hook) and only *records* what the timer should become;
+    `apply` is called from the timer's own callback, on the executor thread that owns
+    it, and is the only place the period actually changes. Re-tuning a live rclpy timer
+    from a request handler would be a data race on the executor's internals.
+    """
+
+    def __init__(self, delta: float):
+        self._lock = threading.Lock()
+        self._period = poll_period(delta)
+        self._wanted = self._period
+
+    @property
+    def period(self) -> float:
+        """The period the timer is running at now."""
+        return self._period
+
+    def request(self, tick_hz: float) -> None:
+        """Record the period `tick_hz` wants. Safe from any thread."""
+        with self._lock:
+            self._wanted = poll_period(1.0 / tick_hz)
+
+    def apply(self, set_period: Callable[[float], None]) -> float | None:
+        """Re-tune if the rate moved. Returns the new period, or `None` if unchanged.
+
+        Called from the timer callback on every pulse; the common case is one lock
+        acquisition and a float comparison.
+        """
+        with self._lock:
+            wanted = self._wanted
+        if wanted == self._period:
+            return None
+        set_period(wanted)
+        self._period = wanted
+        return wanted
+
+
 def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
 
@@ -356,10 +532,12 @@ def main(argv=None) -> None:
     log = node.get_logger()
 
     publisher = node.create_publisher(String, api.TICK, 10)
+    tuner = PollTimerTuner(engine.delta)
     service = ClockService(
         engine,
         armed=armed,
         subscribers=lambda: node.count_subscribers(api.TICK),
+        on_rate_change=tuner.request,
     )
     service.subscribe(lambda payload: publisher.publish(String(data=json.dumps(payload))))
 
@@ -376,7 +554,19 @@ def main(argv=None) -> None:
     # it is what makes the rate refusal correct for a clock restarted mid-episode.
     node.create_subscription(String, api.VERDICT, _on_json(armed.on_verdict), 10)
 
+    def _retune(period: float) -> None:
+        # rclpy exposes the live period as nanoseconds; setting it re-arms the timer in
+        # place, which is why the timer is not destroyed and recreated under the
+        # executor that is currently driving it.
+        timer.timer_period_ns = int(period * 1e9)
+
     def _on_timer():
+        # Before the poll, and on the executor thread that owns the timer: a rate change
+        # that arrived on the HTTP thread since the last tick takes effect now.
+        retuned = tuner.apply(_retune)
+        if retuned is not None:
+            log.info(f"poll timer re-tuned to {retuned:g}s for {engine.tick_hz:g} Hz")
+
         pulse = service.pulse()
         if pulse is not None and pulse.skipped:
             log.warning(
@@ -384,11 +574,12 @@ def main(argv=None) -> None:
                 f"seq={pulse.seq}; one pulse emitted, no catch-up"
             )
 
-    node.create_timer(poll_period(engine.delta), _on_timer)
+    timer = node.create_timer(tuner.period, _on_timer)
 
     server = None
     if not args.no_http:
         server = serve_http(service, host=args.host, port=args.port,
+                            extra_hosts=args.allowed_hosts,
                             log=lambda message: log.debug(message))
         log.info(f"clock API on http://{args.host}:{args.port}/api/clock")
     log.info(f"tick {engine.tick_hz} Hz, mode {engine.mode}"
