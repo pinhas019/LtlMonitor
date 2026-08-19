@@ -29,20 +29,30 @@ Three things this module refuses to do:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import skill_monitor
-from skill_monitor.core import api
-from skill_monitor.core.monitor_action import grade_action
-from skill_monitor.core.supervisor_logic import decide_intervention
+from skill_monitor.core import api, spec_contract
+from skill_monitor.core.monitor_action import Action, grade_action
+from skill_monitor.core.supervisor_logic import SAFETY_CATEGORIES, decide_intervention
 
-# Read off `grade_action`'s own signature rather than copied. The horizon is declared
-# once, in the function that uses it; a fourth literal `3` in this file is exactly the
-# drift P5 is unifying away. When P5 promotes it to a named constant, this line becomes
-# an import of that name.
-WARN_STEPS: int = grade_action.__kwdefaults__["warn_steps"]
-MIN_CONFIDENCE: float = grade_action.__kwdefaults__["min_confidence"]
+# The predictive horizon and the de-escalation floor of the intervention ladder.
+#
+# These used to be read off `grade_action.__kwdefaults__` so the number was declared
+# once. That is an import-time landmine: `__kwdefaults__` is None for a function with
+# no keyword-only defaults, so moving `warn_steps` in front of the `*` in that
+# signature raises TypeError while *importing this module* -- taking the node, the
+# panel, the ablation runner and test collection down with it, for an edit that changed
+# nothing about the ladder.
+#
+# The one-definition property belongs in `core/monitor_action.py`, as module constants
+# that `grade_action` defaults to. P5 owns that file, so until it lands the numbers are
+# spelled here and `test_the_ladder_horizon_is_not_two_numbers` fails the moment the
+# two disagree -- a red test rather than an unimportable package.
+WARN_STEPS: int = 3
+MIN_CONFIDENCE: float = 0.5
 
 #: Default consecutive-step limit before a phase progress failure.
 PHASE_VIOLATION_LIMIT = 3
@@ -127,7 +137,43 @@ class Admission:
     step: bool
     seq: int
     missed: int
-    reason: str  # first | advanced | redelivered | stale | implicit
+    reason: str  # first | advanced | redelivered | stale | implicit | epoch
+
+
+def tick_epoch(tick) -> float | None:
+    """The clock's restart discriminator off a `/monitor/tick` payload, or None.
+
+    `t0` is the clock's own start time (`GET /api/clock` reports it beside `seq`), so a
+    clock that restarts republishes from `seq` 0 with a *different* `t0`. That is the
+    only non-heuristic way to tell "the clock restarted" from "a stale message arrived
+    late", and the size of the backwards jump is emphatically not one.
+
+    Tolerant of its absence: P1 may land after this, and a clock that never sends `t0`
+    simply has one epoch forever -- which is the behaviour this monitor already had.
+    """
+    if not isinstance(tick, dict):
+        return None
+    t0 = tick.get("t0")
+    if isinstance(t0, bool) or not isinstance(t0, (int, float)):
+        return None
+    return float(t0)
+
+
+#: The one problem in `api.validate_tick`'s output that a *newer* clock legitimately
+#: causes. See `tick_problems_that_matter`.
+_UNKNOWN_FIELD = "unknown field"
+
+
+def tick_problems_that_matter(problems) -> list[str]:
+    """`api.validate_tick`'s problems, minus the ones a newer clock legitimately causes.
+
+    `api` closes the tick payload, so the `t0` P1 is adding reads as
+    `tick: unknown field 't0'` -- and a monitor that drops a pulse for that reason goes
+    deaf to a clock one release ahead of it, which is exactly the failure `t0` exists
+    to prevent. An unknown field is the one problem that is safe to carry: every field
+    this build reads was checked by name, and the extra one is simply not read.
+    """
+    return [p for p in (problems or ()) if _UNKNOWN_FIELD not in p]
 
 
 class TickLedger:
@@ -144,48 +190,104 @@ class TickLedger:
     counted and published in `missed_ticks`, never interpolated and never merged into a
     single catch-up step: a monitor that fabricates the observations it did not receive
     is worse than one that admits the hole.
+
+    **Within one epoch.** "Backwards means already stepped" holds only while the clock
+    that numbered the ticks kept running. A clock container that restarts republishes
+    from `seq` 0, and a ledger that knew only about `seq` refused every one of them as
+    stale -- zero verdicts for the rest of the process's life, and `reset()` kept
+    `last_seq` so an operator could not recover it either. `epoch` is the clock's own
+    `t0`: a changed one is a new tick stream, the ledger starts over and the monitor
+    keeps stepping. An absent one (a clock that predates `t0`) means one epoch forever,
+    which is exactly the behaviour above.
+
+    The residual, stated rather than engineered away: the epoch is carried on
+    `/monitor/tick` and the `seq` on `/monitor/observation`, so an observation from the
+    old epoch that arrives after the new clock's first pulse is adopted as the new
+    epoch's first tick. It costs the ticks between that index and the restart, once, on
+    a restart -- against going deaf permanently, which is what it replaces.
     """
 
     def __init__(self) -> None:
         self.last_seq: int | None = None
+        #: The clock's `t0` for the stream `last_seq` belongs to. See `tick_epoch`.
+        self.epoch: float | None = None
         #: Gaps since the last verdict was published; the node clears this per tick.
         self.missed: int = 0
         #: Every gap since the ledger was reset -- the run-level number.
         self.total_missed: int = 0
         #: Ticks refused because they had already been stepped.
         self.redelivered: int = 0
+        #: Ticks admitted with a fabricated index, i.e. off the legacy wire.
+        self.implicit: int = 0
+        #: Clock restarts adopted.
+        self.epochs: int = 0
+        # The fabricated index counts separately from `last_seq` on purpose -- see
+        # `admit`.
+        self._implicit_seq: int | None = None
 
     def reset(self) -> None:
-        """A new episode. The seq stream is global and does not restart with it, so
-        `last_seq` is deliberately kept: a reset must not make a stale redelivery
-        look like a fresh tick."""
-        self.missed = 0
+        """A new episode.
 
-    def admit(self, seq) -> Admission:
+        The seq stream is global and does not restart with the episode, so `last_seq`
+        and `epoch` are deliberately kept: a reset must not make a stale redelivery look
+        like a fresh tick. Everything counted *per run* -- gaps, refusals, fabricated
+        indices -- is cleared, because that is what "since the ledger was reset" means
+        in the attribute docs above and a run-level number that survives its run is
+        being read by somebody as this run's.
+        """
+        self.missed = 0
+        self.total_missed = 0
+        self.redelivered = 0
+        self.implicit = 0
+        self._implicit_seq = None
+
+    def admit(self, seq, *, epoch: float | None = None) -> Admission:
         """Decide whether `seq` may step the automaton, and count what was skipped.
+
+        `epoch` is the clock's `t0`. A change in it is a clock restart: the ledger
+        starts over rather than refusing the restarted stream as stale. None means the
+        caller does not know, which leaves the ledger in whatever epoch it was in.
 
         A payload with no usable `seq` -- every legacy `/ltl/evaluations` message, which
         predates the envelope -- is given the next implicit index, so the legacy stack
-        keeps its arrival-driven behaviour exactly and still gets a verdict.
+        keeps its arrival-driven behaviour exactly and still gets a verdict. That index
+        is counted *separately* from `last_seq`: sharing the counter meant one legacy
+        copy of tick N fabricated `last_seq + 1`, and the real envelope for tick N+1
+        then arrived looking redelivered. Two live wires, and only the fabricated one
+        advancing.
         """
+        new_epoch = False
+        if epoch is not None:
+            if self.epoch is not None and epoch != self.epoch:
+                new_epoch = True
+                self.epochs += 1
+                self.last_seq = None
+                self._implicit_seq = None
+                self.missed = 0
+            self.epoch = epoch
+
         if not isinstance(seq, int) or isinstance(seq, bool):
-            implicit = 0 if self.last_seq is None else self.last_seq + 1
-            self.last_seq = implicit
+            self._implicit_seq = (
+                0 if self._implicit_seq is None else self._implicit_seq + 1
+            )
+            self.implicit += 1
             self.missed = 0
-            return Admission(True, implicit, 0, "implicit")
+            return Admission(True, self._implicit_seq, 0, "implicit")
 
         if self.last_seq is None:
             self.last_seq = seq
             self.missed = 0
-            return Admission(True, seq, 0, "first")
+            return Admission(True, seq, 0, "epoch" if new_epoch else "first")
 
         if seq == self.last_seq:
             self.redelivered += 1
             return Admission(False, seq, 0, "redelivered")
 
         if seq < self.last_seq:
-            # Out of order, i.e. a tick the automaton has already moved past. It cannot
-            # be applied without rewinding state the automaton has no undo for.
+            # Out of order *within this epoch*, i.e. a tick the automaton has already
+            # moved past. It cannot be applied without rewinding state the automaton
+            # has no undo for. A restarted clock is not this case: it arrives with a
+            # new epoch and is handled above.
             self.redelivered += 1
             return Admission(False, seq, 0, "stale")
 
