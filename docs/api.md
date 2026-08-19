@@ -290,6 +290,54 @@ One-to-one with the topics, so the frontend keeps one data model on either trans
 Payloads are byte-identical to the topic payloads. P6's acceptance test feeds one recorded
 frame through both paths and compares.
 
+`{ns}` in a URL is the namespace with its leading slash stripped, or `_` for the
+unnamespaced monitor; a nested namespace keeps its slashes (`/nav/left` →
+`/api/monitors/nav/left/manifest`). Every entry of `GET /api/monitors` carries the segment
+to use, so no client has to derive it. A segment that is not a legal ROS name is a **400**
+and one no discovery has ever seen is a **404** — neither reaches `create_publisher`.
+
+### The trust boundary
+
+**There is no authentication.** If the network is not trusted, terminate TLS and
+authenticate *in front of* the gateway; a token check inside it would be believed, and
+should not be. What the gateway does defend is *reach*, and these three are part of the
+contract a client meets:
+
+- **It binds `127.0.0.1` by default.** `--host 0.0.0.0` publishes an unauthenticated
+  control surface for the robot, so it is something a deployment types.
+- **Every request that is not a `GET` must carry `X-Skill-Monitor: 1`** (any value);
+  without it, **403**. This is not authentication — a script sets it in one line — it is
+  what stops a page on another origin from driving the robot through the operator's own
+  browser. `Access-Control-Allow-Origin: *` stays on the reads; the preflight for
+  `POST .../command`, `POST .../spec` and `POST /api/clock/{mode,step,rate}` grants nothing
+  unless the origin was named with `--allow-origin`. A browser console is a deployment that
+  knows its own origin and says so.
+- **Concurrent websocket clients are capped** (`--max-streams`, default 64); past the cap
+  the upgrade is refused with a **503** carrying the cap. A stream is a thread, and nothing
+  else bounded them.
+
+A browser *can* still open `WS .../stream` cross-origin — the same-origin policy does not
+apply to WebSockets. The streams are read-only, but their contents are readable by any page
+the operator visits whenever the port is exposed.
+
+### `POST /api/monitors/{ns}/spec` has no correlation id
+
+The gateway pushes to `/monitor/load_spec` and answers with the monitor's own
+`/monitor/spec_status`, verbatim. `spec_status` carries no request id, so the gateway waits
+for a status whose *text* differs from the one latched before the push. Two consequences,
+both contract-level rather than implementation detail:
+
+- a spec that fails in **exactly** the same way twice reads as no answer and times out into
+  a **504**, whose body carries `last_known`, `published: true`, `timeout_s` and
+  `retry_with` so a client can tell that case from a push that was lost;
+- **concurrent pushes to one namespace cross.** Each waiter takes the first status that
+  differs from what *it* saw, so one client can be handed another's result and both can be
+  handed the same one. A 200 means "a monitor answered", not "your spec was applied".
+
+The fix is a `request_id` on `load_spec` echoed in `spec_status` — a change to this contract
+and to the monitor that answers it, not to the gateway. Until then, push specs to a given
+namespace one at a time.
+
 ---
 
 ## Async rules
