@@ -4,11 +4,23 @@
 #
 # SECURITY, stated rather than half-built: this service has NO AUTHENTICATION. Every
 # endpoint is open to anything that can reach the port, including
-# `POST /api/monitors/{ns}/command`, which can reset a live mission. It is meant for the
-# server tier's own network. If that network is not trusted, terminate TLS and
-# authenticate in a reverse proxy IN FRONT of this container -- see the module docstring
-# in skill_monitor/backend/gateway.py for why a token check bolted on here would be
-# worse than none.
+# `POST /api/monitors/{ns}/command`, which can reset a live mission. If that network is
+# not trusted, terminate TLS and authenticate in a reverse proxy IN FRONT of this
+# container -- see the module docstring in skill_monitor/backend/gateway.py for why a
+# token check bolted on here would be worse than none.
+#
+# Because "anything that can reach the port" IS the security model, who can reach the
+# port is a decision and not a default. The gateway binds 127.0.0.1 unless told
+# otherwise and no --host is baked into this image. Under docker-compose.server.yml
+# every service runs with `network_mode: host`, so loopback is shared and the frontend
+# container reaches the gateway unchanged. Publishing the robot's control surface to the
+# rest of the network is one explicit edit, made by someone who read the paragraph above:
+#
+#     command: ["--port", "8080", "--host", "0.0.0.0"]
+#
+# The same holds on a bridge network: without --host 0.0.0.0 a published port maps to a
+# container loopback nothing answers on -- which is the failure you want here, rather
+# than an open control surface nobody asked for.
 #
 # ros:humble and not python:slim, unlike the describer: this image is the one that
 # actually needs rclpy. Not the monitor base either -- the gateway forwards a JSON
@@ -45,5 +57,5 @@ sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout
 
 # argv is appended, so `command: ["--port", "8080"]` in compose works and `--help`
 # lists the real flags (--host, --port, --clock-url, --stale-after, --queue,
-# --spec-timeout, --no-ros).
+# --spec-timeout, --max-streams, --allow-origin, --no-ros).
 ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && export PYTHONPATH=/app:${PYTHONPATH} && exec python3 -m skill_monitor.backend.gateway \"$@\"", "--"]
