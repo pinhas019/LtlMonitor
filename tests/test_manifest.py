@@ -158,15 +158,66 @@ def test_one_step_per_seq():
     assert ledger.redelivered == 3
 
 
-def test_a_tick_older_than_the_last_one_is_refused_not_replayed():
+def test_a_backwards_seq_within_one_epoch_is_refused_not_replayed():
     """Out of order, i.e. a tick the automaton has already moved past. It cannot be
-    applied without rewinding state the automaton has no undo for."""
+    applied without rewinding state the automaton has no undo for.
+
+    Within *one* epoch: the same index arriving from a restarted clock is a different
+    thing entirely, and the test below says so."""
     ledger = manifest.TickLedger()
-    ledger.admit(10)
-    ledger.admit(11)
-    stale = ledger.admit(9)
+    ledger.admit(10, epoch=1000.0)
+    ledger.admit(11, epoch=1000.0)
+    stale = ledger.admit(9, epoch=1000.0)
     assert stale.step is False and stale.reason == "stale"
     assert ledger.last_seq == 11
+
+    # A clock that never sends `t0` has one epoch forever, and behaves identically.
+    plain = manifest.TickLedger()
+    plain.admit(10)
+    plain.admit(11)
+    assert plain.admit(9).reason == "stale"
+
+
+def test_a_new_epoch_is_adopted_rather_than_refused_forever():
+    """The clock container restarts and republishes from 0. Refusing those as stale
+    meant zero verdicts for the rest of the monitor's life, and `reset()` kept
+    `last_seq` so an operator could not recover it either."""
+    ledger = manifest.TickLedger()
+    for seq in (197, 198, 199):
+        assert ledger.admit(seq, epoch=1000.0).step is True
+
+    restarted = ledger.admit(0, epoch=2000.0)
+    assert restarted.step is True
+    assert restarted.reason == "epoch"
+    assert restarted.missed == 0            # a restart is not 197 missed ticks
+    assert ledger.admit(1, epoch=2000.0).step is True
+    assert ledger.epochs == 1
+
+    # …and the new epoch is an ordinary stream: backwards within it is stale again.
+    assert ledger.admit(0, epoch=2000.0).reason == "stale"
+
+
+def test_the_epoch_is_the_clocks_t0_and_nothing_else():
+    """Not a heuristic on the size of the backwards jump: a big jump backwards is
+    exactly what a badly delayed redelivery looks like too."""
+    assert manifest.tick_epoch({"seq": 1, "t": 1.0, "t0": 1699999999.5}) == 1699999999.5
+    assert manifest.tick_epoch({"seq": 1, "t": 1.0}) is None      # P1 has not landed
+    assert manifest.tick_epoch({"t0": True}) is None
+    assert manifest.tick_epoch({"t0": "recently"}) is None
+    assert manifest.tick_epoch(None) is None
+
+
+def test_a_field_a_newer_clock_adds_is_not_a_malformed_tick():
+    """`api.validate_tick` closes the payload, so P1's `t0` reads as an unknown field --
+    and a monitor that drops the pulse for that reason goes deaf to the very clock that
+    would have told it about the restart."""
+    newer = api.build_tick(seq=1, t=1.0, tick_hz=1.0) | {"t0": 1000.0}
+    assert api.validate_tick(newer) != []                      # the contract says so…
+    assert manifest.tick_problems_that_matter(api.validate_tick(newer)) == []
+
+    broken = {"schema_version": 1, "seq": "eleven", "t": 1.0, "tick_hz": 1.0,
+              "mode": "wall"}
+    assert manifest.tick_problems_that_matter(api.validate_tick(broken)) != []
 
 
 def test_missed_ticks_are_recorded_not_interpolated():
@@ -192,12 +243,42 @@ def test_a_payload_with_no_seq_keeps_the_legacy_arrival_behaviour():
     assert manifest.TickLedger().admit(True).reason == "implicit"
 
 
-def test_a_reset_does_not_make_a_stale_redelivery_look_fresh():
-    """The episode restarts; the global tick stream does not restart with it."""
+def test_a_fabricated_index_does_not_make_the_next_real_one_look_redelivered():
+    """A ledger that has seen both. The implicit index used to be `last_seq + 1` and to
+    *write* `last_seq`, so one legacy copy of tick N fabricated N+1 and the real
+    envelope for tick N+1 then arrived looking redelivered -- two live wires, and only
+    the fabricated one advancing."""
     ledger = manifest.TickLedger()
-    ledger.admit(50)
+    assert ledger.admit(7).step is True
+    assert ledger.admit(None).seq == 0            # its own counter, not 8
+    assert ledger.admit(8).step is True           # …and the real stream is untouched
+    assert ledger.last_seq == 8
+    assert ledger.implicit == 1
+
+
+def test_a_reset_does_not_make_a_stale_redelivery_look_fresh():
+    """The episode restarts; the global tick stream does not restart with it. A clock
+    that genuinely restarted says so with a new epoch, which is a different thing."""
+    ledger = manifest.TickLedger()
+    ledger.admit(50, epoch=1000.0)
     ledger.reset()
-    assert ledger.admit(50).step is False
+    assert ledger.admit(50, epoch=1000.0).step is False
+    assert ledger.admit(51, epoch=2000.0).step is True
+
+
+def test_a_reset_clears_every_number_it_says_it_clears():
+    """`total_missed` is documented as "every gap since the ledger was reset"; a
+    run-level number that survives its run is read by somebody as this run's."""
+    ledger = manifest.TickLedger()
+    ledger.admit(1)
+    ledger.admit(5)          # 3 missed
+    ledger.admit(5)          # redelivered
+    ledger.admit(None)       # implicit
+    assert (ledger.total_missed, ledger.redelivered, ledger.implicit) == (3, 1, 1)
+    ledger.reset()
+    assert (ledger.missed, ledger.total_missed, ledger.redelivered, ledger.implicit) \
+        == (0, 0, 0, 0)
+    assert ledger.last_seq == 5      # …but not the ones it says it keeps
 
 
 # =============================================================================

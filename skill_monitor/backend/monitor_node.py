@@ -677,6 +677,11 @@ class LtlMonitorNode(Node):
         self.clock_t = 0.0
         self.clock_seq = 0
         self._clock_seen = False
+        # The clock's `t0`, i.e. which run of the clock the current `seq` stream belongs
+        # to. A restarted clock republishes from seq 0; without this the ledger refused
+        # every one of those as stale and the monitor never stepped again. None until a
+        # clock that publishes `t0` is on the graph.
+        self.clock_epoch: float | None = None
 
         # Watch formulas file for changes
         self.formulas_file = args.formulas_file
@@ -712,7 +717,9 @@ class LtlMonitorNode(Node):
         self.create_subscription(
             String, _LEGACY_EVALUATIONS, self.legacy_eval_callback, 10
         )
-        self._legacy_warned = False
+        #: True once api.OBSERVATION has delivered. From then on the legacy copy of the
+        #: same tick is not stepped -- see `_on_observation`.
+        self._envelope_seen = False
 
         # The manifest is the whole spec, latched: a GUI or any other client that
         # connects mid-mission gets it immediately instead of having to find the file
@@ -797,14 +804,18 @@ class LtlMonitorNode(Node):
 
         The monitor advances on the tick index carried *inside the observation*, so that
         the automaton and the evidence it consumes are the same tick. The pulse supplies
-        the effective rate and the clock's own time, and nothing else.
+        the effective rate, the clock's own time, and which run of the clock this is --
+        and nothing else.
         """
         try:
             tick = json.loads(msg.data)
         except Exception as exc:
             self.get_logger().warn(f"Unparseable tick: {exc}")
             return
-        problems = api.validate_tick(tick)
+        # A field this build does not know about is not a malformed tick: `t0` is being
+        # added by P1 and `api.validate_tick` closes the payload, so judging on the raw
+        # list would make this monitor drop every pulse from a clock one release newer.
+        problems = manifest_mod.tick_problems_that_matter(api.validate_tick(tick))
         if problems:
             self.get_logger().warn(f"Malformed tick, ignoring: {problems}")
             return
@@ -813,6 +824,15 @@ class LtlMonitorNode(Node):
         self.clock_t = float(tick["t"])
         if tick["tick_hz"] > 0:
             self.tick_hz = float(tick["tick_hz"])
+
+        epoch = manifest_mod.tick_epoch(tick)
+        if epoch is not None and epoch != self.clock_epoch:
+            if self.clock_epoch is not None:
+                self.get_logger().warn(
+                    f"Clock restarted (t0 {self.clock_epoch} → {epoch}); the tick "
+                    f"stream begins again and the ledger starts over."
+                )
+            self.clock_epoch = epoch
 
     def command_callback(self, msg: String) -> None:
         """`arm` | `reset` | `pause` | `resume` from the frontend."""
@@ -1276,10 +1296,38 @@ class LtlMonitorNode(Node):
         if self.paused:
             return
 
+        # ── One tick, two wires, one step ─────────────────────────
+        #
+        # docs/api.md guarantees both wires are live during the migration, so from the
+        # moment P3 lands every tick arrives twice: once as an envelope on
+        # api.OBSERVATION and once as a flat legacy dict with no `seq` at all. Stepping
+        # both means two automaton steps per tick -- the drift this PR exists to remove,
+        # reintroduced from the other side.
+        #
+        # The envelope wins, because it is the only one of the two that says which tick
+        # it describes. Its control keys are still honoured above (the LLM client's
+        # `__done__`/`__reset__` ride the legacy wire), but it does not step.
+        if wire == api.OBSERVATION:
+            if not self._envelope_seen:
+                self._envelope_seen = True
+                self.get_logger().info(
+                    f"{api.OBSERVATION} is live; the legacy copy of each tick will no "
+                    f"longer step the automaton."
+                )
+        elif self._envelope_seen:
+            return
+
         # The tick index decides, not the arrival. A redelivered tick must not advance
         # a debounce or a phase counter a second time, so it is refused here rather
         # than deduplicated somewhere downstream where the counters already moved.
-        admission = self.ledger.admit(obs.seq)
+        # `epoch` is the clock's `t0`: a restarted clock renumbers from 0, and without
+        # it every tick after a restart reads as stale forever.
+        admission = self.ledger.admit(obs.seq, epoch=self.clock_epoch)
+        if admission.reason == "epoch":
+            self.get_logger().warn(
+                f"New tick epoch adopted at seq {admission.seq}; a backwards index is "
+                f"a restarted clock, not a stale message, and is stepped."
+            )
         if not admission.step:
             self.get_logger().warn(
                 f"Tick {admission.seq} {admission.reason}; already stepped through "
