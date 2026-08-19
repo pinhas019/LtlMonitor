@@ -1,9 +1,10 @@
 """The monitor node's wiring, driven without a ROS graph.
 
 `core/manifest.py` holds the decisions and `tests/test_manifest.py` pins them. This
-file pins the lines that *feed* those decisions: which wire is allowed to step the
-automaton, and what the ledger is handed when the clock restarts. Neither is visible
-from a pure function's arguments.
+file pins the ~600 lines that *feed* those decisions, because that is where three
+safety-relevant defects lived: which wire is allowed to step the automaton, what the
+ledger is handed when the clock restarts, and which rows reach the verdict builder at
+all. None of those are visible from a pure function's arguments.
 
 `tests/ros_stub.py` supplies the graph. The automaton is faked outright -- `MultiMonitor`
 needs `spot`, and what these tests need from it is a count of how many times it was
@@ -152,6 +153,34 @@ def a_spec(**overrides) -> dict:
     return spec
 
 
+def an_adapter() -> dict:
+    """Four required sources. `battery` feeds no AP in the spec above, which is the
+    whole point: its silence must not grade a collision the depth camera saw."""
+    return api.build_adapter(
+        adapter="test_robot", doc="", tick_hz=1.0,
+        schema={
+            "min_range": {}, "upright_flag": {}, "nav_state": {}, "battery_v": {},
+        },
+        sources=[
+            {"id": "points", "topic": "/points", "type": "T", "expected_hz": 15.0,
+             "max_age_s": 0.5, "required": True, "tracked": True,
+             "keys": ["min_range"], "steps": []},
+            {"id": "odom", "topic": "/odom", "type": "T", "expected_hz": 50.0,
+             "max_age_s": 0.5, "required": True, "tracked": True,
+             "keys": [],
+             # Derived: only the step names it, which is the case `_source_keys` exists
+             # for -- `upright_flag` is computed from base_roll/pitch/height.
+             "steps": [{"keys": ["upright_flag"], "aggregate": "last", "on": "message"}]},
+            {"id": "status", "topic": "/status", "type": "T", "expected_hz": 5.0,
+             "max_age_s": 1.0, "required": True, "tracked": True,
+             "keys": ["nav_state"], "steps": []},
+            {"id": "battery", "topic": "/battery", "type": "T", "expected_hz": 1.0,
+             "max_age_s": 5.0, "required": True, "tracked": True,
+             "keys": ["battery_v"], "steps": []},
+        ],
+    )
+
+
 def a_node(spec_dict=None, *, monitors=None, adapter=None):
     spec = monitor_node.spec_from_dict(spec_dict or a_spec())
     if monitors is None:
@@ -298,3 +327,288 @@ def test_a_legacy_control_signal_is_honoured_even_once_the_envelope_wins():
     node.halted = True
     legacy_observe(node, {"__reset__": True})
     assert node.halted is False
+
+
+# =============================================================================
+# 3. Confidence is per failure mode
+# =============================================================================
+
+def test_a_quiet_battery_does_not_de_escalate_a_collision_the_camera_saw():
+    """One global freshness number stamped on every mode graded a real
+    `collision_imminent` at 0.34 -- WARN, not HALT -- because an unrelated topic had
+    gone quiet. The supervisor then did not zero /cmd_vel, and
+    `ablation_runner.safety_fault_from_verdict` did not even record a safety fault."""
+    node = a_node(adapter=an_adapter())
+    tick(node, 1)
+    observe(node, 1, aps={"collision_risk": True, "upright": True},
+            stale=["battery"], confidence=0.34)
+
+    v = verdicts(node)[-1]
+    collision = next(fm for fm in v["failure_modes"] if fm["name"] == "collision_imminent")
+    assert collision["confidence"] == 1.0        # its own source is perfectly fresh
+    assert v["intervention"]["action"] == "ABORT"
+    assert Action[v["intervention"]["action"]] >= Action.HALT
+
+
+def test_a_collision_seen_by_a_dead_camera_is_still_de_escalated():
+    """Safety is not softened away, only de-escalated while its *own* evidence is weak."""
+    node = a_node(adapter=an_adapter())
+    tick(node, 1)
+    observe(node, 1, aps={"collision_risk": True, "upright": True},
+            stale=["points"], confidence=0.34)
+
+    v = verdicts(node)[-1]
+    collision = next(fm for fm in v["failure_modes"] if fm["name"] == "collision_imminent")
+    assert collision["confidence"] == 0.0
+    assert v["intervention"]["action"] == "WARN"
+
+
+def test_with_no_adapter_announced_the_global_scalar_is_all_there_is():
+    """Nothing says which source feeds which AP, so the observation's own number is the
+    honest answer -- and it is documented as the fallback, not as the design."""
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1, aps={"collision_risk": True}, confidence=0.34)
+    v = verdicts(node)[-1]
+    assert v["failure_modes"][0]["confidence"] == 0.34
+    assert v["intervention"]["action"] == "WARN"
+
+
+def test_the_node_halts_exactly_when_the_token_it_published_says_halt():
+    """The node used to call `_halt()` regardless, so on the same tick its behaviour and
+    the token it published were two different decisions."""
+    sure = a_node(adapter=an_adapter())
+    tick(sure, 1)
+    observe(sure, 1, aps={"collision_risk": True}, stale=["battery"], confidence=0.34)
+    assert sure.halted is True
+    assert manifest.token_halts(verdicts(sure)[-1]["intervention"]["action"])
+
+    unsure = a_node(adapter=an_adapter())
+    tick(unsure, 1)
+    observe(unsure, 1, aps={"collision_risk": True}, stale=["points"], confidence=0.34)
+    assert unsure.halted is False
+    assert not manifest.token_halts(verdicts(unsure)[-1]["intervention"]["action"])
+
+    # …and the same fault halts as soon as its own data is fresh again.
+    tick(unsure, 2)
+    observe(unsure, 2, aps={"collision_risk": True}, confidence=1.0)
+    assert unsure.halted is True
+
+
+# =============================================================================
+# 4. A phase fault reaches the token
+# =============================================================================
+
+def _g1_spec() -> dict:
+    return json.loads(skill_monitor.spec_path("g1").read_text())
+
+
+def test_a_phase_invariant_breach_reaches_the_intervention_token():
+    """All three phases in the shipped G1 spec declare `invariant_fault_category:
+    "SAFETY"`. The breach halted this process and published CONTINUE, so P5 -- which is
+    contracted to obey the token and nothing else -- would not have stopped the robot."""
+    node = a_node(_g1_spec(), monitors=[FakeMonitor("nav", "F(path_active)")])
+    tick(node, 1)
+    observe(node, 1, aps={"mission_started": True, "upright": True,
+                          "collision_risk": False})
+    tick(node, 2)
+    observe(node, 2, aps={"mission_started": True, "upright": False,
+                          "collision_risk": False})
+
+    v = verdicts(node)[-1]
+    breach = next(
+        fm for fm in v["failure_modes"] if fm["name"].startswith("phase:")
+    )
+    assert breach["fault_category"] == "SAFETY"
+    assert breach["status"] == "VIOLATED"
+    assert v["intervention"]["action"] == "ABORT"
+    assert node.halted is True
+
+
+def test_a_phase_timeout_reaches_the_token_too():
+    """TIMEOUT and precondition faults have no named-mode cover in any spec."""
+    spec = a_spec(execution_phases=[{
+        "phase": "Approach",
+        "enter_condition": "path_active",
+        "invariant": "upright",
+        "invariant_fault_category": "SAFETY",
+        "progress_condition": "True",
+        "exit_condition": "False",
+        "timing_bounds": {"max_steps": 2},
+    }])
+    node = a_node(spec, monitors=[FakeMonitor("nav", "F(path_active)")])
+    for seq in (1, 2, 3, 4):
+        tick(node, seq)
+        observe(node, seq, aps={"path_active": True, "upright": True})
+
+    v = verdicts(node)[-1]
+    timeout = next(fm for fm in v["failure_modes"] if fm["name"].endswith(":timeout"))
+    assert timeout["fault_category"] == "TIMEOUT"
+    assert v["intervention"]["action"] == "REPLAN"
+    # A timeout is counted in ticks, not sensed, so no source's silence weakens it.
+    assert timeout["confidence"] == 1.0
+    # …and "the episode is over" still ends the run, as it did before the token existed.
+    assert node.halted is True
+
+
+def test_a_phase_fault_reaches_the_un_migrated_supervisor_too():
+    """The legacy `/ltl/state_description` is the only thing P5's current node reads,
+    and a phase fault it does not halt on is one it would otherwise never hear about.
+
+    (A phase fault that *does* halt reaches it as the `state: halt` frame `_halt`
+    already sends, which is the legacy stack's stop signal.)"""
+    spec = a_spec(execution_phases=[{
+        "phase": "Approach",
+        "enter_condition": "path_active",
+        "invariant": "upright",
+        "invariant_fault_category": "SAFETY",
+        "progress_condition": "True",
+        "exit_condition": "False",
+    }])
+    node = a_node(spec, monitors=[FakeMonitor("nav", "F(path_active)")],
+                  adapter=an_adapter())
+    tick(node, 1)
+    observe(node, 1, aps={"path_active": True, "upright": True})
+    tick(node, 2)
+    # `upright` is computed from odom, and odom stopped publishing: the invariant reads
+    # as breached, but on evidence that cannot support stopping the robot.
+    observe(node, 2, aps={"path_active": True, "upright": False}, stale=["odom"])
+
+    v = verdicts(node)[-1]
+    breach = next(fm for fm in v["failure_modes"] if fm["name"].startswith("phase:"))
+    assert breach["confidence"] == 0.0
+    assert v["intervention"]["action"] == "WARN"
+    assert node.halted is False
+
+    states = [json.loads(m) for m in node.publishers[monitor_node._LEGACY_STATE_DESC].sent]
+    latest = [s for s in states if "named_failure_modes" in s][-1]
+    assert any(fm["name"].startswith("phase:") for fm in latest["named_failure_modes"])
+
+
+# =============================================================================
+# 5. An unrecognised fault category must not halt the robot
+# =============================================================================
+
+def test_a_mistyped_fault_category_does_not_abort_the_mission():
+    """`core/automata.py` documents "NAVIGATION" as an example category, so a name this
+    build does not enumerate is an expected input. It used to grade ABORT."""
+    spec = a_spec(named_failure_modes=[{
+        "name": "wandered", "formula": "G(!collision_risk)",
+        "fault_category": "SAFTEY", "description": "typo",
+    }])
+    node = a_node(spec, monitors=[
+        FakeMonitor("nav", "F(path_active)"),
+        FakeMonitor(
+            "wandered", "G(!collision_risk)",
+            failure_mode=FailureModeInfo(name="wandered", fault_category="SAFTEY",
+                                         description="typo"),
+            violated_when=lambda obs: obs.get("collision_risk") is True,
+        ),
+    ])
+    tick(node, 1)
+    observe(node, 1, aps={"collision_risk": True})
+
+    v = verdicts(node)[-1]
+    assert v["failure_modes"][0]["fault_category"] == manifest.UNCLASSIFIED_CATEGORY
+    assert Action[v["intervention"]["action"]] < Action.HALT
+    assert api.validate_verdict(v) == []
+
+
+def test_a_pushed_spec_with_a_fault_category_this_build_cannot_grade_is_rejected():
+    """The rung is deliberately mild, so the loudness has to live at load time -- where
+    the author can still see the name they mistyped."""
+    node = a_node()
+    bad = a_spec(named_failure_modes=[{
+        "name": "wandered", "formula": "G(!collision_risk)",
+        "fault_category": "SAFTEY",
+    }])
+    node.load_spec_callback(ros_stub.Message(json.dumps(bad)))
+
+    status = json.loads(node.publishers[api.SPEC_STATUS].sent[-1])
+    assert status["ok"] is False
+    assert any("SAFTEY" in p for p in status["problems"])
+    assert node.spec.skill_name == "TestSkill"      # …and it was not adopted
+
+    # The same spec spelled correctly is accepted.
+    good = a_spec(named_failure_modes=[{
+        "name": "wandered", "formula": "G(!collision_risk)",
+        "fault_category": "SAFETY",
+    }])
+    node.load_spec_callback(ros_stub.Message(json.dumps(good)))
+    assert json.loads(node.publishers[api.SPEC_STATUS].sent[-1])["ok"] is True
+
+
+# =============================================================================
+# `verdict()`'s input mapping
+# =============================================================================
+
+def test_the_verdict_maps_every_piece_of_node_state_onto_the_payload():
+    """Defects 3 and 5 both lived in this mapping rather than in the builder it calls."""
+    node = a_node(adapter=an_adapter())
+    tick(node, 41, tick_hz=2.0)
+    observe(node, 41, aps={"path_active": True}, stale=["battery"], confidence=0.5)
+
+    v = verdicts(node)[-1]
+    assert api.validate_verdict(v) == []
+    assert v["seq"] == 41 and v["t"] == 41.0
+    assert isinstance(v["step"], int)
+    assert v["skill_name"] == "TestSkill"
+    assert v["risk"]["stale_sources"] == ["battery"]
+    assert v["risk"]["trigger_confidence"] == 0.5
+    assert v["missed_ticks"] == 0
+    assert [fm["name"] for fm in v["failure_modes"]] == ["collision_imminent"]
+    assert v["formulas"] == [{"name": "nav", "status": "INCONCLUSIVE"}]
+
+
+def test_a_gap_in_the_tick_stream_is_reported_not_interpolated():
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)
+    tick(node, 5)
+    observe(node, 5)
+    assert len(node.multi.steps) == 2
+    assert verdicts(node)[-1]["missed_ticks"] == 3
+
+
+def test_a_redelivered_tick_publishes_no_second_verdict():
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)
+    observe(node, 1)
+    assert len(node.multi.steps) == 1
+    assert len(verdicts(node)) == 1
+
+
+# =============================================================================
+# …and what the ablation records off the same verdict
+# =============================================================================
+
+def test_the_ablation_records_the_fault_the_token_was_graded_from():
+    """`safety_fault_from_verdict` gates on `action >= HALT`, so a collision graded WARN
+    by an unrelated stale topic did not even count as a safety fault -- the ablation
+    numbers moved. And the name it records is now the mode the token was graded from,
+    which stopped being the first VIOLATED entry the moment phase faults joined the
+    list."""
+    from skill_monitor.backend import ablation_runner
+
+    node = a_node(adapter=an_adapter())
+    tick(node, 1)
+    observe(node, 1, aps={"collision_risk": True}, stale=["battery"], confidence=0.34)
+    assert ablation_runner.safety_fault_from_verdict(verdicts(node)[-1]) \
+        == "collision_imminent"
+
+    quiet = a_node(adapter=an_adapter())
+    tick(quiet, 1)
+    observe(quiet, 1, aps={"collision_risk": False})
+    assert ablation_runner.safety_fault_from_verdict(verdicts(quiet)[-1]) is None
+
+    # Two breaches on one tick: the safety one is what the token graded, and what the
+    # episode is recorded under.
+    assert ablation_runner.safety_fault_from_verdict({
+        "intervention": {"action": "ABORT", "category": "SAFETY"},
+        "failure_modes": [
+            {"name": "phase:Approach:progress", "fault_category": "PROGRESS",
+             "status": "VIOLATED"},
+            {"name": "fell_over", "fault_category": "SAFETY", "status": "VIOLATED"},
+        ],
+    }) == "fell_over"

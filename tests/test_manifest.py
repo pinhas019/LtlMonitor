@@ -391,6 +391,116 @@ def test_low_confidence_safety_violation_grades_below_abort():
     assert live_sensor["intervention"]["action"] == "ABORT"
 
 
+# =============================================================================
+# Confidence is per failure mode, not one number for all of them
+# =============================================================================
+
+def _adapter():
+    """Three required sources. `battery` feeds no AP any spec here mentions."""
+    return api.build_adapter(
+        adapter="test_robot", doc="", tick_hz=1.0,
+        schema={"min_range": {}, "upright_flag": {}, "battery_v": {}},
+        sources=[
+            {"id": "points", "topic": "/p", "type": "T", "expected_hz": 15.0,
+             "max_age_s": 0.5, "required": True, "tracked": True,
+             "keys": ["min_range"], "steps": []},
+            {"id": "odom", "topic": "/o", "type": "T", "expected_hz": 50.0,
+             "max_age_s": 0.5, "required": True, "tracked": True, "keys": [],
+             "steps": [{"keys": ["upright_flag"], "aggregate": "last", "on": "message"}]},
+            {"id": "battery", "topic": "/b", "type": "T", "expected_hz": 1.0,
+             "max_age_s": 5.0, "required": True, "tracked": True,
+             "keys": ["battery_v"], "steps": []},
+        ],
+    )
+
+
+_APS = {
+    "collision_risk": "True when min_range < 0.25. An obstacle is too close.",
+    "upright": "True when upright_flag > 0.5. The base is standing.",
+    "llm_judged": "The scene looks like the goal.",     # no rule: LLM-evaluated
+}
+
+
+def test_an_ap_maps_to_the_sources_its_rule_actually_reads():
+    ap_map = manifest.ap_source_map(_APS, _adapter())
+    assert ap_map["collision_risk"] == frozenset({"points"})
+    # Derived key: `upright_flag` is named only by a step, and a lookup that read the
+    # source's top-level `keys` would map it to nothing, i.e. to permanently fresh.
+    assert ap_map["upright"] == frozenset({"odom"})
+    # An LLM-evaluated AP is handed the whole sensor dict, so it depends on every
+    # source. Mapping it to "no sources" is exactly backwards.
+    assert ap_map["llm_judged"] == frozenset({"points", "odom", "battery"})
+    # No adapter announced: nothing to map against, and the caller is told so.
+    assert manifest.ap_source_map(_APS, {}) is None
+
+
+def test_a_quiet_source_only_de_escalates_the_modes_that_read_it():
+    """One global scalar -- the fraction of *all* required sources fresh -- stamped on
+    every entry meant a quiet battery topic dragged a perfectly-evidenced
+    `collision_imminent` under `min_confidence`, so a real collision graded WARN
+    instead of HALT and the supervisor did not zero /cmd_vel."""
+    ap_map = manifest.ap_source_map(_APS, _adapter())
+    mode_sources = manifest.expression_source_map(
+        {"collision_imminent": "G(!collision_risk)", "fell_over": "G(upright)"}, ap_map
+    )
+    v = _verdict(
+        confidence=0.34, stale_sources=["battery"], mode_sources=mode_sources,
+        failure_modes=[
+            {"name": "collision_imminent", "fault_category": "SAFETY",
+             "status": "VIOLATED"},
+            {"name": "fell_over", "fault_category": "SAFETY", "status": "INCONCLUSIVE"},
+        ],
+    )
+    assert [fm["confidence"] for fm in v["failure_modes"]] == [1.0, 1.0]
+    assert v["intervention"]["action"] == "ABORT"
+
+    # …and the same fault on its own dead sensor is still de-escalated.
+    blind = _verdict(
+        confidence=0.34, stale_sources=["points"], mode_sources=mode_sources,
+        failure_modes=[{"name": "collision_imminent", "fault_category": "SAFETY",
+                        "status": "VIOLATED"}],
+    )
+    assert blind["failure_modes"][0]["confidence"] == 0.0
+    assert blind["intervention"]["action"] == "WARN"
+
+
+def test_with_no_map_the_global_scalar_is_the_documented_fallback():
+    """No adapter has announced itself, so nothing says which source feeds which AP."""
+    v = _verdict(
+        confidence=0.4, mode_sources=None,
+        failure_modes=[{"name": "fell_over", "fault_category": "SAFETY",
+                        "status": "VIOLATED"}],
+    )
+    assert v["failure_modes"][0]["confidence"] == 0.4
+
+    # A mode a map does not cover falls back the same way: "its expression named no AP
+    # I know" is ignorance, not freshness.
+    v = _verdict(
+        confidence=0.4, mode_sources={"other": frozenset()},
+        failure_modes=[{"name": "fell_over", "fault_category": "SAFETY",
+                        "status": "VIOLATED"}],
+    )
+    assert v["failure_modes"][0]["confidence"] == 0.4
+
+
+def test_a_fault_graded_below_halt_only_by_confidence_does_not_stop_the_run():
+    """The node's `_halt()` and the token it publishes must be one decision."""
+    sure = {"fault_category": "SAFETY", "confidence": 1.0}
+    unsure = {"fault_category": "SAFETY", "confidence": 0.2}
+    assert manifest.fault_stops_the_run(sure) is True
+    assert manifest.fault_stops_the_run(unsure) is False
+
+    # A fault the ladder never takes to HALT at any confidence is a different case:
+    # "this episode is over" is not "stop the robot", and the phase machine's
+    # termination contract predates this PR.
+    assert manifest.fault_stops_the_run(
+        {"fault_category": "TIMEOUT", "confidence": 1.0}
+    ) is True
+    assert manifest.fault_stops_the_run(
+        {"fault_category": "PROGRESS", "confidence": 0.1}
+    ) is True
+
+
 def test_the_intervention_token_ships_in_the_verdict():
     """The monitor decides the rung; the supervisor only enforces. A verdict with no
     token would leave the decision in the actuator, and unlogged."""
@@ -404,6 +514,33 @@ def test_the_intervention_token_ships_in_the_verdict():
     assert soon["intervention"]["action"] == "REPLAN"
     assert soon["intervention"]["imminence"] == "2 steps"
     assert soon["intervention"]["confidence"] == 0.9
+
+
+def test_a_mode_named_after_a_severity_does_not_hijack_the_evidence():
+    """`decision.reason` is a failure mode's *name* on one branch and a severity string
+    on the other, so matching it against mode names let a mode literally named "TIMEOUT"
+    supply the `imminence` and `confidence` of a risk-branch decision -- the right rung
+    beside the wrong evidence."""
+    v = _verdict(
+        steps_to_timeout=2, violations_to_fault=3, confidence=0.9,
+        failure_modes=[{"name": "TIMEOUT", "fault_category": "PROGRESS",
+                        "status": "INCONCLUSIVE"}],
+    )
+    assert v["risk"]["severity"] == "TIMEOUT"          # the risk branch fired…
+    assert v["intervention"]["imminence"] == "2 steps"  # …so the evidence is the risk's
+    assert v["intervention"]["confidence"] == 0.9
+
+    # And the branch is picked by the same rule `decide_intervention` uses.
+    modes = [
+        {"name": "wandered", "fault_category": "PROGRESS", "status": "VIOLATED"},
+        {"name": "fell_over", "fault_category": "SAFETY", "status": "VIOLATED"},
+    ]
+    assert manifest.breached_mode(modes)["name"] == "fell_over"   # safety is preferred
+    assert manifest.breached_mode(modes[:1])["name"] == "wandered"
+    assert manifest.breached_mode([]) is None
+    assert manifest.breached_mode(
+        [{"name": "x", "fault_category": "SAFETY", "status": "INCONCLUSIVE"}]
+    ) is None
 
 
 def test_seconds_to_timeout_accompanies_steps_to_timeout():
@@ -473,22 +610,95 @@ def test_an_authored_fault_category_is_mapped_onto_the_closed_vocabulary():
     assert manifest.wire_fault_category("precondition") == "INVARIANT"
     assert manifest.wire_fault_category("NONE") is None
     assert manifest.wire_fault_category(None) is None
-    # Unclassifiable is not thereby mild.
     assert manifest.wire_fault_category("WEIRD") == manifest.UNCLASSIFIED_CATEGORY
     assert manifest.UNCLASSIFIED_CATEGORY in api.FAULT_CATEGORIES
 
 
-def test_a_spec_with_odd_fault_categories_still_produces_a_valid_verdict():
+def test_a_category_this_build_cannot_grade_never_stops_the_robot():
+    """A spec typo used to become INVARIANT, i.e. ABORT, where pre-PR it graded WARN --
+    and `build_failure_mode_infos` defaults a missing field to "UNKNOWN", so it fired on
+    any spec that omits it at all. `core/automata.py` documents "NAVIGATION" as an
+    example category, so an unenumerated name is an expected input."""
+    for authored in ("SAFTEY", "NAVIGATION", "UNKNOWN"):
+        v = _verdict(failure_modes=[
+            {"name": "x", "fault_category": authored, "status": "VIOLATED"},
+        ])
+        assert api.validate_verdict(v) == []
+        assert v["failure_modes"][0]["fault_category"] == manifest.UNCLASSIFIED_CATEGORY
+        assert Action[v["intervention"]["action"]] < Action.HALT
+
+    # PRECONDITION is a real alias, not an unrecognised name: a precondition that did
+    # not hold on entry is the world not being as the spec required.
     v = _verdict(failure_modes=[
-        {"name": "unnamed", "fault_category": "UNKNOWN", "status": "VIOLATED"},
-        {"name": "pre", "fault_category": "PRECONDITION", "status": "INCONCLUSIVE"},
+        {"name": "pre", "fault_category": "PRECONDITION", "status": "VIOLATED"},
     ])
-    assert api.validate_verdict(v) == []
-    assert [fm["fault_category"] for fm in v["failure_modes"]] == ["INVARIANT", "INVARIANT"]
+    assert v["failure_modes"][0]["fault_category"] == "INVARIANT"
+    assert v["intervention"]["action"] == "ABORT"
 
 
-def test_warn_steps_is_read_from_the_ladder_not_copied():
-    """One definition of the horizon, not a fourth literal `3` in this module."""
+def test_an_unrecognised_category_is_reported_where_the_author_can_see_it():
+    """The rung is deliberately mild, so the loudness has to be at load time."""
+    problems = manifest.fault_category_problems({
+        "named_failure_modes": [{"name": "fell_over", "fault_category": "SAFTEY"}],
+        "execution_phases": [{"phase": "Approach",
+                              "invariant_fault_category": "NAVIGATION"}],
+    })
+    assert any("SAFTEY" in p and "fell_over" in p for p in problems)
+    assert any("NAVIGATION" in p and "Approach" in p for p in problems)
+
+    # A missing category is the same defect wearing "UNKNOWN".
+    assert manifest.fault_category_problems(
+        {"named_failure_modes": [{"name": "wandered", "formula": "G(x)"}]}
+    ) != []
+
+    # The shipped spec is clean, "NONE" and all.
+    assert manifest.fault_category_problems(_spec()) == []
+    assert manifest.fault_category_problems({}) == []
+    assert manifest.fault_category_problems(None) == []
+
+
+def test_none_ships_as_null_only_where_the_wire_has_a_null():
+    """`verdict.intervention.category` is nullable and
+    `verdict.failure_modes[].fault_category` is not, so "NONE" cannot mean the same
+    thing in both places -- and claiming it did was wrong end to end."""
+    assert manifest.wire_fault_category("NONE") is None
+    assert _verdict()["intervention"]["category"] is None
+    on_a_mode = _verdict(failure_modes=[
+        {"name": "x", "fault_category": "NONE", "status": "INCONCLUSIVE"},
+    ])["failure_modes"][0]
+    assert on_a_mode["fault_category"] == manifest.UNCLASSIFIED_CATEGORY
+    assert api.validate_verdict(_verdict(failure_modes=[
+        {"name": "x", "fault_category": "NONE", "status": "INCONCLUSIVE"},
+    ])) == []
+
+
+def test_the_ladder_horizon_is_not_two_numbers():
+    """One definition of the horizon, not a fourth literal `3` in this module.
+
+    Read off `grade_action.__kwdefaults__` this used to be an import-time landmine:
+    `__kwdefaults__` is None for a function with no keyword-only defaults, so moving
+    that parameter in front of the `*` raised TypeError while *importing* this module.
+    `inspect.signature` here rather than there: a red test is the right failure, an
+    unimportable package is not.
+    """
+    import inspect
+
     from skill_monitor.core.monitor_action import grade_action
-    assert manifest.WARN_STEPS == grade_action.__kwdefaults__["warn_steps"]
-    assert manifest.MIN_CONFIDENCE == grade_action.__kwdefaults__["min_confidence"]
+
+    defaults = inspect.signature(grade_action).parameters
+    assert manifest.WARN_STEPS == defaults["warn_steps"].default
+    assert manifest.MIN_CONFIDENCE == defaults["min_confidence"].default
+
+    # The landmine itself: moving the parameter in front of the `*` is a refactor that
+    # changes nothing about the ladder, and `__kwdefaults__` is None for the result.
+    def moved(category, *, imminence=None):
+        return category
+
+    def moved_again(category, warn_steps=3):
+        return category
+
+    assert moved.__kwdefaults__ is not None
+    assert moved_again.__kwdefaults__ is None
+    with pytest.raises(TypeError):
+        moved_again.__kwdefaults__["warn_steps"]      # what import used to do
+    assert inspect.signature(moved_again).parameters["warn_steps"].default == 3

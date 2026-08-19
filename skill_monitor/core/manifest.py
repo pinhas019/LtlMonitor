@@ -410,10 +410,34 @@ _CATEGORY_ALIASES = {"PRECONDITION": "INVARIANT"}
 #: Spellings that mean "no fault category", not "a category I do not recognise".
 _NO_CATEGORY = {"", "NONE", "NULL", "-"}
 
-#: What an unrecognised category becomes on the wire. `fault_category` is a closed
-#: vocabulary, so something must be chosen; the conservative reading is that a fault
-#: nobody could classify is not thereby a mild one.
-UNCLASSIFIED_CATEGORY = "INVARIANT"
+#: What a category this build does not recognise becomes on the wire.
+#:
+#: `fault_category` is closed on `verdict.failure_modes` -- there is no null and no
+#: passthrough -- so *something* has to be chosen, and the choice must not be able to
+#: stop the robot. It used to be INVARIANT, which meant a spec typo ("SAFTEY") graded
+#: ABORT where pre-PR it graded WARN, and `build_failure_mode_infos` defaults a missing
+#: field to "UNKNOWN" so it fired on any spec that omits it at all. `core/automata.py`
+#: documents "NAVIGATION" as an example category, so a name this vocabulary lacks is an
+#: expected input, not a corrupt one.
+#:
+#: PROGRESS is the mildest rung the vocabulary offers: `grade_action` takes an
+#: already-breached PROGRESS to REPLAN, which is below HALT, so an unclassifiable fault
+#: is reported and re-planned rather than actuated on. The loudness moved to
+#: `fault_category_problems`, which rejects the spec at load, where the author can
+#: still see the name they mistyped.
+UNCLASSIFIED_CATEGORY = "PROGRESS"
+
+
+def recognised_fault_category(category) -> bool:
+    """Whether `wire_fault_category` maps this spelling by knowing it, rather than by
+    giving up on it. `"PROGRESS"` and an unrecognised name produce the same wire value,
+    so the two cannot be told apart after the fact -- which is why this exists."""
+    if category is None:
+        return True
+    text = str(category).strip().upper()
+    if text in _NO_CATEGORY:
+        return True
+    return _CATEGORY_ALIASES.get(text, text) in api.FAULT_CATEGORIES
 
 
 def wire_fault_category(category) -> str | None:
@@ -421,7 +445,10 @@ def wire_fault_category(category) -> str | None:
 
     None means the spec said there is no category here (a `precondition_fault_category`
     of `"NONE"` in the shipped G1 spec), which `api.build_intervention` accepts and
-    `grade_action` reads as CONTINUE.
+    `grade_action` reads as CONTINUE. Note that the null survives only where the wire
+    admits one: `verdict.intervention.category` is nullable and
+    `verdict.failure_modes[].fault_category` is not, so on a failure-mode entry "NONE"
+    ships as `UNCLASSIFIED_CATEGORY` -- non-halting, but not null.
     """
     if category is None:
         return None
@@ -430,6 +457,99 @@ def wire_fault_category(category) -> str | None:
         return None
     text = _CATEGORY_ALIASES.get(text, text)
     return text if text in api.FAULT_CATEGORIES else UNCLASSIFIED_CATEGORY
+
+
+#: Where a spec may author a fault category, and what the field is called there.
+_CATEGORY_FIELDS = (
+    ("named_failure_modes", "fault_category"),
+    ("execution_phases", "invariant_fault_category"),
+    ("execution_phases", "precondition_fault_category"),
+)
+
+
+def fault_category_problems(spec) -> list[str]:
+    """Human-readable problems with a spec's authored fault categories.
+
+    Same shape and same purpose as `spec_contract.validate()`'s list, and fed into the
+    same `/monitor/spec_status`: a category this build cannot classify is graded to a
+    non-halting rung at runtime, so if it is *not* also reported at load the spec runs
+    with a fault the monitor will never act on and nobody was told. Naming it here puts
+    the message where the author can still fix it.
+
+    (It lives in this module rather than in `spec_contract` only because P4 owns this
+    file and not that one -- it belongs beside `validate_structure`.)
+    """
+    problems: list[str] = []
+    for section, field_name in _CATEGORY_FIELDS:
+        entries = (spec or {}).get(section)
+        if not isinstance(entries, list):
+            continue
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            label = entry.get("name") or entry.get("phase") or f"{section}[{i}]"
+            if field_name not in entry:
+                if section == "named_failure_modes":
+                    problems.append(
+                        f"named failure mode '{label}' declares no {field_name}; "
+                        f"it grades as {UNCLASSIFIED_CATEGORY} and will not halt. "
+                        f"Expected one of {sorted(api.FAULT_CATEGORIES)}"
+                    )
+                continue
+            value = entry.get(field_name)
+            if not recognised_fault_category(value):
+                problems.append(
+                    f"'{label}' declares {field_name} {value!r}, which this build does "
+                    f"not recognise; it grades as {UNCLASSIFIED_CATEGORY} and will not "
+                    f"halt. Expected one of {sorted(api.FAULT_CATEGORIES)}"
+                )
+    return problems
+
+
+def token_halts(action) -> bool:
+    """Whether an `intervention.action` name is at or above HALT, i.e. "stop actuating"."""
+    try:
+        return Action[str(action)] >= Action.HALT
+    except KeyError:
+        return False
+
+
+def fault_stops_the_run(entry) -> bool:
+    """Whether a graded `verdict.failure_modes` entry stops the monitor's run.
+
+    The node used to halt on any triggered failure mode regardless of what it published
+    -- so on a dead-sensor `collision_imminent` it published WARN, the supervisor kept
+    actuating, and the monitor shut down anyway: two different decisions about the same
+    tick, from the same process. This is the one decision both read.
+
+    Graded by `grade_action` on the entry's own category and confidence, at the
+    already-breached imminence of 0 that `decide_intervention` uses, so the rung here is
+    the rung in the token.
+
+    Two rungs stop the run:
+
+      * at or above HALT -- the token itself says stop;
+      * below HALT for a fault that would not have reached HALT *at any confidence*.
+        A phase TIMEOUT grades REPLAN on perfectly fresh data, and "this episode is
+        over" is a different statement from "stop the robot": the phase machine's
+        termination contract predates this PR and is not its to change.
+
+    What is left is the case being fixed: a fault that *would* have halted on fresh data
+    and was held back only by its confidence. There the monitor is saying it is not sure
+    the fault happened, and it now behaves that way.
+    """
+    category = (entry or {}).get("fault_category")
+    graded = grade_action(
+        category, imminence=0, confidence=_unit((entry or {}).get("confidence", 1.0)),
+        min_confidence=MIN_CONFIDENCE, warn_steps=WARN_STEPS,
+    )
+    if graded >= Action.HALT:
+        return True
+    certain = grade_action(
+        category, imminence=0, confidence=1.0,
+        min_confidence=MIN_CONFIDENCE, warn_steps=WARN_STEPS,
+    )
+    return certain < Action.HALT
 
 
 def _status_name(status) -> str:
@@ -446,7 +566,158 @@ def formula_entries(statuses) -> list[dict]:
     ]
 
 
-def failure_mode_entries(modes, confidence: float) -> list[dict]:
+# =============================================================================
+# Which sources a failure mode is believable on
+#
+# Derived, never authored: `spec_contract.sensor_keys_in_rule()` gives an AP's sensor
+# keys and the adapter manifest gives key -> source. See docs/clocking.md, "AP -> source
+# dependency", for the three gaps a naive lookup gets wrong.
+# =============================================================================
+
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+#: Single uppercase letters that are LTL temporal operators, not propositions.
+_LTL_OPERATORS = frozenset("GFXURWM")
+
+
+def aps_in_expression(text) -> frozenset[str]:
+    """The atomic propositions an LTL formula or a phase condition names."""
+    if not isinstance(text, str):
+        return frozenset()
+    return frozenset(
+        t for t in _IDENTIFIER.findall(text)
+        if t not in spec_contract.NON_SENSOR_TOKENS and t not in _LTL_OPERATORS
+    )
+
+
+def _source_keys(source: dict) -> set[str]:
+    """Every sensor key a source feeds, declared or derived.
+
+    Both are read because the derived ones are the ones that matter: `upright_flag` is
+    computed by a step from `base_roll`/`base_pitch`/`base_height`, and a lookup that
+    saw only a source's top-level `keys` would map the AP over it to no source at all
+    -- i.e. to permanently fresh. A step's `inputs` need no separate walk: they are keys
+    of the same source, so the closure is already closed.
+    """
+    keys: set[str] = set()
+    declared = source.get("keys")
+    if isinstance(declared, list):
+        keys |= {k for k in declared if isinstance(k, str)}
+    steps = source.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            if isinstance(step.get("key"), str):
+                keys.add(step["key"])
+            for key in step.get("keys") or ():
+                if isinstance(key, str):
+                    keys.add(key)
+    return keys
+
+
+def adapter_key_sources(adapter) -> dict[str, frozenset[str]]:
+    """Sensor key -> the adapter source ids that produce it."""
+    out: dict[str, set[str]] = {}
+    for source in (adapter or {}).get("sources") or ():
+        if not isinstance(source, dict) or not isinstance(source.get("id"), str):
+            continue
+        for key in _source_keys(source):
+            out.setdefault(key, set()).add(source["id"])
+    return {key: frozenset(ids) for key, ids in out.items()}
+
+
+def adapter_required_sources(adapter) -> frozenset[str]:
+    """Source ids whose freshness an AP's believability depends on.
+
+    `required` is the knob, deliberately not `tracked`: `tracked` counts toward the
+    observation's global confidence scalar, `required` says whether a missing source
+    makes an AP unknowable, and the two already diverge on
+    `/vision/goal_similarity` (untracked, but its key feeds `visually_at_goal`).
+    Missing means required -- a source nobody declared optional is one whose silence
+    should be visible.
+    """
+    return frozenset(
+        source["id"]
+        for source in (adapter or {}).get("sources") or ()
+        if isinstance(source, dict)
+        and isinstance(source.get("id"), str)
+        and bool(source.get("required", True))
+    )
+
+
+def ap_source_map(atomic_propositions, adapter) -> dict[str, frozenset[str]] | None:
+    """AP name -> the required adapter sources whose data that AP is computed from.
+
+    None when the adapter has announced nothing to map against, which is the signal to
+    the caller that per-AP freshness is not knowable here and the observation's global
+    scalar is all there is.
+
+    An AP with no `"True when"` rule is LLM-evaluated: the evaluator hands it the whole
+    `sensor_eval` dict, so it depends on *every* source. Mapping it to "no sources"
+    would make it permanently fresh, exactly backwards.
+
+    Residual: a rule that references only keys no source claims maps to the empty set,
+    i.e. to full confidence. That is a descriptor gap -- `api.validate_adapter` already
+    reports a source feeding a key the schema never declares -- and reporting it as low
+    confidence would de-escalate a real halt for a bookkeeping error.
+    """
+    key_sources = adapter_key_sources(adapter)
+    if not key_sources:
+        return None
+    required = adapter_required_sources(adapter)
+    out: dict[str, frozenset[str]] = {}
+    for ap, description in (atomic_propositions or {}).items():
+        keys = spec_contract.sensor_keys_in_rule(
+            description if isinstance(description, str) else ""
+        )
+        if not keys:
+            out[str(ap)] = required
+            continue
+        sources: set[str] = set()
+        for key in keys:
+            sources |= key_sources.get(key, frozenset())
+        out[str(ap)] = frozenset(sources) & required
+    return out
+
+
+def expression_source_map(expressions, ap_map) -> dict[str, frozenset[str]] | None:
+    """Name -> the sources the named expression's APs are computed from.
+
+    `expressions` is {name: LTL formula or phase condition}. A name whose expression
+    mentions no AP this spec declares is left out entirely rather than mapped to the
+    empty set: "reads nothing" and "I could not tell what it reads" grade very
+    differently, and only the first one deserves full confidence.
+    """
+    if ap_map is None:
+        return None
+    out: dict[str, frozenset[str]] = {}
+    for name, expression in (expressions or {}).items():
+        aps = aps_in_expression(expression) & set(ap_map)
+        if not aps:
+            continue
+        sources: set[str] = set()
+        for ap in aps:
+            sources |= ap_map[ap]
+        out[str(name)] = frozenset(sources)
+    return out
+
+
+def source_confidence(sources, stale_sources=()) -> float:
+    """The fraction of `sources` that are fresh; 1.0 for an empty set."""
+    sources = frozenset(sources or ())
+    if not sources:
+        return 1.0
+    return len(sources - frozenset(stale_sources or ())) / len(sources)
+
+
+def failure_mode_entries(
+    modes,
+    confidence: float,
+    *,
+    mode_sources: dict | None = None,
+    stale_sources=(),
+) -> list[dict]:
     """`verdict.failure_modes`, every entry carrying a `confidence`.
 
     This closes a live bug rather than adding a field. The supervisor's VIOLATED branch
@@ -455,19 +726,35 @@ def failure_mode_entries(modes, confidence: float) -> list[dict]:
     confidence and went straight to ABORT, with the de-escalation path that exists for
     exactly this case never taken.
 
-    The confidence is the observation's: it is the freshness of the data the automaton
-    stepped on, and a failure mode is only ever as believable as the tick that produced
-    it.
+    **The confidence is per mode**, and this is the safety-relevant half. Stamping one
+    global scalar -- the fraction of *all* required sources fresh -- onto every entry
+    de-escalates faults that are perfectly well evidenced: a quiet battery topic drags
+    the number under `min_confidence` while the depth camera is fresh, and a real
+    `collision_imminent` grades WARN instead of HALT. So each mode is graded on the
+    freshness of the sources feeding *its* APs, via `mode_sources` (see
+    `ap_source_map`) against `stale_sources`.
+
+    `mode_sources` None -- no adapter has announced itself, so nothing says which source
+    feeds which AP -- falls back to the observation's global `confidence` for every
+    mode, which is the old behaviour and the best available with no map. A mode absent
+    from a map that does exist falls back the same way, because "its expression named no
+    AP I know" is ignorance, not freshness.
     """
     out = []
     for mode in modes or []:
+        name = str(mode.get("name", ""))
+        sources = None if mode_sources is None else mode_sources.get(name)
+        graded = (
+            confidence if sources is None
+            else source_confidence(sources, stale_sources)
+        )
         out.append(api.build_failure_mode(
-            name=str(mode.get("name", "")),
+            name=name,
             fault_category=(
                 wire_fault_category(mode.get("fault_category")) or UNCLASSIFIED_CATEGORY
             ),
             status=_status_name(mode.get("status")),
-            confidence=_unit(confidence),
+            confidence=_unit(graded),
         ))
     return out
 
@@ -518,6 +805,30 @@ def _imminence_label(steps: int | None) -> str | None:
     return f"{steps} step" + ("" if steps == 1 else "s")
 
 
+def breached_mode(failure_modes) -> dict | None:
+    """The entry `decide_intervention` grades, or None when it falls through to the
+    predictive risk block.
+
+    The precedence is `supervisor_logic`'s, reproduced rather than guessed at: a
+    VIOLATED safety mode first, then any VIOLATED mode, and no breach at all means the
+    risk branch fired.
+
+    The honest fix is for `decide_intervention` to *return* which branch it took --
+    P5 owns `core/supervisor_logic.py`, so that is a note in this PR's report and not a
+    diff here. What this replaces is worse than duplication: matching
+    `decision.reason` against failure-mode names, where `reason` is a mode's name on one
+    branch and a severity string on the other, so a mode literally named "TIMEOUT"
+    hijacked the evidence of a risk-branch decision and reported the wrong `imminence`
+    and `confidence` beside the right rung.
+    """
+    modes = list(failure_modes or ())
+    violated = [fm for fm in modes if fm.get("status") == "VIOLATED"]
+    for fm in violated:
+        if fm.get("fault_category") in SAFETY_CATEGORIES:
+            return fm
+    return violated[0] if violated else None
+
+
 def intervention_block(
     *,
     failure_modes,
@@ -541,11 +852,10 @@ def intervention_block(
         min_confidence=min_confidence,
         warn_steps=warn_steps,
     )
-    # Which branch fired, re-read from the decision rather than re-derived: a breached
-    # failure mode is named, a predictive risk names its own severity.
-    breached = next(
-        (fm for fm in failure_modes if fm.get("name") == decision.reason), None
-    )
+    # Which branch fired, decided by the same rule `decide_intervention` uses rather
+    # than by matching its `reason` string against failure-mode names. See
+    # `breached_mode`.
+    breached = breached_mode(failure_modes)
     if breached is not None:
         confidence = _unit(breached.get("confidence", 1.0))
         imminence = _imminence_label(0)  # already violated
@@ -596,6 +906,7 @@ def build_verdict_payload(
     failure_modes=(),
     confidence: float = 1.0,
     stale_sources=(),
+    mode_sources: dict | None = None,
     steps_to_timeout: int | None = None,
     violations_to_fault: int | None = None,
     violations_seen: int = 0,
@@ -614,7 +925,10 @@ def build_verdict_payload(
     supervisor and the frontend will read.
     """
     formulas = formula_entries(formula_statuses)
-    modes = failure_mode_entries(failure_modes, confidence)
+    modes = failure_mode_entries(
+        failure_modes, confidence,
+        mode_sources=mode_sources, stale_sources=stale_sources,
+    )
     risk = risk_block(
         steps_to_timeout=steps_to_timeout,
         violations_to_fault=violations_to_fault,

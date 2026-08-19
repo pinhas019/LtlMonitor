@@ -22,9 +22,8 @@ from rclpy.node import Node
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped
 
-from skill_monitor.core import api
+from skill_monitor.core import api, manifest
 from skill_monitor.core.episode_outcome import classify_outcome
-from skill_monitor.core.monitor_action import Action
 
 
 def safety_fault_from_verdict(verdict: dict) -> str | None:
@@ -33,20 +32,19 @@ def safety_fault_from_verdict(verdict: dict) -> str | None:
     Read straight off the verdict's intervention token rather than re-graded here. The
     monitor decides the rung; an episode driver that re-derived it from the raw failure
     modes would be a third opinion on the same tick, and the one most likely to drift.
+
+    Which mode gets *named* comes from `manifest.breached_mode`, i.e. from the same
+    precedence the token itself was graded with. Taking the first VIOLATED entry
+    instead used to be indistinguishable, and stopped being so the moment the verdict
+    started carrying the phase machine's fault alongside the spec's named modes: an
+    episode halted for a collision could be recorded under a phase name that was
+    breached on the same tick.
     """
     intervention = (verdict or {}).get("intervention") or {}
-    try:
-        action = Action[intervention.get("action", "CONTINUE")]
-    except KeyError:
+    if not manifest.token_halts(intervention.get("action", "CONTINUE")):
         return None
-    if action < Action.HALT:
-        return None
-    violated = next(
-        (fm for fm in (verdict.get("failure_modes") or [])
-         if fm.get("status") == "VIOLATED"),
-        None,
-    )
-    return (violated or {}).get("name") or intervention.get("category") or "fault"
+    breached = manifest.breached_mode((verdict or {}).get("failure_modes") or [])
+    return (breached or {}).get("name") or intervention.get("category") or "fault"
 
 
 class G1EpisodeDriver(Node):
