@@ -186,6 +186,28 @@ contract never said otherwise. It says so now:
   `Content-Type` header lets any web page an operator visits drive a cross-origin JSON POST
   at the robot. State-changing routes must not be reachable that way.
 
+### Anything in this repo that serves HTTP
+
+The clock and the gateway were written a week apart, by different authors, against the same
+contract. Both bound every interface, both trusted `Content-Length` while ignoring
+`Transfer-Encoding`, and neither checked `Host`. Three identical defects, independently
+arrived at, because the contract asked for none of it. It asks now — this list is the
+minimum, and a review should reject a new HTTP surface that skips any of it:
+
+| requirement | why, concretely |
+|---|---|
+| bind loopback by default | exposure is a compose-file decision, visible in review, not a library default |
+| validate `Host` against an allowlist | binding loopback stops a *remote* attacker, not a browser on the operator's own machine. DNS rebinding makes the attacker's page same-origin with the service, so there is no preflight and it sets any header and method it likes |
+| reject `Transfer-Encoding`, or TE+CL together | a proxy prefers TE, this stack trusts CL, and the deployment story is "authenticate in a proxy in front" — so the desync lands precisely on the auth boundary and the smuggled request is the one nobody authorised |
+| bound the body, and `close_connection` on rejection | answering 413 without draining or closing leaves the undrained bytes to be parsed as the next request on the same socket |
+| bound in-flight requests and set a socket timeout | capping WebSockets is not enough: any handler that waits — a spec push, a dribbled body — parks a thread, and `MAX_BODY_BYTES` bounds the declared size, never the arrival rate |
+| a custom-header gate on state-changing methods | not authentication, and must not be described as such. It is CSRF defence: no forbidden-header-free browser API can set a non-safelisted header, so forms, `sendBeacon` and `no-cors` fetches are all refused |
+| override `handle_error` | the stdlib prints a full traceback per client reset; on an exposed port that is log exhaustion |
+
+None of this is authentication. If the network is not trusted, terminate TLS and
+authenticate in front — and note that doing so is what makes the smuggling and `Host` rules
+load-bearing rather than theoretical.
+
 Two caveats stated once rather than left implied: containerising the frontend means mounting
 `/var/run/docker.sock` into it, which is root-equivalent control of the host daemon — right
 for a lab console, wrong anywhere shared; and a Tk GUI in a container needs `DISPLAY` and
