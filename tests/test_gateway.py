@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import threading
 import time
 
@@ -132,9 +133,10 @@ class FakeClock(gateway.ClockBackend):
 class Client:
     """A tiny HTTP client bound to a running gateway.
 
-    Every state-changing request carries `X-Skill-Monitor`, because that is now part of
-    the contract a non-browser client meets in one line. `client_header=False` is how a
-    test plays the part of a browser that cannot set it.
+    Every request carries `X-Skill-Monitor`, because that is what a non-browser client
+    does in one line -- and because the routes that require it now include every proxied
+    clock request, GET included. `client_header=False` is how a test plays the part of a
+    browser, which cannot set it.
     """
 
     def __init__(self, port):
@@ -145,7 +147,7 @@ class Client:
         try:
             payload = None if body is None else json.dumps(body).encode("utf-8")
             sent = {"Content-Type": "application/json"} if payload else {}
-            if client_header and method not in ("GET", "OPTIONS"):
+            if client_header:
                 sent[gateway.CLIENT_HEADER] = "1"
             sent.update(headers or {})
             connection.request(method, path, payload, sent)
@@ -154,8 +156,8 @@ class Client:
         finally:
             connection.close()
 
-    def get(self, path):
-        return self.request("GET", path)
+    def get(self, path, **kwargs):
+        return self.request("GET", path, **kwargs)
 
     def post(self, path, body, **kwargs):
         return self.request("POST", path, body, **kwargs)
@@ -176,9 +178,9 @@ class Client:
         finally:
             connection.close()
 
-    def upgrade(self, path):
+    def upgrade(self, path, headers=None):
         """A websocket upgrade attempt that reports the HTTP status instead of raising,
-        so a refusal can be asserted on."""
+        so a refusal can be asserted on. Only for refusals: a 101 has no body to read."""
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
             connection.request("GET", path, headers={
@@ -186,6 +188,7 @@ class Client:
                 "Connection": "Upgrade",
                 "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
                 "Sec-WebSocket-Version": "13",
+                **(headers or {}),
             })
             response = connection.getresponse()
             body = response.read().decode("utf-8")
@@ -837,19 +840,44 @@ def test_the_client_header_is_required_on_every_state_changing_route(serve):
     assert clock.calls == []                   # not forwarded, not merely unanswered
 
 
-def test_reads_stay_shareable_across_origins(serve):
-    """The GETs keep `*`: they carry no credentials, there is no session to steal, and a
-    viewer served from anywhere should be able to read a verdict."""
+def test_an_unnamed_origin_cannot_read_the_robots_telemetry_either(serve):
+    """There is no CORS wildcard left, not even on the reads.
+
+    `/api/monitors`, `manifest` and `adapter` are the robot's sensor topology and
+    resolved schema, and the stream beside them is live sensor values and AP truth. A
+    page the operator happens to visit is not entitled to read what the robot senses and
+    whether it is about to fail, so the grant is by name or not at all. Nothing here
+    touches a non-browser client: CORS is enforced by the browser.
+    """
     client = serve(FakeBus(namespaces=[""]))
 
-    _status, headers = client.headers_for("GET", "/api/monitors",
-                                          {"Origin": "https://console.lab"})
-    assert headers["Access-Control-Allow-Origin"] == "*"
+    for path in ("/api/monitors", "/api/health", "/api/monitors/_/manifest"):
+        _status, headers = client.headers_for("GET", path,
+                                              {"Origin": "https://not-named.example"})
+        assert "Access-Control-Allow-Origin" not in headers, path
+        assert headers.get("Vary") == "Origin", path
 
     _status, headers = client.headers_for("OPTIONS", "/api/monitors", {
-        "Origin": "https://console.lab", "Access-Control-Request-Method": "GET",
+        "Origin": "https://not-named.example", "Access-Control-Request-Method": "GET",
     })
-    assert headers["Access-Control-Allow-Origin"] == "*"
+    assert "Access-Control-Allow-Origin" not in headers
+
+
+def test_a_named_origin_reads_across_origins(serve):
+    """... and the deployment that has a browser console names it, which is the same
+    switch that opens the writes and the stream."""
+    client = serve(FakeBus(namespaces=[""]), allowed_origins=("https://console.lab",))
+    _status, headers = client.headers_for("GET", "/api/monitors",
+                                          {"Origin": "https://console.lab"})
+    assert headers["Access-Control-Allow-Origin"] == "https://console.lab"
+
+
+def test_the_reads_need_no_header_so_a_script_stays_one_line(serve):
+    """The header gate is on the writes and on the clock proxy, not on reading a
+    verdict: a curl one-liner must still work."""
+    client = serve(FakeBus(namespaces=[""]))
+    assert client.get("/api/monitors", client_header=False)[0] == 200
+    assert client.get("/api/health", client_header=False)[0] == 200
 
 
 def test_a_named_origin_is_the_deliberate_way_to_allow_a_browser_console(serve):
@@ -1007,11 +1035,15 @@ def test_health_reports_the_stream_budget(serve):
 # ================================================== one discovery, two clients
 
 
-def test_discovery_and_health_come_from_core_not_a_second_copy():
-    """`parse_namespaces` and `health` were copied into this module from the Skill
-    Center. Two processes answering "is this monitor alive" differently is a bug an
-    operator watching both would see and could not explain, so there is now one
-    implementation in core/ and these names are re-exports of it."""
+def test_the_gateway_does_not_add_a_third_copy_of_discovery():
+    """The honest claim, which is narrower than "there is now one implementation".
+
+    `parse_namespaces` and `health` were copied into the gateway from the Skill Center.
+    The gateway's copy is gone and these names are re-exports of `core.discovery`.
+    `frontend/skill_center.py` still has its own -- that file belongs to P7 and this
+    package must not edit it, so the duplication is reduced from three to two and P7
+    closes it. Asserting anything stronger here would be a test that lies.
+    """
     from skill_monitor.core import discovery
 
     assert gateway.parse_namespaces is discovery.parse_namespaces
@@ -1022,6 +1054,9 @@ def test_discovery_and_health_come_from_core_not_a_second_copy():
     source = Path(gateway.__file__).read_text(encoding="utf-8")
     assert "def parse_namespaces" not in source
     assert "def health(" not in source
+    # And the module that owns them says the same thing, rather than claiming the
+    # migration is finished while a second copy is still shipping.
+    assert "not yet the only implementation" in (discovery.__doc__ or "")
 
 
 def test_no_monitor_topic_literal_is_spelled_in_this_module():
@@ -1088,3 +1123,402 @@ def test_no_ros_flag_yields_the_null_bus():
     assert "--no-ros" in bus.status()["detail"]
     with pytest.raises(gateway.BusUnavailable):
         bus.publish("", api.COMMAND, "{}")
+
+
+# ================================================== requests that are not what they look like
+#
+# These are driven over a real loopback socket, deliberately. A fabricated handler cannot
+# observe connection state -- whether a second pipelined request executed, whether the
+# socket was closed -- and connection state is exactly what is under test.
+
+
+def raw_exchange(port, request_bytes, timeout=10.0):
+    """Send bytes, read until the server closes or goes quiet. Returns what came back."""
+    sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    try:
+        sock.sendall(request_bytes)
+        received = b""
+        try:
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                received += chunk
+        except socket.timeout:
+            pass
+        return received
+    finally:
+        sock.close()
+
+
+def test_transfer_encoding_is_refused_so_a_proxy_cannot_be_desynced(serve):
+    """CL.TE request smuggling, against the very proxy this package tells people to run.
+
+    This handler frames by Content-Length; RFC 9112 requires a proxy to prefer
+    Transfer-Encoding. Accepting both means the proxy and this process disagree about
+    where the first request ends, and the trailing bytes become a second request the
+    proxy never saw -- past the authentication the documented deployment puts there, and
+    carrying `X-Skill-Monitor` because the attacker writes that header themselves.
+
+    Over a real socket, because "the smuggled request did not execute" and "the
+    connection was closed" are both facts about the connection.
+    """
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+
+    reset = json.dumps(api.build_command(command="reset"))
+    smuggled = (
+        f"POST /api/monitors/_/command HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{client.port}\r\n"
+        f"{gateway.CLIENT_HEADER}: smuggled\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Content-Length: {len(reset)}\r\n\r\n{reset}"
+    )
+    body = "0\r\n\r\n" + smuggled
+    request = (
+        f"POST /api/monitors/_/command HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{client.port}\r\n"
+        f"{gateway.CLIENT_HEADER}: 1\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Content-Length: 5\r\n"
+        f"Transfer-Encoding: chunked\r\n\r\n{body}"
+    )
+
+    received = raw_exchange(client.port, request.encode("utf-8"))
+
+    assert received.startswith(b"HTTP/1.1 400")
+    assert received.count(b"HTTP/1.1 ") == 1        # one response, never two
+    assert b"Connection: close" in received         # said on the wire, not merely done
+    assert bus.published == []                      # the smuggled command never ran
+
+
+def test_transfer_encoding_is_refused_even_without_a_content_length(serve):
+    """TE alone is refused too: this server does not implement chunked framing, so
+    accepting it would mean guessing where the body ends."""
+    client = serve(FakeBus(namespaces=[""]))
+    request = (
+        f"POST /api/monitors/_/command HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{client.port}\r\n"
+        f"{gateway.CLIENT_HEADER}: 1\r\n"
+        f"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+    )
+    received = raw_exchange(client.port, request.encode("utf-8"))
+    assert received.startswith(b"HTTP/1.1 400")
+    assert b"Transfer-Encoding" in received
+
+
+def test_a_pipelined_request_on_a_healthy_connection_still_works(serve):
+    """The refusal above is about ambiguous framing, not about keep-alive: two properly
+    framed requests on one connection both run, so the fix is not a blanket hang-up."""
+    client = serve(FakeBus(namespaces=[""]))
+    one = (f"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{client.port}\r\n\r\n")
+    received = raw_exchange(client.port, (one + one).encode("utf-8"), timeout=2.0)
+    assert received.count(b"HTTP/1.1 200") == 2
+
+
+# ================================================== Host, and DNS rebinding
+
+
+def test_a_request_addressed_to_another_name_is_refused(serve):
+    """DNS rebinding walks through the loopback default and the CSRF header together.
+
+    A page on evil.example whose name is re-pointed at 127.0.0.1 after it loads is
+    *same-origin* with this gateway: no preflight is sent, no CORS applies, and it sets
+    `X-Skill-Monitor` itself. The one thing it cannot change is the Host header the
+    browser derives from the name in the URL.
+    """
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+
+    status, text = client.post(
+        "/api/monitors/_/command", api.build_command(command="reset"),
+        headers={"Host": f"evil.example:{client.port}",
+                 "Origin": f"http://evil.example:{client.port}"},
+    )
+    assert status == 400
+    assert "evil.example" in json.loads(text)["error"]
+    assert bus.published == []
+
+    # The stream is behind the same check, so rebinding cannot read telemetry either.
+    assert client.upgrade("/api/monitors/_/stream",
+                          headers={"Host": f"evil.example:{client.port}"})[0] == 400
+
+
+def test_a_named_host_is_served(serve):
+    """--allow-host is how a deployment reached by DNS name says so."""
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus, allowed_hosts=("console.lab",))
+    status, _text = client.post("/api/monitors/_/command",
+                                api.build_command(command="reset"),
+                                headers={"Host": f"console.lab:{client.port}"})
+    assert status == 202
+    assert len(bus.published) == 1
+
+
+def test_a_request_with_no_host_header_is_refused(serve):
+    """HTTP/1.1 requires one. A request without it is not a browser and is not
+    addressed to anything in particular."""
+    client = serve(FakeBus(namespaces=[""]))
+    received = raw_exchange(
+        client.port, b"GET /api/health HTTP/1.0\r\n\r\n", timeout=2.0)
+    assert received.startswith(b"HTTP/1.0 400") or received.startswith(b"HTTP/1.1 400")
+
+
+def test_host_allowed_is_a_pure_check_on_the_names_configured():
+    app = gateway.Gateway(FakeBus(), allowed_hosts=("console.lab",))
+    for good in ("127.0.0.1", "127.0.0.1:8080", "localhost:9", "[::1]:8080",
+                 "console.lab", "CONSOLE.LAB:8080"):
+        assert app.host_allowed(good), good
+    for bad in ("evil.example", "evil.example:8080", "127.0.0.1.evil.example", "", None):
+        assert not app.host_allowed(bad), bad
+
+    # '*' is the escape hatch for a deployment whose proxy already does this.
+    assert gateway.Gateway(FakeBus(), allowed_hosts=("*",)).host_allowed("anything")
+
+
+def test_bare_host_strips_the_port_and_keeps_ipv6_brackets():
+    assert gateway.bare_host("127.0.0.1:8080") == "127.0.0.1"
+    assert gateway.bare_host("Console.Lab") == "console.lab"
+    assert gateway.bare_host("[::1]:8080") == "[::1]"
+    assert gateway.bare_host("::1") == "::1"
+    assert gateway.bare_host(None) == ""
+
+
+def test_the_host_allowlist_is_derived_from_what_the_deployment_was_told():
+    """Loopback is added by the Gateway itself; this is the rest of it."""
+    assert gateway.host_allowlist("127.0.0.1", [], []) == {"127.0.0.1"}
+    # A wildcard bind names nothing, so a deployment that exposes the gateway also says
+    # what it is reached as.
+    assert gateway.host_allowlist("0.0.0.0", [], []) == set()
+    assert gateway.host_allowlist("0.0.0.0", ["https://console.lab:8443"], []) == \
+        {"console.lab"}
+    assert "robot.lab" in gateway.host_allowlist("0.0.0.0", [], ["robot.lab"])
+
+
+# ================================================== parked threads
+
+
+def test_the_handler_has_a_socket_timeout(serve):
+    """MAX_BODY_BYTES checks the declared length, never the arrival rate, so a body
+    dribbled a byte at a time parked a thread for as long as the client liked."""
+    assert gateway._Handler.timeout == gateway.REQUEST_TIMEOUT_S
+    assert 0 < gateway.REQUEST_TIMEOUT_S < 120
+
+
+def test_a_dribbled_request_is_reclaimed_rather_than_parked_forever(serve, monkeypatch):
+    """The timeout shortened so the test is a second rather than twenty, but the
+    behaviour under test is the class attribute above."""
+    monkeypatch.setattr(gateway._Handler, "timeout", 0.5)
+    client = serve(FakeBus(namespaces=[""]))
+
+    sock = socket.create_connection(("127.0.0.1", client.port), timeout=10)
+    try:
+        # A request that never ends: headers begun, never terminated.
+        sock.sendall(b"POST /api/monitors/_/spec HTTP/1.1\r\n")
+        sock.sendall(f"Host: 127.0.0.1:{client.port}\r\n".encode())
+        started = time.monotonic()
+        sock.settimeout(5.0)
+        try:
+            while sock.recv(4096):
+                pass
+        except socket.timeout:
+            pytest.fail("the server never reclaimed the dribbled connection")
+        assert time.monotonic() - started < 5.0
+    finally:
+        sock.close()
+
+
+def test_in_flight_requests_are_capped_not_only_streams(serve):
+    """`POST .../spec` parks a thread for spec_timeout waiting on a monitor that may be
+    mute, and that is not a stream, so the stream cap never saw it."""
+    bus = FakeBus(namespaces=[""])
+    bus.spec_status_reply = None                    # the monitor stays silent
+    client = serve(bus, spec_timeout=2.0, max_requests=1)
+
+    parked = threading.Thread(
+        target=lambda: client.post("/api/monitors/_/spec", {"skill_name": "Walk"}),
+        daemon=True)
+    parked.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while client.port and time.monotonic() < deadline:
+            status, text = client.get("/api/health")
+            if status == 503:
+                break
+            time.sleep(0.02)
+        assert status == 503
+        assert json.loads(text)["max_requests"] == 1
+    finally:
+        parked.join(timeout=5.0)
+
+    # The slot comes back when the parked request finishes.
+    assert client.get("/api/health")[0] == 200
+
+
+def test_request_slots_are_counted_and_returned():
+    app = gateway.Gateway(FakeBus(), max_requests=2)
+    assert app.acquire_request() and app.acquire_request()
+    assert app.open_requests == 2
+    assert app.acquire_request() is False
+    app.release_request()
+    assert app.acquire_request() is True
+    app.release_request()
+    app.release_request()
+    app.release_request()                           # never goes negative
+    assert app.open_requests == 0
+
+
+def test_a_stream_hands_its_request_slot_back(serve):
+    """A stream is bounded by the stream cap, so holding an in-flight slot for the life
+    of the socket would make one viewer eat the request budget."""
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus, max_requests=2, max_streams=4)
+    connection = client.ws("/api/monitors/_/stream")
+    try:
+        bus.wait_for_listeners(1)
+        status, body = client.json("/api/health")
+        assert status == 200
+        assert body["streams"]["open"] == 1
+        assert body["requests"]["open"] == 1        # the health request itself, only
+    finally:
+        connection.close()
+
+
+# ================================================== the clock proxy
+
+
+def test_the_clock_proxy_is_confined_under_its_own_prefix(serve):
+    """The proxy forwards whatever arrives under /api/clock without enumerating the
+    clock's endpoints. Without normalisation that included `/api/clock/../../secret` --
+    an arbitrary path on an upstream this gateway does not police, fetched for an
+    anonymous client and handed back."""
+    clock = FakeClock()
+    client = serve(FakeBus(), clock)
+
+    for path in ("/api/clock/../../secret",
+                 "/api/clock/a/../../../../admin/shutdown",
+                 "/api/clock/%2e%2e/%2e%2e/secret"):
+        status, _text = client.get(path)
+        assert status == 400, path
+    assert clock.calls == []                        # nothing reached the upstream
+
+
+def test_a_clock_path_that_merely_looks_odd_still_reaches_the_clock(serve):
+    """Normalisation, not rejection-by-vibe: a tidy path inside the prefix goes on."""
+    clock = FakeClock()
+    client = serve(FakeBus(), clock)
+    client.get("/api/clock/a/../health")
+    assert clock.calls[-1][1] == "/api/clock/health"
+
+
+def test_clock_proxy_path_is_pure():
+    assert gateway.clock_proxy_path("/api/clock") == "/api/clock"
+    assert gateway.clock_proxy_path("/api/clock/step") == "/api/clock/step"
+    assert gateway.clock_proxy_path("/api/clock/a/../health") == "/api/clock/health"
+    assert gateway.clock_proxy_path("/api/clock/../../secret") is None
+    assert gateway.clock_proxy_path("/api/clock/%2e%2e/secret") is None
+    assert gateway.clock_proxy_path("/api/monitors") is None
+
+
+def test_every_clock_request_needs_the_header_including_get(serve):
+    """GET was exempt from the header gate by design, and the proxy is deliberately
+    method- and path-transparent -- so `GET /api/clock/step`, reachable from an <img>
+    tag on any page, advanced a tick. This gateway cannot know which of the clock's GETs
+    are side-effect free, so the whole proxied surface is treated as state-changing."""
+    clock = FakeClock()
+    client = serve(FakeBus(), clock)
+
+    for path in ("/api/clock", "/api/clock/step", "/api/clock/health"):
+        status, _text = client.get(path, client_header=False)
+        assert status == 403, path
+    assert clock.calls == []
+
+    assert client.get("/api/clock/step")[0] == 200   # with the header, as before
+    assert clock.calls[-1][1] == "/api/clock/step"
+
+
+# ================================================== the stream's own origin gate
+
+
+def test_a_browser_cannot_open_a_stream_it_was_not_named_for(serve):
+    """The same-origin policy does not apply to WebSockets, so CORS never protected the
+    streams: any page could open one and read live sensor values and AP truth. A browser
+    must send Origin on a handshake and cannot forge it; a non-browser client sends
+    none."""
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+
+    status, text = client.upgrade("/api/monitors/_/stream",
+                                  headers={"Origin": "https://not-named.example"})
+    assert status == 403
+    assert "not-named.example" in json.loads(text)["error"]
+    assert client.upgrade("/api/clock/stream",
+                          headers={"Origin": "https://not-named.example"})[0] == 403
+
+    # No Origin at all -- the desktop console, a script, this file's ws_connect.
+    connection = client.ws("/api/monitors/_/stream")
+    connection.close()
+
+
+def test_a_named_origin_may_open_a_stream(serve):
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus, allowed_origins=("https://console.lab",))
+    connection = gateway.ws_connect(f"http://127.0.0.1:{client.port}"
+                                    "/api/monitors/_/stream")
+    connection.close()
+    # The refusal above is by name, so the named one is admitted; asserted through the
+    # policy object because ws_connect cannot set an Origin.
+    app_origins = gateway.Gateway(FakeBus(),
+                                  allowed_origins=("https://console.lab",)).allowed_origins
+    assert "https://console.lab" in app_origins
+
+
+# ================================================== NaN is not JSON
+
+
+def test_a_nan_payload_lands_in_problems_instead_of_breaking_the_browser():
+    """`json.loads` accepts NaN and Infinity; `JSON.parse` does not. A monitor
+    publishing confidence=float('nan') emits a bare NaN, which sailed through the
+    well-formedness guard and was embedded verbatim -- so every browser on the stream
+    threw on the frame carrying `dropped`, the one field that says frames are being
+    lost."""
+    payload = json.dumps({"confidence": float("nan"), "seq": 3})
+    assert "NaN" in payload                          # what json.dumps really emits
+
+    frame_text = gateway.stream_frame("", api.VERDICT, payload, 4)
+    frame = json.loads(frame_text)                   # parses, and would not have
+    assert frame["payload"] is None
+    assert frame["dropped"] == 4
+    assert frame["problems"]
+    assert "NaN" not in frame_text
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_every_non_json_constant_is_refused(token):
+    frame = json.loads(gateway.stream_frame("", api.VERDICT, '{"x": %s}' % token, 0))
+    assert frame["payload"] is None
+
+
+# ================================================== logs are not a resource to exhaust
+
+
+def test_a_client_reset_does_not_print_a_traceback(serve):
+    """socketserver's default prints a full traceback per failed connection, and the
+    commonest failure is a client hanging up -- which anyone can do in a loop. Hundreds
+    of lines of stderr from a twenty-probe scan is a log-exhaustion primitive, and it
+    buries the exceptions that matter."""
+    import contextlib
+    import io
+
+    app = gateway.Gateway(FakeBus())
+    server = gateway.GatewayServer(app, "127.0.0.1", 0)
+    try:
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            try:
+                raise ConnectionResetError("peer went away")
+            except ConnectionResetError:
+                server.handle_error(None, ("127.0.0.1", 5555))
+        assert captured.getvalue() == ""
+    finally:
+        server.server_close()
