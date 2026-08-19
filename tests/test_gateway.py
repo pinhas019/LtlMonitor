@@ -1340,16 +1340,21 @@ def test_in_flight_requests_are_capped_not_only_streams(serve):
         daemon=True)
     parked.start()
     try:
-        deadline = time.monotonic() + 2.0
-        while client.port and time.monotonic() < deadline:
-            status, text = client.get("/api/health")
-            if status == 503:
-                break
-            time.sleep(0.02)
+        # Wait for the request to actually park rather than polling health against a
+        # deadline. The slot is taken before routing and the spec goes out just before
+        # the handler blocks, so `published` IS the moment the slot is held. The old
+        # poll ran a 2 s deadline against a 2 s spec_timeout and lost that race under
+        # load: the parked request finished before health was ever sampled.
+        deadline = time.monotonic() + 5.0
+        while not bus.published and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert bus.published, "the spec never went out, so the request never parked"
+
+        status, text = client.get("/api/health")
         assert status == 503
         assert json.loads(text)["max_requests"] == 1
     finally:
-        parked.join(timeout=5.0)
+        parked.join(timeout=10.0)
 
     # The slot comes back when the parked request finishes.
     assert client.get("/api/health")[0] == 200
