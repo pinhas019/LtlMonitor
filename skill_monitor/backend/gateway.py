@@ -6,14 +6,39 @@ browser -- and DDS discovery does not cross a WAN. The dev host already cannot s
 robot's graph, which is the concrete case this package answers.
 
 **No authentication, and this is deliberate.** Every endpoint below is open to anything
-that can reach the port. The gateway binds to the server tier's network; if that network
-is not trusted, the deployment terminates TLS and authenticates *in front* of this
-process (a reverse proxy), the same way it would for any other unauthenticated backend.
-A token check bolted on here would be worse than none, because it would be believed:
-there is no session store, no rate limit, no audit trail and no CSRF defence in this
-file, and `POST /api/monitors/{ns}/command` can `reset` a live mission. CORS is
-`*` for the same reason -- a same-origin policy is not a security boundary when there
-are no credentials to protect, and pretending otherwise only breaks the browser client.
+that can reach the port. There is no session store, no rate limit, no audit trail and no
+identity of any kind in this file, and ``POST /api/monitors/{ns}/command`` can ``reset``
+a live mission. A token check bolted on here would be worse than none, because it would
+be believed. **If the network is not trusted, terminate TLS and authenticate in front of
+this process** -- a reverse proxy -- the same way it would be done for any other
+unauthenticated backend.
+
+Because "anything that can reach the port" is the whole security model, this module is
+careful about *who can reach the port*, and there are exactly three defences, all of
+them about reach and none of them about identity:
+
+1. **The default bind is ``127.0.0.1``.** Exposing the control surface of a robot to a
+   network is a decision, so it is spelled ``--host 0.0.0.0`` by someone who meant it,
+   not inherited from a default.
+2. **A browser on another origin cannot drive a state-changing route.** The read-only
+   ``GET``s carry ``Access-Control-Allow-Origin: *`` -- they are worth sharing and there
+   are no credentials to steal. Every method that is not ``GET`` (``POST .../command``,
+   ``POST .../spec`` and the proxied ``/api/clock/{mode,step,rate}``) additionally
+   requires the ``X-Skill-Monitor`` request header, which no cross-origin ``fetch`` or
+   HTML form can set without a preflight, and the preflight for those routes does not
+   grant it unless the origin was named with ``--allow-origin``. Without that, a page an
+   operator happens to visit while on the robot's network can no longer POST to the
+   robot; with the old wildcard preflight it could, and could not read the response but
+   did not need to -- for ``{"command": "pause"}`` the write *is* the payoff.
+3. **A namespace from a URL is checked before it becomes a topic name**, and streams are
+   capped, so an anonymous client cannot drive publisher creation on arbitrary names or
+   open unbounded threads. See ``Gateway.resolve_ns`` and ``--max-streams``.
+
+Two things those defences deliberately do NOT cover, so nobody mistakes them for auth:
+a non-browser client (curl, a script, anything on the network) can set any header it
+likes and is only kept out by 1; and a browser can open ``WS .../stream`` cross-origin,
+because the same-origin policy does not apply to WebSockets -- the streams are read-only,
+but their contents are readable by any page the operator visits if the port is exposed.
 
 Pass-through, not translator
 ----------------------------
@@ -80,11 +105,17 @@ Client-facing API
 unnamespaced monitor (``/api/monitors/_/manifest``). A nested namespace keeps its
 slashes: ``/nav/left`` is ``/api/monitors/nav/left/manifest``. Clients do not have to
 work this out -- every entry of ``GET /api/monitors`` carries both ``ns`` and the
-``path`` segment to use.
+``path`` segment to use. A segment that is not a legal ROS name is a 400 and one no
+discovery has ever seen is a 404: neither reaches ``create_publisher``.
+
+Every ``POST`` above must carry ``X-Skill-Monitor: 1`` (any value). See the note on the
+trust boundary at the top -- it is not authentication, it is the reason a browser on
+another origin cannot send it.
 
 Run it::
 
-    python3 -m skill_monitor.backend.gateway --port 8080
+    python3 -m skill_monitor.backend.gateway --port 8080          # loopback only
+    python3 -m skill_monitor.backend.gateway --host 0.0.0.0       # deliberate exposure
 """
 
 from __future__ import annotations
@@ -107,6 +138,16 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from skill_monitor.core import api
+# Discovery and liveness are shared with the Skill Center (P7) rather than reimplemented
+# here: two processes answering "is this monitor alive" differently is a bug an operator
+# watching both would see and could not explain. Re-exported so `gateway.health` stays
+# the name the tests and any importer already use.
+from skill_monitor.core.discovery import (  # noqa: F401 -- re-exported on purpose
+    STALE_AFTER,
+    health,
+    namespace_problem,
+    parse_namespaces,
+)
 
 log = logging.getLogger("skill_monitor.gateway")
 
@@ -114,14 +155,15 @@ log = logging.getLogger("skill_monitor.gateway")
 
 DEFAULT_PORT = 8080
 
+# Loopback, not 0.0.0.0. This is the robot's control surface with no authentication in
+# front of it; the deployment that wants it on a network says so. See the trust boundary
+# note in the module docstring.
+DEFAULT_HOST = "127.0.0.1"
+
 # P1 owns the clock's own port; this is only where the gateway looks for it by default.
 # Both run with host networking in deploy/docker-compose.server.yml, so the gateway's
 # 8080 and the clock's neighbour port are on the same loopback.
 DEFAULT_CLOCK_URL = os.environ.get("SKILL_MONITOR_CLOCK_URL", "http://127.0.0.1:8081")
-
-# A monitor silent this long is presumed dead. Same number and same meaning as the Skill
-# Center's own STALE_AFTER -- an operator watching both must not see two answers.
-STALE_AFTER = 5.0
 
 # Frames buffered per WS client before the oldest is shed. Large enough that a browser
 # doing a layout pass does not lose data; small enough that a client which has actually
@@ -134,6 +176,19 @@ DEFAULT_SPEC_TIMEOUT = 5.0
 # A pushed skill spec is the largest thing a client sends. Anything past this is either
 # a mistake or an attempt to exhaust memory, and both deserve the same 413.
 MAX_BODY_BYTES = 8 * 1024 * 1024
+
+# Concurrent websocket clients. Each stream is a thread blocked on a socket under
+# ThreadingHTTPServer, so the per-client deque bounds *memory* and nothing bounds
+# *threads*: an unauthenticated client opening connections in a loop is a thread bomb
+# with no body to be refused by MAX_BODY_BYTES. Far above any real console -- a handful
+# of operators with a few panels each -- and far below the point where the process
+# stops being able to answer.
+DEFAULT_MAX_STREAMS = 64
+
+# The header a state-changing request must carry. Its value is never read: the point is
+# that setting a header at all takes a preflight, and the preflight for these routes
+# grants nothing unless --allow-origin named the origin. See the module docstring.
+CLIENT_HEADER = "X-Skill-Monitor"
 
 # What a stream carries. Exactly the two per-tick topics: the latched ones are REST,
 # because a client that reconnects wants their current value, not to wait for a change
@@ -160,46 +215,13 @@ CLOCK_PREFIX = "/api/clock"
 ROOT_SEGMENT = "_"
 
 
-# ============================================================== discovery (pure)
+# ============================================================== namespaces in URLs
 #
-# These two functions are byte-for-byte the semantics `frontend/skill_center.py`
-# implements today, reimplemented here rather than imported because P7 owns that file
-# and this package may not touch it. They belong in `core/` -- see the note in the
-# package report; until they move, changing one means changing both.
-
-
-def parse_namespaces(topic_names, key_topic: str = api.VERDICT) -> list[str]:
-    """Namespaces of every discovered monitor, ``''`` for the unnamespaced one.
-
-    A monitor *is* something publishing ``<ns>/monitor/verdict``. Discovery mirrors the
-    topic contract rather than keeping a registry, so a monitor that nobody told the
-    gateway about still appears, and one that dies stops appearing on its own.
-
-    Pure, so it is testable with no ROS graph.
-    """
-    suffix = key_topic if key_topic.startswith("/") else "/" + key_topic
-    out = set()
-    for name in topic_names or ():
-        if not isinstance(name, str):
-            continue
-        if name == suffix:
-            out.add("")
-        elif name.endswith(suffix):
-            out.add(name[: -len(suffix)])
-    return sorted(out)
-
-
-def health(last_seen, now: float, stale_after: float = STALE_AFTER) -> str:
-    """``'live'`` | ``'stale'`` | ``'gone'``.
-
-    A monitor that published and then stopped is NOT the same as one that never
-    published: the first is a crash, the second is a stack that was never started, and
-    the operator needs to tell them apart. ``gone`` is the second -- the topic is
-    advertised but no message has ever arrived.
-    """
-    if last_seen is None:
-        return "gone"
-    return "live" if (now - last_seen) <= stale_after else "stale"
+# `parse_namespaces` and `health` used to be copied into this file from
+# `frontend/skill_center.py`. They now live in `core.discovery` and are imported at the
+# top: one implementation, two clients, no drift. What is left here is the part that is
+# genuinely about URLs -- the segment convention -- plus the guard that keeps a segment
+# from becoming a topic name unchecked.
 
 
 def ns_to_segment(ns: str) -> str:
@@ -214,6 +236,22 @@ def segment_to_ns(segment: str) -> str:
     if trimmed in ("", ROOT_SEGMENT):
         return ""
     return "/" + trimmed
+
+
+def segment_problem(segment: str) -> str | None:
+    """Why this URL path segment cannot be a namespace, or None if it can.
+
+    A segment arrives from an unauthenticated client and, three calls later, is a ROS
+    topic name. Without this check ``../../etc`` becomes ``/../../etc/monitor/command``
+    -- not filesystem traversal, but publisher creation on a name the client chose, and
+    a name rclpy refuses comes back as a 500 out of a stack frame that has nothing to do
+    with the request. The grammar is ``core.discovery``'s, so the gateway and the panel
+    agree on what a namespace is.
+
+    Percent-escapes are refused rather than decoded: ``%2e%2e`` is not a name a monitor
+    ever had, and decoding would only re-open the question of what ``%2f`` means.
+    """
+    return namespace_problem(segment_to_ns(segment))
 
 
 def topic_for(ns: str, topic: str) -> str:
@@ -883,13 +921,76 @@ class Gateway:
         stale_after: float = STALE_AFTER,
         queue_size: int = DEFAULT_QUEUE,
         spec_timeout: float = DEFAULT_SPEC_TIMEOUT,
+        max_streams: int = DEFAULT_MAX_STREAMS,
+        allowed_origins=(),
     ):
         self.bus = bus or NullBus()
         self.clock = clock or NullClockBackend()
         self.stale_after = stale_after
         self.queue_size = queue_size
         self.spec_timeout = spec_timeout
+        self.max_streams = max(1, int(max_streams))
+        # Browser origins allowed to drive a state-changing route. Empty by default:
+        # the frontend this package was written for is a desktop client, and a browser
+        # console is a deployment that knows its own origin and says so.
+        self.allowed_origins = frozenset(allowed_origins or ())
         self.started_at = time.time()
+        self._streams = 0
+        self._streams_lock = threading.Lock()
+
+    # -- admission ---------------------------------------------------------
+
+    def acquire_stream(self) -> bool:
+        """Take one of the ``max_streams`` slots, or False if they are all taken.
+
+        Counted rather than trusted to the OS: every stream is a thread parked on a
+        socket under ``ThreadingHTTPServer``, and an anonymous client opening
+        connections in a loop would otherwise exhaust threads long before it exhausted
+        anything the body limit or the per-client queue bounds. Refusal is a 503 with
+        the cap in it, so the operator whose fourteenth panel will not open can tell
+        that from a gateway that has died.
+        """
+        with self._streams_lock:
+            if self._streams >= self.max_streams:
+                return False
+            self._streams += 1
+            return True
+
+    def release_stream(self) -> None:
+        with self._streams_lock:
+            self._streams = max(0, self._streams - 1)
+
+    @property
+    def open_streams(self) -> int:
+        with self._streams_lock:
+            return self._streams
+
+    def resolve_ns(self, segment: str):
+        """``(ns, None)`` for a usable namespace, or ``(None, (status, body))``.
+
+        Two refusals, both of which used to be a publisher on a name of the client's
+        choosing or a 500 out of rclpy:
+
+        * a segment that is not a legal ROS name is a **400** -- the client sent
+          something that is not a namespace, and the reason says which rule it broke;
+        * a namespace discovery has never seen is a **404** -- there is no monitor
+          there, and creating a publisher so that a message can be sent to nobody is
+          not a service worth offering.
+
+        The 404 is skipped when the bus itself is unavailable, because then *every*
+        namespace is undiscovered and the honest answer is the 503 the publish path
+        already gives: "there is no ROS side", not "there is no such monitor".
+        """
+        problem = segment_problem(segment)
+        if problem is not None:
+            return None, (400, _error(problem, segment=segment))
+        ns = segment_to_ns(segment)
+        if self.bus.status().get("available") and ns not in self.bus.namespaces():
+            return None, (404, _error(
+                f"no monitor discovered at namespace {ns or '/'!r}",
+                ns=ns, segment=segment,
+            ))
+        return ns, None
 
     # -- GET /api/health ---------------------------------------------------
 
@@ -902,6 +1003,9 @@ class Gateway:
             "uptime_s": round(time.time() - self.started_at, 3),
             "monitors": len(self.bus.namespaces()),
             "auth": "none",
+            # So an operator whose next panel is refused can see the cap rather than
+            # guess at it, and a deployment can alarm on approaching it.
+            "streams": {"open": self.open_streams, "max": self.max_streams},
             "services": self.services(),
         }
 
@@ -990,8 +1094,28 @@ class Gateway:
         latched topic replays its current value to a new subscriber, so "the next
         message" would otherwise be the previous answer; comparing the text is the only
         discriminator available without inventing a correlation id the contract does not
-        have. The cost is honest and documented: pushing a spec that fails in exactly
-        the same way twice times out into a 504 whose body still carries the status.
+        have.
+
+        Two consequences, both real and neither fixable inside this file:
+
+        * **Pushing a spec that fails in exactly the same way twice times out** into a
+          504, because the monitor's answer is byte-identical to the latched one. The
+          504 body carries ``last_known`` (that identical status) and ``published:
+          true``, so a client can tell "the monitor never answered" from "the monitor
+          answered the same thing again" and does not have to assume the push was lost.
+        * **Concurrent pushes cross.** Two clients pushing at the same time are both
+          waiting on the same latched topic with no way to tell whose answer arrived:
+          each takes the first status that differs from what *it* saw before its own
+          push, so A can be handed the status for B's spec, and both can be handed the
+          same one. Neither client is told this happened. The 504 and the 200 are
+          equally affected -- a 200 here means "a monitor answered", not necessarily
+          "your spec was applied".
+
+        The fix for both is a ``request_id`` on ``load_spec`` echoed in ``spec_status``,
+        which is a change to the P0 wire contract and to the P4 monitor that answers it,
+        so it is not made here. Until then a client that must be certain pushes specs to
+        a given namespace one at a time and re-reads
+        ``GET /api/monitors/{seg}/spec_status``.
         """
         topic = INGRESS_TOPICS["spec"]
         try:
@@ -1029,10 +1153,19 @@ class Gateway:
 
         text = box.get("text")
         if text is None:
+            # Everything a client needs to recover without guessing: the spec DID go out
+            # (`published`), the monitor may simply have answered with the byte-identical
+            # status already latched (`last_known`, and the reason it is indistinguishable),
+            # and the one request that settles it (`retry_with`).
             return 504, _error(
                 f"no {api.SPEC_STATUS} from namespace {ns or '/'!r} "
                 f"within {self.spec_timeout}s",
                 topic=api.SPEC_STATUS, ns=ns, last_known=before,
+                published=True, timeout_s=self.spec_timeout,
+                retry_with=f"{MONITORS_PREFIX}/{ns_to_segment(ns)}/spec_status",
+                why=("the load_spec was published; a status identical to last_known is "
+                     "indistinguishable from no answer, because spec_status carries no "
+                     "request id to correlate against"),
             )
         # Verbatim: this text came off a topic and the frontend compares it against the
         # same payload arriving over ROS.
@@ -1110,21 +1243,45 @@ class _Handler(BaseHTTPRequestHandler):
     def gateway(self) -> Gateway:
         return self.server.gateway  # type: ignore[attr-defined]
 
-    def _cors(self):
-        # `*` with no credentials, matching the module docstring: there is no session to
-        # protect, and a stricter policy here would only break a browser client while
-        # protecting nothing.
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+    def _cors(self, *, state_changing: bool):
+        """The CORS grant, which is deliberately not the same for reads and writes.
 
-    def _send(self, status: int, body, content_type: str = "application/json"):
+        Reads get ``*``: they carry no credentials, there is no session to protect, and
+        a viewer served from anywhere should be able to read a verdict.
+
+        Writes get nothing unless the origin was named with ``--allow-origin``. The
+        wildcard preflight this replaces was the whole vulnerability: with
+        ``Allow-Origin: *``, ``Allow-Methods: POST`` and ``Allow-Headers: Content-Type``,
+        a browser will happily send a cross-origin ``application/json`` POST, so any
+        page an operator visited while on the robot's network could pause a mission or
+        replace the spec that defines what a failure is. The attacker never reads the
+        response; for a write that is not the payoff.
+        """
+        if not state_changing:
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Vary", "Origin")
+            return
+        origin = self.headers.get("Origin")
+        if origin and origin in self.gateway.allowed_origins:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", f"Content-Type, {CLIENT_HEADER}")
+            self.send_header("Access-Control-Max-Age", "600")
+        # No wildcard fallback: an origin that was not named gets no grant at all, and
+        # the browser refuses the request before it is sent.
+        self.send_header("Vary", "Origin")
+
+    def _send(self, status: int, body, content_type: str = "application/json",
+              *, state_changing: bool | None = None):
         if isinstance(body, str):
             body = body.encode("utf-8")
+        if state_changing is None:
+            state_changing = self.command not in ("GET", "HEAD")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self._cors()
+        self._cors(state_changing=state_changing)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1144,8 +1301,35 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- routing -----------------------------------------------------------
 
+    def _may_change_state(self) -> bool:
+        """False, with a 403 already sent, if this request may not change state.
+
+        The header's *value* is never read. What matters is that it had to be set: a
+        cross-origin ``fetch`` cannot set a custom header without a successful preflight,
+        an HTML form cannot set one at all, and the preflight above grants nothing to an
+        origin nobody named. A script, curl or the desktop console sets it in one line.
+
+        This is not authentication and is not offered as any. It closes the one hole
+        that does not need the attacker to be on the network -- the operator's own
+        browser being used as the client.
+        """
+        if self.headers.get(CLIENT_HEADER) is not None:
+            return True
+        self._send(403, _error(
+            f"a state-changing request must carry the {CLIENT_HEADER} header",
+            header=CLIENT_HEADER,
+            why=("this is not authentication -- it is what stops a page on another "
+                 "origin from driving the robot through the operator's browser; see "
+                 "the module docstring"),
+        ))
+        return False
+
     def do_OPTIONS(self):  # noqa: N802 -- BaseHTTPRequestHandler's naming
-        self._send(204, b"", "text/plain")
+        # The preflight answers for the method the browser is *about* to use, not for
+        # OPTIONS itself, so a preflight for POST gets the write policy and one for GET
+        # gets the read policy.
+        requested = (self.headers.get("Access-Control-Request-Method") or "GET").upper()
+        self._send(204, b"", "text/plain", state_changing=(requested not in ("GET", "HEAD")))
 
     def do_GET(self):  # noqa: N802
         self._route("GET")
@@ -1162,6 +1346,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _route(self, method: str):
         parts = urllib.parse.urlsplit(self.path)
         path = parts.path.rstrip("/") or "/"
+
+        # Applied here rather than per-route, so it covers the two ingress POSTs, the
+        # proxied clock writes, and any method a future route adds -- forgetting it on
+        # one route is exactly how this class of hole reappears.
+        if method not in ("GET", "OPTIONS") and not self._may_change_state():
+            return
 
         if path == f"{API_PREFIX}/health" and method == "GET":
             self._send(200, json.dumps(self.gateway.gateway_health()))
@@ -1195,7 +1385,12 @@ class _Handler(BaseHTTPRequestHandler):
                 f"{'|'.join(sorted(LATCHED_ROUTES))}, stream, command or spec"
             ))
             return
-        ns = segment_to_ns(segment)
+
+        # Checked before anything derives a topic name from it -- see resolve_ns.
+        ns, refusal = self.gateway.resolve_ns(segment)
+        if refusal is not None:
+            self._send(*refusal)
+            return
 
         if verb == "stream":
             if method != "GET":
@@ -1249,26 +1444,46 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(status, payload, content_type or "application/json")
 
     def _clock_stream(self, path: str):
-        if not self._handshake():
+        # The proxied clock stream is a thread parked on a socket exactly like a monitor
+        # stream, so it comes out of the same budget.
+        if not self._admit_stream():
             return
         try:
-            frames = self.gateway.clock.stream()
-        except ClockUnreachable as exc:
-            self._ws_send(_error(str(exc), service="clock"))
-            self._ws_close()
-            return
-        try:
-            # Forwarded verbatim: docs/api.md says the clock's stream frame is the
-            # identical payload to /monitor/tick, and wrapping it here would make the
-            # proxied path differ from the direct one.
-            for text in frames:
-                self._ws_send(text)
-        except (OSError, ConnectionError, ClockUnreachable):
-            pass
+            if not self._handshake():
+                return
+            try:
+                frames = self.gateway.clock.stream()
+            except ClockUnreachable as exc:
+                self._ws_send(_error(str(exc), service="clock"))
+                self._ws_close()
+                return
+            try:
+                # Forwarded verbatim: docs/api.md says the clock's stream frame is the
+                # identical payload to /monitor/tick, and wrapping it here would make
+                # the proxied path differ from the direct one.
+                for text in frames:
+                    self._ws_send(text)
+            except (OSError, ConnectionError, ClockUnreachable):
+                pass
+            finally:
+                self._ws_close()
         finally:
-            self._ws_close()
+            self.gateway.release_stream()
 
     # -- websocket ---------------------------------------------------------
+
+    def _admit_stream(self) -> bool:
+        """Take a stream slot, or answer 503 and say so. Refused *before* the 101, so a
+        client sees an HTTP status it can act on rather than a websocket that opens and
+        immediately closes for no stated reason."""
+        if self.gateway.acquire_stream():
+            return True
+        self._send(503, _error(
+            f"too many open streams; this gateway serves {self.gateway.max_streams} "
+            "at once",
+            max_streams=self.gateway.max_streams,
+        ))
+        return False
 
     def _handshake(self) -> bool:
         key = self.headers.get("Sec-WebSocket-Key")
@@ -1298,6 +1513,14 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
     def _stream(self, ns: str):
+        if not self._admit_stream():
+            return
+        try:
+            self._stream_admitted(ns)
+        finally:
+            self.gateway.release_stream()
+
+    def _stream_admitted(self, ns: str):
         if not self._handshake():
             return
         stream, unsubscribe = self.gateway.open_stream(ns)
@@ -1355,7 +1578,7 @@ class GatewayServer(ThreadingHTTPServer):
     # nobody closed. The threads are daemons, so there is nothing to join.
     block_on_close = False
 
-    def __init__(self, gateway: Gateway, host: str = "0.0.0.0", port: int = DEFAULT_PORT):
+    def __init__(self, gateway: Gateway, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
         super().__init__((host, port), _Handler)
         self.gateway = gateway
 
@@ -1397,13 +1620,20 @@ def build_bus(use_ros: bool = True) -> MonitorBus:
         return NullBus(f"rclpy unavailable: {exc}")
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line, separate from :func:`main` so a test can assert what the
+    defaults are without starting a server -- and the default that matters most is
+    ``--host``."""
     parser = argparse.ArgumentParser(
         prog="skill_monitor.backend.gateway",
         description="REST + WebSocket in front of the ROS graph. No authentication: "
-                    "bind it to a trusted network or put a TLS-terminating proxy in front.",
+                    "it listens on loopback unless you say otherwise, and exposing it "
+                    "means terminating TLS and authenticating in a proxy in front.",
     )
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default=DEFAULT_HOST,
+                        help="interface to bind. The default is loopback; '0.0.0.0' "
+                             "publishes an UNAUTHENTICATED control surface for the "
+                             "robot to every host that can route to this one")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--clock-url", default=DEFAULT_CLOCK_URL,
                         help="base URL of the clock's own API; '' disables the proxy")
@@ -1413,10 +1643,20 @@ def main(argv=None) -> int:
                         help="frames buffered per websocket client before dropping oldest")
     parser.add_argument("--spec-timeout", type=float, default=DEFAULT_SPEC_TIMEOUT,
                         help="seconds POST .../spec waits for the monitor's spec_status")
+    parser.add_argument("--max-streams", type=int, default=DEFAULT_MAX_STREAMS,
+                        help="concurrent websocket clients; the rest get a 503")
+    parser.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
+                        help="browser origin permitted to POST (repeatable, exact match, "
+                             "e.g. https://console.lab). Without one, no cross-origin "
+                             "page can drive a state-changing route")
     parser.add_argument("--no-ros", action="store_true",
                         help="serve with no ROS side at all (an empty monitor list)")
     parser.add_argument("--log-level", default="INFO")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -1426,11 +1666,19 @@ def main(argv=None) -> int:
     bus = build_bus(not args.no_ros)
     clock = HttpClockBackend(args.clock_url) if args.clock_url else NullClockBackend()
     gateway = Gateway(bus, clock, stale_after=args.stale_after,
-                      queue_size=args.queue, spec_timeout=args.spec_timeout)
+                      queue_size=args.queue, spec_timeout=args.spec_timeout,
+                      max_streams=args.max_streams, allowed_origins=args.allow_origin)
     server = GatewayServer(gateway, args.host, args.port)
 
     log.info("gateway on http://%s:%d  (NO AUTHENTICATION -- trusted network only)",
              args.host, server.port)
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        # Loud, once, at the moment the decision takes effect: the operator who typed
+        # --host 0.0.0.0 to make a demo work should see what they published.
+        log.warning(
+            "bound to %s: an unauthenticated control surface for the robot is now "
+            "reachable from every host that can route here. Terminate TLS and "
+            "authenticate in a proxy in front of this process.", args.host)
     log.info("clock proxy: %s", args.clock_url or "disabled")
     try:
         server.serve_forever()

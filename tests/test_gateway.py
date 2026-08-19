@@ -130,17 +130,25 @@ class FakeClock(gateway.ClockBackend):
 
 
 class Client:
-    """A tiny HTTP client bound to a running gateway."""
+    """A tiny HTTP client bound to a running gateway.
+
+    Every state-changing request carries `X-Skill-Monitor`, because that is now part of
+    the contract a non-browser client meets in one line. `client_header=False` is how a
+    test plays the part of a browser that cannot set it.
+    """
 
     def __init__(self, port):
         self.port = port
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, *, client_header=True, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
             payload = None if body is None else json.dumps(body).encode("utf-8")
-            headers = {"Content-Type": "application/json"} if payload else {}
-            connection.request(method, path, payload, headers)
+            sent = {"Content-Type": "application/json"} if payload else {}
+            if client_header and method not in ("GET", "OPTIONS"):
+                sent[gateway.CLIENT_HEADER] = "1"
+            sent.update(headers or {})
+            connection.request(method, path, payload, sent)
             response = connection.getresponse()
             return response.status, response.read().decode("utf-8")
         finally:
@@ -149,12 +157,41 @@ class Client:
     def get(self, path):
         return self.request("GET", path)
 
-    def post(self, path, body):
-        return self.request("POST", path, body)
+    def post(self, path, body, **kwargs):
+        return self.request("POST", path, body, **kwargs)
 
     def json(self, path):
         status, text = self.get(path)
         return status, json.loads(text)
+
+    def headers_for(self, method, path, headers=None, body=None):
+        """The response *headers* of one request, which is what a CORS test is about."""
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            payload = None if body is None else json.dumps(body).encode("utf-8")
+            connection.request(method, path, payload, headers or {})
+            response = connection.getresponse()
+            response.read()
+            return response.status, dict(response.getheaders())
+        finally:
+            connection.close()
+
+    def upgrade(self, path):
+        """A websocket upgrade attempt that reports the HTTP status instead of raising,
+        so a refusal can be asserted on."""
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            connection.request("GET", path, headers={
+                "Upgrade": "websocket",
+                "Connection": "Upgrade",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                "Sec-WebSocket-Version": "13",
+            })
+            response = connection.getresponse()
+            body = response.read().decode("utf-8")
+            return response.status, body
+        finally:
+            connection.close()
 
     def ws(self, path):
         return gateway.ws_connect(f"http://127.0.0.1:{self.port}{path}")
@@ -496,7 +533,26 @@ def test_spec_post_times_out_into_504_with_the_last_known_status(serve):
 
     status, text = client.post("/api/monitors/_/spec", {"skill_name": "Walk"})
     assert status == 504
-    assert json.loads(text)["last_known"] == previous
+    body = json.loads(text)
+    assert body["last_known"] == previous
+    # Enough for a client to recover rather than guess: the spec DID go out, this is how
+    # long we waited, and this is the one request that settles what happened to it.
+    assert body["published"] is True
+    assert body["timeout_s"] == 0.2
+    assert body["retry_with"] == "/api/monitors/_/spec_status"
+    assert "request id" in body["why"]
+
+
+def test_post_spec_documents_the_correlation_it_cannot_do(serve):
+    """The 504 has a second cause the body cannot distinguish -- a spec that fails
+    identically twice -- and concurrent pushes can be handed each other's status. Both
+    need a `request_id` echoed in spec_status, which is a P0/P4 contract change and not
+    this file's to make. What this file owes the next reader is saying so.
+    """
+    doc = gateway.Gateway.post_spec.__doc__ or ""
+    assert "request_id" in doc
+    assert "Concurrent pushes cross" in doc
+    assert "one at a time" in doc
 
 
 # ============================================================== backpressure
@@ -687,23 +743,285 @@ def test_unknown_paths_are_404(serve):
     assert client.get("/api/monitors/_")[0] == 404
 
 
-def test_cors_is_open_because_there_is_no_authentication(serve):
-    client = serve(FakeBus())
-    connection = http.client.HTTPConnection("127.0.0.1", client.port, timeout=10)
-    try:
-        connection.request("OPTIONS", "/api/monitors")
-        response = connection.getresponse()
-        response.read()
-        assert response.getheader("Access-Control-Allow-Origin") == "*"
-    finally:
-        connection.close()
-
-
 def test_the_module_documents_that_it_has_no_authentication():
-    """A deployment reading this file must not have to infer the absence of auth."""
+    """A deployment reading this file must not have to infer the absence of auth, and
+    must be told where to put it -- at the point in the file where the decision is
+    made, not in a brief nobody reads at 3am."""
     doc = gateway.__doc__ or ""
     assert "No authentication" in doc
     assert "TLS" in doc
+    assert "terminate TLS and authenticate in front of" in doc
+    assert "127.0.0.1" in doc                  # ... and that the default is loopback
+
+
+# ================================================== the trust boundary
+#
+# The gateway's whole security model is "anything that can reach the port", so these
+# tests are about reach: which host it binds, which requests a browser on another origin
+# can send, and what a URL segment is allowed to become.
+
+
+def test_the_default_bind_is_loopback_and_exposure_is_deliberate():
+    """This is the robot's control surface with no authentication in front of it.
+    0.0.0.0 must be something an operator typed, not something they inherited."""
+    assert gateway.DEFAULT_HOST == "127.0.0.1"
+    assert gateway.build_parser().parse_args([]).host == "127.0.0.1"
+    assert gateway.build_parser().parse_args(["--host", "0.0.0.0"]).host == "0.0.0.0"
+
+    import inspect
+    default = inspect.signature(gateway.GatewayServer.__init__).parameters["host"].default
+    assert default == "127.0.0.1"
+
+
+BROWSER_PREFLIGHT = {
+    "Origin": "https://an-operator-happened-to-visit.example",
+    "Access-Control-Request-Method": "POST",
+    "Access-Control-Request-Headers": "content-type",
+}
+
+STATE_CHANGING_PATHS = [
+    "/api/monitors/_/command",
+    "/api/monitors/_/spec",
+    "/api/clock/mode",
+    "/api/clock/step",
+    "/api/clock/rate",
+]
+
+
+@pytest.mark.parametrize("path", STATE_CHANGING_PATHS)
+def test_a_browser_preflight_cannot_unlock_a_state_changing_post(serve, path):
+    """The vulnerability this closes, stated as the browser sees it.
+
+    `Allow-Origin: *` plus `Allow-Methods: POST` plus `Allow-Headers: Content-Type` is a
+    successful preflight, and a successful preflight means the browser SENDS the
+    cross-origin JSON POST. The attacker cannot read the reply and does not need to:
+    `{"command": "pause"}` on a live mission, or a pushed spec that redefines what counts
+    as a failure, is a write, and the write is the payoff.
+
+    So the preflight for these routes must grant nothing.
+    """
+    client = serve(FakeBus(namespaces=[""]))
+    status, headers = client.headers_for("OPTIONS", path, BROWSER_PREFLIGHT)
+    assert status in (204, 200)
+    assert "Access-Control-Allow-Origin" not in headers, path
+    assert "Access-Control-Allow-Headers" not in headers, path
+
+
+def test_a_cross_origin_post_that_ignores_the_preflight_is_still_refused(serve):
+    """Defence that does not depend on the browser behaving: without the header a
+    cross-origin fetch cannot set, nothing reaches the graph."""
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+
+    status, text = client.post("/api/monitors/_/command",
+                               api.build_command(command="pause"),
+                               client_header=False)
+    assert status == 403
+    assert gateway.CLIENT_HEADER in json.loads(text)["error"]
+    assert bus.published == []                 # nothing reached the graph
+
+    # The same request with the header -- one line for a script, impossible for a page
+    # on another origin -- works.
+    assert client.post("/api/monitors/_/command",
+                       api.build_command(command="pause"))[0] == 202
+
+
+def test_the_client_header_is_required_on_every_state_changing_route(serve):
+    """Including the proxied clock writes: `POST /api/clock/rate` while an episode runs
+    silently redefines every tick-denominated timeout in the spec."""
+    clock = FakeClock()
+    client = serve(FakeBus(namespaces=[""]), clock)
+    for path in STATE_CHANGING_PATHS:
+        status, _text = client.post(path, {}, client_header=False)
+        assert status == 403, path
+    assert clock.calls == []                   # not forwarded, not merely unanswered
+
+
+def test_reads_stay_shareable_across_origins(serve):
+    """The GETs keep `*`: they carry no credentials, there is no session to steal, and a
+    viewer served from anywhere should be able to read a verdict."""
+    client = serve(FakeBus(namespaces=[""]))
+
+    _status, headers = client.headers_for("GET", "/api/monitors",
+                                          {"Origin": "https://console.lab"})
+    assert headers["Access-Control-Allow-Origin"] == "*"
+
+    _status, headers = client.headers_for("OPTIONS", "/api/monitors", {
+        "Origin": "https://console.lab", "Access-Control-Request-Method": "GET",
+    })
+    assert headers["Access-Control-Allow-Origin"] == "*"
+
+
+def test_a_named_origin_is_the_deliberate_way_to_allow_a_browser_console(serve):
+    """--allow-origin is the explicit allow: a deployment that has a browser frontend
+    names its origin, and only that origin gets the grant."""
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus, allowed_origins=("https://console.lab",))
+
+    _status, headers = client.headers_for("OPTIONS", "/api/monitors/_/command", {
+        "Origin": "https://console.lab",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": f"content-type, {gateway.CLIENT_HEADER.lower()}",
+    })
+    assert headers["Access-Control-Allow-Origin"] == "https://console.lab"
+    assert gateway.CLIENT_HEADER in headers["Access-Control-Allow-Headers"]
+
+    # ... and nobody else, so the grant cannot be borrowed.
+    _status, headers = client.headers_for("OPTIONS", "/api/monitors/_/command",
+                                          BROWSER_PREFLIGHT)
+    assert "Access-Control-Allow-Origin" not in headers
+
+
+# ================================================== namespaces from a URL
+
+
+ILLEGAL_SEGMENTS = [
+    "../../etc",          # becomes the topic /../../etc/monitor/command
+    "%2e%2e",             # the same thing, escaped -- refused, not decoded
+    "nav/../arm",
+    "9lives",             # a ROS name may not start with a digit
+    "has-a-dash",
+    "~private",           # legal in a URL, not a ROS name
+    "nav.left",
+    "n" * 200,            # a name long enough to be a payload of its own
+]
+
+
+@pytest.mark.parametrize("segment", ILLEGAL_SEGMENTS)
+def test_an_illegal_namespace_segment_is_400_and_never_a_publisher(serve, segment):
+    """A segment arrives from an unauthenticated client and three calls later is a topic
+    name. An illegal one must come back as this gateway's 400 with a reason, not as a
+    500 out of rclpy -- and must never create a publisher on a name the client chose."""
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+
+    status, text = client.post(f"/api/monitors/{segment}/command",
+                               api.build_command(command="reset"))
+    assert status == 400, segment
+    assert json.loads(text)["ok"] is False
+    assert bus.published == []
+
+    assert client.get(f"/api/monitors/{segment}/manifest")[0] == 400, segment
+
+
+def test_a_namespace_discovery_has_never_seen_is_404(serve):
+    """There is no monitor there. Creating a publisher so a command can be sent to
+    nobody is not a service worth offering."""
+    bus = FakeBus(namespaces=["/nav"])
+    client = serve(bus)
+
+    status, text = client.post("/api/monitors/arm/command",
+                               api.build_command(command="reset"))
+    assert status == 404
+    assert json.loads(text)["ns"] == "/arm"
+    assert bus.published == []
+    assert client.get("/api/monitors/arm/manifest")[0] == 404
+    assert client.upgrade("/api/monitors/arm/stream")[0] == 404
+
+    # The discovered one still works, so this is a check and not a wall.
+    assert client.post("/api/monitors/nav/command",
+                       api.build_command(command="reset"))[0] == 202
+
+
+def test_an_unavailable_bus_still_answers_503_and_not_404(serve):
+    """With no ROS side every namespace is undiscovered, and "there is no such monitor"
+    would be the wrong answer: the honest one is "there is no ROS side"."""
+    client = serve(gateway.NullBus("no rclpy in this process"))
+    status, text = client.post("/api/monitors/_/command", api.build_command(command="arm"))
+    assert status == 503
+    assert "rclpy" in json.loads(text)["error"]
+
+
+def test_namespace_problem_states_the_ros_name_grammar():
+    from skill_monitor.core import discovery
+
+    assert discovery.namespace_problem("") is None
+    assert discovery.namespace_problem("/nav") is None
+    assert discovery.namespace_problem("/nav/left_1") is None
+    assert discovery.namespace_problem("/_private") is None
+
+    for bad in ("nav", "/nav/", "/../etc", "/9lives", "/has-a-dash", "/a b", "/nav//left"):
+        assert discovery.namespace_problem(bad), bad
+    assert discovery.namespace_problem("/" + "n" * 200)
+    assert discovery.namespace_problem(None)
+
+
+def test_segment_problem_is_the_url_face_of_the_same_rule():
+    assert gateway.segment_problem("_") is None
+    assert gateway.segment_problem("") is None
+    assert gateway.segment_problem("nav/left") is None
+    assert gateway.segment_problem("../../etc")
+
+
+# ================================================== the stream cap
+
+
+def test_streams_are_capped_and_the_refusal_says_so(serve):
+    """Each stream holds a thread under ThreadingHTTPServer. The per-client deque bounds
+    memory; nothing bounded threads, and an unauthenticated client could open them in a
+    loop."""
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus, max_streams=1)
+
+    first = client.ws("/api/monitors/_/stream")
+    try:
+        bus.wait_for_listeners(1)
+        status, text = client.upgrade("/api/monitors/_/stream")
+        assert status == 503
+        assert json.loads(text)["max_streams"] == 1
+        # The clock's proxied stream comes out of the same budget -- it is the same
+        # thread parked on the same kind of socket.
+        assert client.upgrade("/api/clock/stream")[0] == 503
+    finally:
+        first.close()
+
+    # The slot comes back, so this is a cap and not a one-shot.
+    deadline = time.monotonic() + 5.0
+    while bus.listener_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    second = client.ws("/api/monitors/_/stream")
+    second.close()
+
+
+def test_stream_slots_are_counted_and_returned():
+    app = gateway.Gateway(FakeBus(), max_streams=2)
+    assert app.acquire_stream() and app.acquire_stream()
+    assert app.open_streams == 2
+    assert app.acquire_stream() is False
+    app.release_stream()
+    assert app.acquire_stream() is True
+    app.release_stream()
+    app.release_stream()
+    assert app.open_streams == 0
+    app.release_stream()                       # never goes negative
+    assert app.open_streams == 0
+
+
+def test_health_reports_the_stream_budget(serve):
+    """So an operator whose next panel is refused can see the cap rather than guess."""
+    client = serve(FakeBus(), max_streams=7)
+    _status, body = client.json("/api/health")
+    assert body["streams"] == {"open": 0, "max": 7}
+
+
+# ================================================== one discovery, two clients
+
+
+def test_discovery_and_health_come_from_core_not_a_second_copy():
+    """`parse_namespaces` and `health` were copied into this module from the Skill
+    Center. Two processes answering "is this monitor alive" differently is a bug an
+    operator watching both would see and could not explain, so there is now one
+    implementation in core/ and these names are re-exports of it."""
+    from skill_monitor.core import discovery
+
+    assert gateway.parse_namespaces is discovery.parse_namespaces
+    assert gateway.health is discovery.health
+    assert gateway.STALE_AFTER == discovery.STALE_AFTER
+
+    from pathlib import Path
+    source = Path(gateway.__file__).read_text(encoding="utf-8")
+    assert "def parse_namespaces" not in source
+    assert "def health(" not in source
 
 
 def test_no_monitor_topic_literal_is_spelled_in_this_module():
@@ -744,6 +1062,7 @@ def test_body_larger_than_the_cap_is_413(serve):
     try:
         connection.putrequest("POST", "/api/monitors/_/spec")
         connection.putheader("Content-Type", "application/json")
+        connection.putheader(gateway.CLIENT_HEADER, "1")
         connection.putheader("Content-Length", str(gateway.MAX_BODY_BYTES + 1))
         connection.endheaders()
         response = connection.getresponse()
