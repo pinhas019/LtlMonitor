@@ -54,8 +54,12 @@ nobody asked for the observation" — which is required, because the window must
 every pulse whether or not anyone is listening.
 
 **The fold is built fully, then committed atomically.** A bad aggregator (a `min` over mixed
-types) must not leave half the observation updated. Order inside `tick()`: fold → capture
-`refreshed_keys()` → commit → clear the window → run tick-steps → freeze. The window is
+types) must not leave half the observation updated. Order inside `tick()`: fold → capture `refreshed_keys()` → run
+tick-steps over a **candidate** dict → publish values, refreshed sets and the tick index
+**together**. Nothing is visible half-done: a tick-step that raises leaves the whole tick
+un-taken rather than committing the fold and then failing. The one thing no rollback can
+undo is state *inside* a stateful extractor — a debounce that advanced before a later
+tick-step raised — which is part of why `reset()` exists. The window is
 cleared *before* tick-steps so a tick-step's output goes straight to the held values and is
 never itself windowed.
 

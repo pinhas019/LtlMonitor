@@ -48,7 +48,8 @@ interval anyone can describe. Interval 0 would have to end at `t₀`, before the
          │   rate, into window k       │                          │
       open k                     close k / open k+1          close k+1
                                        │
-                                       └─▶ fold → commit → tick-steps
+                                       └─▶ fold → tick-steps → publish
+                                           (all-or-nothing)
                                            → emit observation(seq=k)
                                            → automaton steps once
                                            → emit verdict(seq=k)
