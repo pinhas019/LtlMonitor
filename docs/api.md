@@ -92,6 +92,7 @@ Produced by P1. The only thing that advances the system.
   "schema_version": 1,
   "seq": 1041,
   "t": 1041.0,
+  "t0": 1755500000.0,
   "tick_hz": 1.0,
   "mode": "wall"
 }
@@ -101,6 +102,7 @@ Produced by P1. The only thing that advances the system.
 |---|---|
 | `tick_hz` | the *effective* rate, after any CLI override — not the descriptor default |
 | `mode` | `wall` ｜ `replay` ｜ `manual` |
+| `t0` | unix time at which this clock started. **Required.** It is the only way a consumer can tell a clock restart — where `seq` legitimately begins again — from an out-of-order delivery it must refuse. A changed `t0` is a new epoch: reset and keep stepping. Without it a restarted clock silently discards the next run's first *N* ticks, *N* being however far the previous run got |
 
 A pulse is emitted even when no data arrived in the interval it closes. See
 [clocking.md](clocking.md) for the interval semantics.
