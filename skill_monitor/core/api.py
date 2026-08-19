@@ -315,17 +315,27 @@ _TICK_FIELDS: dict[str, _Check] = {
     **_CLOCKED,
     "tick_hz": NUMBER,
     "mode": _one_of(CLOCK_MODES),
+    "t0": NUMBER,
 }
 
 
-def build_tick(*, seq: int, t: float, tick_hz: float, mode: str = "wall") -> dict:
+def build_tick(*, seq: int, t: float, tick_hz: float, mode: str = "wall",
+               t0: float = 0.0) -> dict:
     """The only thing that advances the system.
 
     `tick_hz` is the *effective* rate after any CLI override, not the descriptor
     default: a consumer converting a tick-denominated timeout to seconds must read the
     rate that is actually running.
+
+    `t0` is unix time at which the *clock* started, and it is what lets a consumer
+    distinguish a **restart** from an **out-of-order delivery**. `seq` restarts at 1
+    when the clock does, so a consumer that only refuses to step backwards -- the
+    correct response to a redelivered frame -- would otherwise silently discard the
+    whole beginning of the new run, however far the previous one had got. Same `t0` and
+    a lower `seq` is a redelivery to drop; a different `t0` is a new clock, and the
+    consumer must reset its own tick bookkeeping to follow it.
     """
-    return _clocked_envelope(seq, t) | {"tick_hz": tick_hz, "mode": mode}
+    return _clocked_envelope(seq, t) | {"tick_hz": tick_hz, "mode": mode, "t0": t0}
 
 
 def validate_tick(payload: Any) -> list[str]:

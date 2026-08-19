@@ -16,14 +16,22 @@ The definitions, from ``docs/clocking.md#the-tick-defined``:
 
   * ``Delta = 1 / tick_hz`` **seconds** on the *active* clock. Frequency is declared;
     the period is what the arithmetic uses.
-  * Tick *k* is the half-open interval ``[t0 + k*Delta, t0 + (k+1)*Delta)``. Half-open is
-    the point: every instant belongs to exactly one tick, so no sample is counted twice
-    and none falls between ticks.
+  * Tick *k* is the half-open interval ``(B_(k-1), B_k]`` where ``B_k = k*Delta`` from
+    the clock's start. Half-open is the point: every instant belongs to exactly one
+    tick, so no sample is counted twice and none falls between ticks.
+  * **A tick is named by the boundary that CLOSES it**, not the one that opens it. That
+    is what makes a pulse, the observation folded from it and the verdict stepped from
+    that observation all carry the same ``seq`` for the same interval -- the one that
+    just ended. Consequently ``seq = 0`` means *no interval has closed yet*: it is the
+    value ``state()`` reports before the first pulse, and it is never the ``seq`` of a
+    frame on the wire. **The first real interval is ``seq = 1``**, closing at
+    ``t = Delta``.
   * A pulse carries ``seq`` = the index of the boundary it fired on and ``t`` = that
     boundary's time, **not** the moment the code got round to noticing. Scheduling jitter
     therefore cannot leak into the recorded time base. This is why the example in
     ``docs/api.md`` reads ``{"seq": 1041, "t": 1041.0, "tick_hz": 1.0}``: at 1 Hz the
-    boundary of tick 1041 is at 1041.0 s, exactly, however late the process woke up.
+    boundary that closes tick 1041 is at 1041.0 s, exactly, however late the process
+    woke up.
 
 Four invariants, each of which has a test named after it in ``tests/test_clock.py``:
 
@@ -39,7 +47,9 @@ Four invariants, each of which has a test named after it in ``tests/test_clock.p
      consumer fold three windows in one instant, silently merging them.
   4. **`seq` is monotonic over the clock's lifetime and never reused** -- across a rate
      change, a mode change and a pause. Episode-scoped counting is ``step``, and that
-     belongs to the monitor: this module knows nothing about episodes.
+     belongs to the monitor: this module knows nothing about episodes. A *restart* is
+     the one thing that does reset it, which is why ``t0`` rides in every pulse: see
+     `api.build_tick`.
 
 `ClockService` is the policy layer: it answers `docs/api.md#clock-api` in terms of
 ``(status, payload)`` pairs and fans one pulse out to every sink. It is here, and not in
@@ -62,17 +72,52 @@ from skill_monitor.core import api
 # meaningful tick period and far above the accumulated error.
 _EPS = 1e-9
 
+#: The tolerance is never more than this fraction of a period. An *absolute* tolerance
+#: is a bug waiting for a small enough Delta: `_boundary_at` accepts a boundary that is
+#: up to the tolerance in the future, so the overshoot it can produce is exactly
+#: `tolerance / Delta` ticks. At 1 Hz that is a billionth of a tick and invisible; at a
+#: Delta below a microsecond a fixed 1 ns would start counting boundaries that have not
+#: happened. Relative, it is a millionth of a tick at every rate, by construction.
+_EPS_FRACTION = 1e-6
+
+#: Upper bound on the declared rate, matching the descriptor's own bound (P2).
+#:
+#: Not a performance opinion: it is what keeps `_boundary_at`'s correction loop bounded.
+#: The loop walks one boundary per iteration, so a rate absurd enough that the initial
+#: floor-divide lands thousands of boundaries away turns a request into a hang -- and
+#: `POST /api/clock/rate` is reachable by anything that can open the port. `tick_hz`
+#: ships at 1.0 and the poll timer cannot usefully resolve a Delta below a millisecond
+#: anyway (see `backend/clock_node.poll_period`), so the ceiling costs nothing real.
+MAX_TICK_HZ = 1000.0
+
 
 class ClockError(RuntimeError):
     """An operation the active clock cannot perform (stepping a wall clock)."""
 
 
-def _positive_hz(value) -> float:
+def tolerance(delta: float) -> float:
+    """Boundary-comparison slack for a tick period of `delta` seconds.
+
+    Bounded *both* ways on purpose: never more than `_EPS` (so it stays far below any
+    meaningful duration) and never more than `_EPS_FRACTION` of a period (so it cannot
+    grow into a whole tick as `delta` shrinks).
+    """
+    return min(_EPS, abs(delta) * _EPS_FRACTION)
+
+
+def valid_tick_hz(value) -> float:
+    """The declared rate, or `ValueError` saying why it is not one."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"tick_hz must be a number, got {value!r}")
     hz = float(value)
     if not hz > 0.0 or hz != hz or hz in (float("inf"), float("-inf")):
         raise ValueError(f"tick_hz must be finite and > 0, got {value!r}")
+    if hz > MAX_TICK_HZ:
+        raise ValueError(
+            f"tick_hz must be <= {MAX_TICK_HZ:g}, got {value!r}: above that the tick "
+            f"period is finer than the poll timer can resolve and the boundary "
+            f"arithmetic stops being cheap"
+        )
     return hz
 
 
@@ -262,7 +307,7 @@ class TickEngine:
                                  f"{sorted(SOURCES)}")
             source = SOURCES[mode]()
         self._source = source
-        self._tick_hz = _positive_hz(tick_hz)
+        self._tick_hz = valid_tick_hz(tick_hz)
 
         # Unix time at construction, recorded once. This is what makes a restart
         # observable: `seq` starts again from 0, and `t0` is how a reader tells the
@@ -321,7 +366,13 @@ class TickEngine:
         return self._paused
 
     def now(self) -> float:
-        """Engine time: seconds elapsed on the active clock since construction."""
+        """Engine time: seconds elapsed on the active clock since construction.
+
+        On a `WallClock` this is also wall time. On a driven clock it is **not**: it is
+        how far the driver has advanced, so a `ManualClock` stepped three times reports
+        3.0 whether the process started a second or a week ago. That is why the field
+        this feeds is called `clock_time_s` and not `uptime_s`.
+        """
         return self._carried + (self._source.now() - self._origin)
 
     def state(self) -> dict:
@@ -336,7 +387,10 @@ class TickEngine:
             "t0": self._t0,
             "tick_hz": self._tick_hz,
             "mode": self.mode,
-            "uptime_s": self.now(),
+            # Seconds advanced on the ACTIVE clock, which on a driven clock is episode
+            # time and not wall uptime. `GET /api/clock/health` carries a real
+            # `uptime_s` beside this one; naming both the same thing was the bug.
+            "clock_time_s": self.now(),
         }
 
     # ------------------------------------------------------------- boundaries
@@ -348,15 +402,18 @@ class TickEngine:
     def _boundary_at(self, now: float) -> int:
         """Index of the latest boundary at or before `now`."""
         delta = self.delta
+        eps = tolerance(delta)
         seq = self._epoch_seq + int((now - self._epoch_t) // delta)
         if seq < self._epoch_seq:
             seq = self._epoch_seq
         # Float correction, both directions. `(3 * 0.1) / 0.1` is 2.9999999999999996,
         # and a clock that quietly skipped every 30th manual step would be worse than
-        # no manual mode at all.
-        while self._t_of(seq + 1) <= now + _EPS:
+        # no manual mode at all. The slack is relative (see `tolerance`): a fixed one
+        # would let a fine enough Delta walk this loop past boundaries that have not
+        # happened, and the walk is what makes it slow as well as wrong.
+        while self._t_of(seq + 1) <= now + eps:
             seq += 1
-        while seq > self._epoch_seq and self._t_of(seq) > now + _EPS:
+        while seq > self._epoch_seq and self._t_of(seq) > now + eps:
             seq -= 1
         return seq
 
@@ -378,8 +435,12 @@ class TickEngine:
         skipped = seq - self._seq - 1
         self._seq = seq
         self._last_t = self._t_of(seq)
+        # `t0` rides in every pulse, not just in `GET /api/clock`: a consumer that only
+        # ever sees the topic is exactly the one that cannot otherwise tell this run's
+        # seq 7 from the previous run's, and refusing to step backwards -- the right
+        # answer to a redelivery -- would make it swallow the whole start of a new run.
         payload = api.build_tick(
-            seq=seq, t=self._last_t, tick_hz=self._tick_hz, mode=self.mode
+            seq=seq, t=self._last_t, tick_hz=self._tick_hz, mode=self.mode, t0=self._t0
         )
         return Pulse(payload, skipped=skipped)
 
@@ -423,7 +484,7 @@ class TickEngine:
         Refusing this while a monitor is armed is `ClockService`'s job, not the engine's:
         the engine has no idea what a monitor is.
         """
-        self._tick_hz = _positive_hz(tick_hz)
+        self._tick_hz = valid_tick_hz(tick_hz)
         self._rebase()
         return self._tick_hz
 
@@ -530,10 +591,17 @@ class ClockService:
         *,
         armed: Callable[[], bool] = lambda: False,
         subscribers: Callable[[], int] = lambda: 0,
+        monotonic: Callable[[], float] = time.monotonic,
     ):
         self._engine = engine
         self._armed = armed
         self._subscribers = subscribers
+        # Wall seconds this process has been up, which is a different quantity from the
+        # engine's clock time and only coincides on a `WallClock`. Injected, and read
+        # once here, so `GET /api/clock/health` can report both without a test having
+        # to wait for either.
+        self._monotonic = monotonic
+        self._started = float(monotonic())
         self._sinks: list[Callable[[dict], None]] = []
 
     @property
@@ -574,6 +642,13 @@ class ClockService:
 
         `consumed` is the interesting one: a clock pulsing into an empty graph looks
         perfectly healthy from every other angle.
+
+        **`uptime_s` and `clock_time_s` are two different quantities** and both are
+        reported, because next to `t0` and `last_pulse_age_s` a single one would be
+        read as wall uptime whichever it was. `uptime_s` is how long this process has
+        run; `clock_time_s` is how far the active clock has advanced. On a `wall` clock
+        they track each other. On a `manual` clock stepped three times in an hour they
+        are 3600 and 3.0, and the gap between them is the diagnosis.
         """
         subscribers = int(self._subscribers())
         engine = self._engine
@@ -584,8 +659,12 @@ class ClockService:
             "seq": engine.seq,
             "t": engine.t,
             "t0": engine.t0,
-            "uptime_s": engine.now(),
+            "uptime_s": float(self._monotonic()) - self._started,
+            "clock_time_s": engine.now(),
             "paused": engine.paused,
+            # Age on the ACTIVE clock: on a driven clock a pulse is not "old" because
+            # nobody stepped it, and reporting wall seconds here would make a parked
+            # replay look like a dead clock.
             "last_pulse_age_s": None if engine.seq == 0 else engine.now() - engine.t,
             "subscribers": subscribers,
             "consumed": subscribers > 0,
@@ -614,6 +693,14 @@ class ClockService:
 
         Answers with the pulse itself, so the stepping client reads the same frame every
         other consumer just received instead of inferring it from a subsequent GET.
+
+        Accepted on **any driven clock**, so `replay` as well as `manual`. That is a
+        deliberate widening of `docs/api.md`'s original "manual only", now recorded
+        there too: a replay driver advances a `ReplayClock` by seconds anyway, and
+        refusing to let it advance by exactly one tick would only push the boundary
+        arithmetic -- the one thing this module exists to own -- into every driver.
+        `wall` is still a 409, because a self-advancing clock stepped by hand would
+        emit a boundary that never happened.
         """
         try:
             pulse = self._engine.step()
@@ -634,7 +721,7 @@ class ClockService:
         if not isinstance(body, dict):
             return 400, {"error": "body must be a JSON object"}
         try:
-            tick_hz = _positive_hz(body.get("tick_hz"))
+            tick_hz = valid_tick_hz(body.get("tick_hz"))
         except ValueError as exc:
             return 400, {"error": str(exc)}
         if self._armed():

@@ -20,8 +20,8 @@ import pytest
 
 from skill_monitor.core import api
 from skill_monitor.core.clock import (
-    ArmedTracker, ClockError, ClockService, ManualClock, Pulse, ReplayClock, SOURCES,
-    TickEngine, WallClock,
+    MAX_TICK_HZ, ArmedTracker, ClockError, ClockService, ManualClock, Pulse, ReplayClock,
+    SOURCES, TickEngine, WallClock, tolerance,
 )
 
 
@@ -104,8 +104,30 @@ def test_the_payload_is_the_wire_contract():
     assert api.validate_tick(pulse.payload) == []
     assert pulse.payload == {
         "schema_version": api.SCHEMA_VERSION, "seq": 1, "t": 1.0,
-        "tick_hz": 1.0, "mode": "wall",
+        "tick_hz": 1.0, "mode": "wall", "t0": 1000.0,
     }
+
+
+def test_a_tick_is_named_by_the_boundary_that_closes_it():
+    """`seq=0` means no interval has closed yet; the first real interval is `seq=1`.
+
+    The convention docs/clocking.md defines: tick k is `(B_(k-1), B_k]`. A pulse, the
+    observation folded from it and the verdict stepped from that observation all carry
+    the same `seq` for the same interval -- the one that just ended. Naming a tick by
+    the boundary that OPENS it would put the pulse a whole period out of step with
+    every consumer of it.
+    """
+    engine, fake = _wall(tick_hz=1.0)
+    assert engine.seq == 0                      # nothing has closed
+    assert engine.state()["seq"] == 0
+    assert engine.poll() is None                # and 0 is never a frame on the wire
+
+    fake.advance(1.0)
+    first = engine.poll()
+    assert (first.seq, first.t) == (1, 1.0)     # the interval (0, 1], closing at Delta
+
+    fake.advance(1.0)
+    assert (engine.poll().seq, engine.t) == (2, 2.0)
 
 
 def test_every_mode_in_the_wire_vocabulary_has_a_clock():
@@ -323,6 +345,58 @@ def test_restarting_the_clock_is_observable():
     assert first.seq == second.seq == 0
 
 
+def test_a_restart_is_visible_in_the_pulse_and_not_only_in_the_http_sample():
+    """`t0` rides in every `/monitor/tick` frame, because that is where it is needed.
+
+    The consumer that gets hurt by a restart is the one watching the TOPIC. P4's
+    `TickLedger` correctly refuses to step backwards -- the right answer to a
+    redelivered frame -- so a clock that restarts `seq` at 1 while signalling the
+    restart only in `GET /api/clock` makes the monitor discard the new run's first N
+    ticks, N being however far the previous run got, and then silently resume
+    mid-episode. A clock restarted after 83 minutes at 1 Hz swallows the next 83
+    minutes of monitoring with no error.
+
+    Same `t0` and a lower `seq` is a redelivery to drop; a different `t0` is a new
+    clock. Neither is inferable from `seq` alone.
+    """
+    first, first_wall = _wall(tick_hz=1.0)
+    first_wall.advance(5000.0)
+    long_run = first.poll()
+    assert long_run.seq == 5000
+
+    second = TickEngine(WallClock(now=(second_wall := FakeWall())), tick_hz=1.0,
+                        started_at=lambda: 9999.0)
+    second_wall.advance(1.0)
+    fresh = second.poll()
+
+    # The new run's very first frame is `seq=1`, far behind the old run's last.
+    assert fresh.seq == 1 < long_run.seq
+    # ...and the frame itself says so, without anyone having to poll the HTTP sample.
+    assert long_run.payload["t0"] == 1000.0
+    assert fresh.payload["t0"] == 9999.0
+    assert fresh.payload["t0"] != long_run.payload["t0"]
+    assert api.validate_tick(fresh.payload) == []
+
+
+def test_t0_is_required_by_the_wire_contract_not_merely_tolerated():
+    """A tick without it validates as a problem, so a producer cannot forget it."""
+    engine, fake = _wall()
+    fake.advance(1.0)
+    payload = engine.poll().payload
+    stripped = {k: v for k, v in payload.items() if k != "t0"}
+    assert any("t0" in problem for problem in api.validate_tick(stripped))
+
+
+def test_every_pulse_carries_t0_not_just_the_first():
+    """A consumer that connects mid-run must be able to tell which clock it joined."""
+    engine, fake = _wall(tick_hz=2.0)
+    seen = []
+    for _ in range(6):
+        fake.advance(0.5)
+        seen.append(engine.poll().payload["t0"])
+    assert seen == [1000.0] * 6
+
+
 def test_a_mode_change_does_not_jump_the_time_base():
     """Wall and manual clocks have unrelated origins; `t` must not notice the swap."""
     engine, fake = _wall(tick_hz=1.0)
@@ -341,7 +415,11 @@ def test_a_mode_change_does_not_jump_the_time_base():
 
 def _service(tick_hz=1.0, armed=False, subscribers=0):
     engine, fake = _wall(tick_hz=tick_hz)
-    service = ClockService(engine, armed=lambda: armed, subscribers=lambda: subscribers)
+    # One FakeWall drives both the tick source and the service's uptime, so on a `wall`
+    # clock the two agree -- which is exactly the case where the old single `uptime_s`
+    # looked correct.
+    service = ClockService(engine, armed=lambda: armed, subscribers=lambda: subscribers,
+                           monotonic=fake)
     return service, engine, fake
 
 
@@ -384,13 +462,78 @@ def test_a_rate_change_does_not_backdate_ticks():
 
 
 @pytest.mark.parametrize("bad", [{"tick_hz": 0}, {"tick_hz": -1.0}, {"tick_hz": "fast"},
-                                 {"tick_hz": None}, {}, None, "5"])
+                                 {"tick_hz": None}, {}, None, "5",
+                                 {"tick_hz": 1000.1}, {"tick_hz": 1e11},
+                                 {"tick_hz": float("inf")}])
 def test_an_impossible_rate_is_a_400_not_a_crash(bad):
     service, engine, _ = _service()
     status, body = service.handle("POST", "/api/clock/rate", bad)
     assert status == 400
     assert "error" in body
     assert engine.tick_hz == 1.0
+
+
+# =============================================================================
+# The rate is bounded above, and the boundary tolerance is relative
+# =============================================================================
+
+def test_the_rate_is_bounded_above():
+    """An absurd rate is reachable through an unauthenticated POST, so it is refused.
+
+    `tick_hz=1e11` used to be accepted: one second of elapsed time then produced
+    `seq=100000000100` -- the overshoot being exactly `_EPS/Delta` -- and `_boundary_at`
+    walks its correction loop one boundary at a time, so at extreme rates it does not
+    finish in useful time.
+    """
+    assert MAX_TICK_HZ == 1000.0                      # what P2 bounds the descriptor to
+
+    with pytest.raises(ValueError):
+        TickEngine(tick_hz=1e11)
+    with pytest.raises(ValueError):
+        TickEngine(tick_hz=MAX_TICK_HZ + 0.001)
+    with pytest.raises(ValueError):
+        TickEngine(tick_hz=1.0).set_rate(1e11)
+
+    # The bound itself is allowed, and is a rate the arithmetic is exact at.
+    assert TickEngine(tick_hz=MAX_TICK_HZ).tick_hz == MAX_TICK_HZ
+
+
+def test_the_boundary_tolerance_is_relative_to_the_period():
+    """An absolute slack is a bug waiting for a small enough Delta.
+
+    `_boundary_at` accepts a boundary up to the tolerance in the future, so the
+    overshoot it can produce is exactly `tolerance/Delta` ticks. Fixed at 1 ns that is
+    100 whole ticks at a 10 ps period; relative it is a millionth of a tick at every
+    period there is.
+    """
+    assert tolerance(1.0) == 1e-9                     # unchanged where it always was
+    assert tolerance(1e-6) == pytest.approx(1e-12)
+    assert tolerance(1e-9) == pytest.approx(1e-15)
+    for delta in (100.0, 1.0, 1e-3, 1e-6, 1e-9, 1e-12):
+        assert 0.0 < tolerance(delta) <= delta * 1e-6
+
+
+def test_no_overshoot_at_the_highest_permitted_rate():
+    """Exactly N ticks for N periods of elapsed time, with no slack-induced extras."""
+    engine, fake = _wall(tick_hz=MAX_TICK_HZ)
+    fake.advance(1.0)
+    pulse = engine.poll()
+    assert pulse.seq == 1000                          # not 1001, and not 100000000100
+    assert pulse.t == pytest.approx(1.0)
+    assert engine.poll() is None                      # nothing is owed
+
+
+def test_stepping_is_still_exact_at_the_highest_permitted_rate():
+    """The tolerance got smaller; it must still be large enough to not swallow a step.
+
+    This is the failure mode `_EPS` existed for in the first place -- a driven clock
+    advanced by Delta a few hundred times lands a few ULPs short of where it aimed.
+    """
+    engine = TickEngine(ManualClock(), tick_hz=MAX_TICK_HZ)
+    for _ in range(400):
+        engine.step()
+    assert engine.seq == 400
+    assert engine.t == pytest.approx(400.0 / MAX_TICK_HZ)
 
 
 def test_armed_is_what_the_clock_saw_on_the_wire():
@@ -443,7 +586,8 @@ def test_get_clock_is_the_documented_sample():
     fake.advance(1.0)
     service.pulse()
     state = service.get_state()
-    assert set(state) == {"seq", "t", "t0", "tick_hz", "mode", "uptime_s", "subscribers"}
+    assert set(state) == {"seq", "t", "t0", "tick_hz", "mode", "clock_time_s",
+                          "subscribers"}
     assert (state["seq"], state["t"], state["tick_hz"], state["mode"]) == (1, 1.0, 1.0,
                                                                           "wall")
     assert state["subscribers"] == 2
@@ -451,7 +595,41 @@ def test_get_clock_is_the_documented_sample():
     # A sample, by construction: time moves on and the sample does not, until the pulse.
     fake.advance(0.9)
     assert service.get_state()["seq"] == 1
-    assert service.get_state()["uptime_s"] == pytest.approx(1.9)
+    assert service.get_state()["clock_time_s"] == pytest.approx(1.9)
+
+
+def test_engine_time_is_not_called_uptime():
+    """A driven clock's engine time is seconds ADVANCED, not seconds since boot.
+
+    Reported as `uptime_s`, sitting in `GET /api/clock/health` next to `t0` and
+    `last_pulse_age_s`, a reader takes it for wall uptime -- and a manual clock stepped
+    three times during an hour-long debugging session says `3.0`. Health now reports
+    both quantities under names that mean what they say, and the gap between them is
+    itself the diagnosis.
+    """
+    wall = FakeWall()
+    engine = TickEngine(ManualClock(), tick_hz=1.0, started_at=lambda: 1000.0)
+    service = ClockService(engine, monotonic=wall)
+
+    wall.advance(3600.0)                       # an hour of the operator staring at it
+    for _ in range(3):
+        service.handle("POST", "/api/clock/step", {})
+
+    assert engine.now() == 3.0                 # three ticks is all the clock advanced
+    health = service.get_health()
+    assert health["clock_time_s"] == pytest.approx(3.0)
+    assert health["uptime_s"] == pytest.approx(3600.0)
+    # The honest name is on the sample too, and `uptime_s` is not a field of it.
+    assert "uptime_s" not in service.get_state()
+    assert service.get_state()["clock_time_s"] == pytest.approx(3.0)
+
+
+def test_on_a_wall_clock_uptime_and_clock_time_agree():
+    """Which is why one field looked right: the mode it is wrong for is the driven one."""
+    service, _, fake = _service()
+    fake.advance(12.0)
+    health = service.get_health()
+    assert health["uptime_s"] == pytest.approx(health["clock_time_s"]) == 12.0
 
 
 def test_health_says_whether_anything_consumes_the_pulse():
@@ -471,7 +649,7 @@ def test_health_says_whether_anything_consumes_the_pulse():
 
 
 def test_step_over_the_api_advances_the_whole_system_by_one_tick():
-    engine = TickEngine(ManualClock(), tick_hz=2.0)
+    engine = TickEngine(ManualClock(), tick_hz=2.0, started_at=lambda: 1000.0)
     service = ClockService(engine)
     frames = []
     service.subscribe(frames.append)
@@ -479,7 +657,8 @@ def test_step_over_the_api_advances_the_whole_system_by_one_tick():
     status, body = service.handle("POST", "/api/clock/step", {})
     assert status == 200
     assert body == frames[-1] == {"schema_version": api.SCHEMA_VERSION, "seq": 1,
-                                  "t": 0.5, "tick_hz": 2.0, "mode": "manual"}
+                                  "t": 0.5, "tick_hz": 2.0, "mode": "manual",
+                                  "t0": 1000.0}
     assert len(frames) == 1
 
 
@@ -488,6 +667,31 @@ def test_step_is_refused_on_a_self_advancing_clock():
     status, body = service.handle("POST", "/api/clock/step", {})
     assert status == 409
     assert body["mode"] == "wall"
+
+
+def test_step_advances_a_replay_clock_too():
+    """A deliberate widening of the contract, now written down in docs/api.md.
+
+    `POST /api/clock/step` is accepted on any DRIVEN clock, not `manual` alone: a replay
+    driver advances a `ReplayClock` by seconds regardless, and refusing to let it
+    advance by exactly one tick would only push the boundary arithmetic -- the one thing
+    this module exists to own -- out into every driver.
+    """
+    engine = TickEngine(ReplayClock(), tick_hz=2.0, started_at=lambda: 1000.0)
+    service = ClockService(engine)
+    frames = []
+    service.subscribe(frames.append)
+
+    status, body = service.handle("POST", "/api/clock/step", {})
+    assert status == 200
+    assert (body["seq"], body["t"], body["mode"]) == (1, 0.5, "replay")
+    assert frames == [body]
+    assert api.validate_tick(body) == []
+
+    # And the driver's own advance and an API step share one boundary sequence.
+    engine.source.advance(0.5)
+    assert engine.poll().seq == 2
+    assert service.handle("POST", "/api/clock/step", {})[1]["seq"] == 3
 
 
 def test_mode_can_be_switched_over_the_api():
