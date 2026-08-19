@@ -123,6 +123,40 @@ def _sanitize_condition(condition: str) -> str:
     return condition
 
 
+def _phase_fault_entry(
+    *,
+    phase: str,
+    kind: str,
+    category: str | None,
+    expression: str,
+    reason: str,
+    recoverable: bool,
+) -> dict:
+    """A phase-machine fault in the shape `verdict.failure_modes` wants.
+
+    The phase machine is the monitor's second fault detector and, until now, the silent
+    one: `failure_modes` came only from the spec's *named* modes, so a phase invariant
+    breach halted this process while the token it published said CONTINUE. All three
+    phases in the shipped G1 spec declare `invariant_fault_category: "SAFETY"`, and P5
+    is contracted to obey the token and nothing else -- so a compliant supervisor had no
+    reason to stop the robot. G1's named modes cover the same ground by coincidence;
+    TIMEOUT and precondition faults have no such cover.
+
+    `name` is synthesised, since a spec names its own failure modes but not its phase
+    faults, and is stable per (phase, kind) so a consumer can key on it. `reason`,
+    `expression` and `recoverable` ride along for the node's own use; the wire builder
+    reads only name/fault_category/status.
+    """
+    return {
+        "name": f"phase:{phase}:{kind}",
+        "fault_category": category,
+        "status": MonitorStatus.VIOLATED.name,
+        "reason": reason,
+        "expression": expression,
+        "recoverable": recoverable,
+    }
+
+
 def _extract_aps_from_condition(condition: str) -> set[str]:
     """Return all AP identifier names used in a boolean condition expression."""
     try:
@@ -658,6 +692,15 @@ class LtlMonitorNode(Node):
         self._stale_sources: list = []
         self._has_data = False
         self._terminal: str | None = None
+        # The phase machine's own fault for this tick, in the shape
+        # `verdict.failure_modes` wants. It travels in the verdict because P5 is
+        # contracted to obey the token and nothing else -- a phase invariant breach that
+        # halted this process while publishing CONTINUE left a compliant supervisor with
+        # no reason to stop the robot.
+        self._phase_fault: dict | None = None
+        #: Faults already announced on the console, so a de-escalated one is reported
+        #: once rather than on every tick for the rest of the run.
+        self._reported_faults: set[str] = set()
 
         # The tick index is authoritative: the ledger, not message arrival, decides
         # whether an observation may step the automaton. See manifest.TickLedger.
@@ -874,11 +917,17 @@ class LtlMonitorNode(Node):
         """Problems that make a spec unrunnable here. Schema checks only happen once
         an adapter has announced itself -- with no adapter on the graph we cannot tell
         an unknown sensor field from an unseen one, and refusing every spec until then
-        would make the monitor unusable in replay/offline setups."""
+        would make the monitor unusable in replay/offline setups.
+
+        The fault-category check needs no adapter and runs either way: a category this
+        build cannot classify grades to a non-halting rung at runtime, so a spec that
+        ships one has a fault the monitor will never act on. Rejecting it here is the
+        only place the author still sees the name they mistyped."""
         schema_keys = (self.adapter_manifest.get("schema") or {}).keys()
+        problems = manifest_mod.fault_category_problems(data)
         if not schema_keys:
-            return spec_contract.validate_structure(data)
-        return spec_contract.validate(data, schema_keys)
+            return problems + spec_contract.validate_structure(data)
+        return problems + spec_contract.validate(data, schema_keys)
 
     def _spec_status(self, ok: bool, problems: list, skill_name: str = "") -> None:
         payload = json.dumps(api.build_spec_status(
@@ -982,6 +1031,8 @@ class LtlMonitorNode(Node):
         self.prev_statuses = dict(self.multi.statuses())
         self.step_idx = 0
         self.halted = False
+        self._phase_fault = None
+        self._reported_faults.clear()
         self._reset_phase_state()
 
         # Print new skill header and formulas/automaton table to stdout
@@ -998,21 +1049,25 @@ class LtlMonitorNode(Node):
 
     def _update_phase_state(
         self, observation: dict[str, bool]
-    ) -> tuple[str, str | None, str | None, bool]:
+    ) -> tuple[str, dict | None]:
         """
         Advance the phase state machine one step.
 
         Returns
         -------
-        (phase_name, failure_reason, fault_category, recoverable)
+        (phase_name, fault)
 
-        failure_reason is None when no failure occurred.
+        `fault` is None when no failure occurred, else the dict `_phase_fault_entry`
+        builds: a `verdict.failure_modes` row with the reason, the condition it came
+        from and whether it is recoverable carried alongside.
+
         recoverable=True  → enter IDLE (e.g. progress violations, awaitable)
-        recoverable=False → halt permanently  (e.g. invariant, timeout, precondition)
+        recoverable=False → halt  (e.g. invariant, timeout, precondition), subject to
+                            the intervention token -- see `_advance`.
         """
         phases = self.spec.execution_phases
         if not phases:
-            return "Idle", None, None, False
+            return "Idle", None
 
         def _eval(raw: str, default: bool) -> bool:
             try:
@@ -1020,8 +1075,8 @@ class LtlMonitorNode(Node):
             except Exception:
                 return default
 
-        def _enter_phase(idx: int) -> tuple[str, str | None, str | None, bool] | None:
-            """Try to enter phase[idx]; return failure tuple if precondition fails."""
+        def _enter_phase(idx: int) -> tuple[str, dict] | None:
+            """Try to enter phase[idx]; return the failure if the precondition fails."""
             p = phases[idx]
             self.phase_idx = idx
             self.phase_step_count = 0
@@ -1029,12 +1084,19 @@ class LtlMonitorNode(Node):
             self.get_logger().info(f"Phase enter: '{p['phase']}'")
             precond = p.get("precondition", "")
             if precond and not _eval(precond, True):
-                cat = p.get("precondition_fault_category", "PRECONDITION")
                 return (
                     p["phase"],
-                    f"Precondition not met on entry to phase '{p['phase']}': {precond}",
-                    cat,
-                    False,
+                    _phase_fault_entry(
+                        phase=p["phase"],
+                        kind="precondition",
+                        category=p.get("precondition_fault_category", "PRECONDITION"),
+                        expression=precond,
+                        reason=(
+                            f"Precondition not met on entry to phase "
+                            f"'{p['phase']}': {precond}"
+                        ),
+                        recoverable=False,
+                    ),
                 )
             return None
 
@@ -1048,7 +1110,7 @@ class LtlMonitorNode(Node):
                     return fail
 
         if self.phase_idx < 0:
-            return "Idle", None, None, False
+            return "Idle", None
 
         p     = phases[self.phase_idx]
         name  = p["phase"]
@@ -1057,12 +1119,16 @@ class LtlMonitorNode(Node):
         # ── Hard invariant (immediate failure) ────────────────────
         invariant = p.get("invariant", "")
         if invariant and not _eval(invariant, True):
-            cat = p.get("invariant_fault_category", "INVARIANT")
             return (
                 name,
-                f"Invariant violated in phase '{name}': {invariant}",
-                cat,
-                False,
+                _phase_fault_entry(
+                    phase=name,
+                    kind="invariant",
+                    category=p.get("invariant_fault_category", "INVARIANT"),
+                    expression=invariant,
+                    reason=f"Invariant violated in phase '{name}': {invariant}",
+                    recoverable=False,
+                ),
             )
 
         # ── Timing: max_steps ─────────────────────────────────────
@@ -1071,13 +1137,24 @@ class LtlMonitorNode(Node):
         if max_steps is not None and self.phase_step_count >= max_steps:
             return (
                 name,
-                f"Phase '{name}' timed out: {self.phase_step_count} steps elapsed (max={max_steps})",
-                "TIMEOUT",
-                False,
+                _phase_fault_entry(
+                    phase=name,
+                    kind="timeout",
+                    category="TIMEOUT",
+                    # A timeout is counted in ticks, not sensed: no condition was
+                    # evaluated, so no sensor's freshness bears on it.
+                    expression="",
+                    reason=(
+                        f"Phase '{name}' timed out: {self.phase_step_count} steps "
+                        f"elapsed (max={max_steps})"
+                    ),
+                    recoverable=False,
+                ),
             )
 
         # ── Progress condition (counted violations) ───────────────
-        if not _eval(p.get("progress_condition", "True"), True):
+        progress_condition = p.get("progress_condition", "True")
+        if not _eval(progress_condition, True):
             self.phase_violation_count += 1
             self.get_logger().warn(
                 f"Phase '{name}' progress violation {self.phase_violation_count}/{limit}"
@@ -1085,9 +1162,17 @@ class LtlMonitorNode(Node):
             if self.phase_violation_count >= limit:
                 return (
                     name,
-                    f"Phase '{name}' progress conditions violated {limit} consecutive step(s)",
-                    "PROGRESS",
-                    True,  # recoverable — await new skill execution
+                    _phase_fault_entry(
+                        phase=name,
+                        kind="progress",
+                        category="PROGRESS",
+                        expression=progress_condition,
+                        reason=(
+                            f"Phase '{name}' progress conditions violated {limit} "
+                            f"consecutive step(s)"
+                        ),
+                        recoverable=True,  # await new skill execution
+                    ),
                 )
         else:
             if self.phase_violation_count > 0:
@@ -1110,12 +1195,12 @@ class LtlMonitorNode(Node):
                 self.get_logger().info(f"Phase '{name}' complete — all phases done")
                 self.phase_idx = -1
                 self.phase_step_count = 0
-                return "Done", None, None, False
+                return "Done", None
 
         self.phase_step_count += 1
         if 0 <= self.phase_idx < len(phases):
-            return phases[self.phase_idx]["phase"], None, None, False
-        return "Idle", None, None, False
+            return phases[self.phase_idx]["phase"], None
+        return "Idle", None
 
     def _reset_phase_state(self) -> None:
         self.phase_idx = -1
@@ -1234,9 +1319,12 @@ class LtlMonitorNode(Node):
         self.halted = False
         self._terminal = None
         self._has_data = False
-        # The episode restarts; the tick stream does not. `last_seq` deliberately
-        # survives, so a redelivery from before the reset cannot be mistaken for the
-        # first tick of the new episode.
+        self._phase_fault = None
+        self._reported_faults.clear()
+        # The episode restarts; the tick stream does not. `last_seq` and the clock epoch
+        # deliberately survive, so a redelivery from before the reset cannot be mistaken
+        # for the first tick of the new episode -- while a genuinely restarted clock,
+        # which arrives with a new epoch, still is.
         self.ledger.reset()
         self._reset_phase_state()
         print(f"\n{BOLD}{'─' * 64}{RESET}")
@@ -1391,17 +1479,16 @@ class LtlMonitorNode(Node):
         # ── Named failure modes: detect newly violated formulas ───
         triggered_failures = self.multi.get_violated_failure_modes()
 
-        # Advance phase state machine
-        phase_fail_reason: str | None = None
-        phase_fault_cat:   str | None = None
-        phase_recoverable: bool       = False
+        # Advance phase state machine. Its fault is recorded before anything is graded,
+        # because it is one of the rows the verdict grades.
+        phase_fault: dict | None = None
         if self.has_phases:
             prev_phase_idx = self.phase_idx
-            phase_name, phase_fail_reason, phase_fault_cat, phase_recoverable = \
-                self._update_phase_state(observation)
+            phase_name, phase_fault = self._update_phase_state(observation)
             self.current_phase = phase_name
             if self.phase_idx != prev_phase_idx and self.phase_idx >= 0:
                 self._print_phase_context()
+        self._phase_fault = phase_fault
 
         # Print standard console step block
         _print_step_block(
@@ -1412,37 +1499,54 @@ class LtlMonitorNode(Node):
             phase_violations=self.phase_violation_count,
         )
 
-        # ── Named failure mode triggered → halt with fault info ───
+        # ── Named failure mode triggered → halt if the token halts ─
         if triggered_failures:
             mon, finfo = triggered_failures[0]  # first triggered is reported
-            RED = "\033[31m"
-            print(f"\n{BOLD}{'─' * 64}{RESET}")
-            print(f"{BOLD}{RED}  ✘  NAMED FAILURE: {finfo.name}{RESET}")
-            print(f"  Fault category : {finfo.fault_category}")
-            if finfo.description:
-                print(f"  Description    : {finfo.description}")
-            print(f"  Formula        : {mon.formula}")
-            if len(triggered_failures) > 1:
-                extras = ", ".join(f.name for _, f in triggered_failures[1:])
-                print(f"  Also triggered : {extras}")
-            print(f"{BOLD}{'─' * 64}{RESET}")
-            self.get_logger().error(
-                f"Named failure [{finfo.fault_category}] '{finfo.name}': {finfo.description}"
-            )
-            _print_summary(self.multi)
-            self._terminal = "FAILURE"
-            self._halt(f"[{finfo.fault_category}] {finfo.name}: {finfo.description}")
-            return
+            entry = {
+                "name": finfo.name,
+                "fault_category": finfo.fault_category,
+                "status": MonitorStatus.VIOLATED.name,
+            }
+            if finfo.name not in self._reported_faults:
+                self._reported_faults.add(finfo.name)
+                RED = "\033[31m"
+                print(f"\n{BOLD}{'─' * 64}{RESET}")
+                print(f"{BOLD}{RED}  ✘  NAMED FAILURE: {finfo.name}{RESET}")
+                print(f"  Fault category : {finfo.fault_category}")
+                if finfo.description:
+                    print(f"  Description    : {finfo.description}")
+                print(f"  Formula        : {mon.formula}")
+                if len(triggered_failures) > 1:
+                    extras = ", ".join(f.name for _, f in triggered_failures[1:])
+                    print(f"  Also triggered : {extras}")
+                print(f"{BOLD}{'─' * 64}{RESET}")
+                self.get_logger().error(
+                    f"Named failure [{finfo.fault_category}] '{finfo.name}': "
+                    f"{finfo.description}"
+                )
+            if self._fault_stops_the_run(entry):
+                _print_summary(self.multi)
+                self._terminal = "FAILURE"
+                self._halt(f"[{finfo.fault_category}] {finfo.name}: {finfo.description}")
+                return
+            # De-escalated by its own confidence: the verdict published on this tick
+            # does not say "stop", so neither does this process. Monitoring continues,
+            # and the same fault halts as soon as the data backing it is fresh again.
+            self._report_de_escalation(entry)
 
         # ── Phase failure ─────────────────────────────────────────
-        if phase_fail_reason is not None:
-            _print_summary(self.multi)
-            self._terminal = "FAILURE"
-            if phase_recoverable:
-                self._enter_idle(phase_fail_reason)
-            else:
-                self._halt(f"[{phase_fault_cat}] {phase_fail_reason}")
-            return
+        if phase_fault is not None:
+            if phase_fault["recoverable"]:
+                _print_summary(self.multi)
+                self._terminal = "FAILURE"
+                self._enter_idle(phase_fault["reason"])
+                return
+            if self._fault_stops_the_run(phase_fault):
+                _print_summary(self.multi)
+                self._terminal = "FAILURE"
+                self._halt(f"[{phase_fault['fault_category']}] {phase_fault['reason']}")
+                return
+            self._report_de_escalation(phase_fault)
 
         # Log current states to ROS logs
         for mon in self.multi.monitors:
@@ -1477,6 +1581,75 @@ class LtlMonitorNode(Node):
             self._enter_idle("Terminal state reached (success or failure)")
             return
 
+    # -- grading --------------------------------------------------------------
+
+    def _fault_stops_the_run(self, entry: dict) -> bool:
+        """Whether this fault, graded exactly as the verdict grades it, stops the run.
+
+        One decision, read twice. The node used to halt on any triggered failure mode
+        regardless of the rung it published, so on a `collision_imminent` derived from a
+        stale depth camera it told the supervisor WARN and shut itself down on the same
+        tick.
+        """
+        graded = manifest_mod.failure_mode_entries(
+            [entry], self._confidence,
+            mode_sources=self._mode_sources(),
+            stale_sources=self._stale_sources,
+        )[0]
+        return manifest_mod.fault_stops_the_run(graded)
+
+    def _report_de_escalation(self, entry: dict) -> None:
+        """Say once, loudly, that a fault was graded below HALT and why."""
+        key = f"de-escalated:{entry.get('name')}"
+        if key in self._reported_faults:
+            return
+        self._reported_faults.add(key)
+        self.get_logger().warn(
+            f"'{entry.get('name')}' [{entry.get('fault_category')}] is breached but "
+            f"graded below HALT on this tick's evidence "
+            f"(stale sources: {self._stale_sources or 'none'}). The verdict says so, "
+            f"and monitoring continues rather than acting on a fault this data cannot "
+            f"support."
+        )
+
+    def _mode_sources(self) -> dict | None:
+        """Failure-mode name -> the adapter sources its APs are computed from.
+
+        Rebuilt per tick rather than cached: the spec and the adapter manifest both
+        arrive over the wire and either can change mid-run, and a cache keyed on neither
+        is how a monitor ends up grading a new spec's modes against an old spec's
+        sources. None when no adapter has announced itself, which is the signal to
+        `failure_mode_entries` that per-mode freshness is not knowable here.
+        """
+        expressions = {
+            m.failure_mode.name: m.formula
+            for m in self.multi.get_failure_mode_monitors()
+        }
+        if self._phase_fault is not None:
+            expressions[self._phase_fault["name"]] = self._phase_fault["expression"]
+        return manifest_mod.expression_source_map(
+            expressions,
+            manifest_mod.ap_source_map(
+                self.spec.atomic_propositions, self.adapter_manifest
+            ),
+        )
+
+    def _failure_mode_rows(self) -> list[dict]:
+        """The spec's named failure modes, and the phase machine's own fault after
+        them. Order matters: `publish_legacy_state` pairs the first N with the monitors
+        they came from."""
+        rows = [
+            {
+                "name": m.failure_mode.name,
+                "fault_category": m.failure_mode.fault_category,
+                "status": m.status.name,
+            }
+            for m in self.multi.get_failure_mode_monitors()
+        ]
+        if self._phase_fault is not None:
+            rows.append(self._phase_fault)
+        return rows
+
     # -- the verdict ----------------------------------------------------------
 
     def verdict(self) -> dict:
@@ -1510,16 +1683,12 @@ class LtlMonitorNode(Node):
             formula_statuses=[
                 (m.name, m.status) for m in self.multi.get_property_monitors()
             ],
-            failure_modes=[
-                {
-                    "name": m.failure_mode.name,
-                    "fault_category": m.failure_mode.fault_category,
-                    "status": m.status.name,
-                }
-                for m in self.multi.get_failure_mode_monitors()
-            ],
+            failure_modes=self._failure_mode_rows(),
             confidence=self._confidence,
             stale_sources=self._stale_sources,
+            # Per mode, not one number for all of them: a quiet battery topic must not
+            # de-escalate a collision the depth camera saw perfectly well.
+            mode_sources=self._mode_sources(),
             steps_to_timeout=steps_to_timeout,
             violations_to_fault=violations_to_fault,
             violations_seen=self.phase_violation_count,
@@ -1558,6 +1727,29 @@ class LtlMonitorNode(Node):
         if self.check_formulas_file_changed():
             self.reload_specs()
         self.publish_legacy_state()
+
+    def _legacy_failure_modes(self, verdict: dict) -> list[dict]:
+        """`/ltl/state_description`'s `named_failure_modes`, graded exactly as the
+        verdict grades them.
+
+        The phase fault is included rather than zipped away: the legacy supervisor reads
+        this list and nothing else, so leaving it out would keep the un-migrated half of
+        the stack blind to a phase invariant breach for the whole dual-run window.
+        """
+        monitors = self.multi.get_failure_mode_monitors()
+        entries = verdict["failure_modes"]
+        rows = [
+            dict(entry, description=m.failure_mode.description, formula=m.formula)
+            for entry, m in zip(entries, monitors)
+        ]
+        for entry in entries[len(monitors):]:
+            fault = self._phase_fault or {}
+            rows.append(dict(
+                entry,
+                description=fault.get("reason", ""),
+                formula=fault.get("expression", ""),
+            ))
+        return rows
 
     def publish_legacy_state(self) -> None:
         """The `/ltl/*` half of the dual-run window.
@@ -1628,14 +1820,7 @@ class LtlMonitorNode(Node):
             # `confidence` on every entry, mirroring the verdict. The legacy consumers
             # are the ones the missing key actually broke: supervisor_logic's VIOLATED
             # branch reads it here, and defaulted a dead-sensor fault to 1.0.
-            "named_failure_modes": [
-                dict(entry, description=info.description, formula=formula)
-                for entry, info, formula in zip(
-                    verdict["failure_modes"],
-                    [m.failure_mode for m in self.multi.get_failure_mode_monitors()],
-                    [m.formula for m in self.multi.get_failure_mode_monitors()],
-                )
-            ],
+            "named_failure_modes": self._legacy_failure_modes(verdict),
         }
         self.state_desc_pub.publish(String(data=json.dumps(state_desc)))
 
