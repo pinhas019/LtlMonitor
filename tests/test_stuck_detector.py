@@ -48,6 +48,25 @@ def test_single_bad_tick_does_not_fire_and_recovers():
     assert s.count == 0
 
 
+def test_reset_forgets_the_streak():
+    """An episode boundary is not a recovery. Without reset() the previous episode's
+    blocked ticks count toward the next episode's nav_stuck, firing it on the first
+    blocked observation of a fresh run -- the false positive the debounce exists to
+    prevent. See AdapterSpec.reset(): the streak lives in the extractor's closure on
+    the SPEC, so constructing a new SensorState does not clear it."""
+    s = StuckStreak(threshold=3)
+    s.update("no_path_found")
+    s.update("no_path_found")
+    assert s.count == 2
+
+    s.reset()
+    assert s.count == 0 and not s.is_stuck
+
+    for _ in range(3):
+        s.update("no_path_found")
+    assert s.is_stuck, "reset() broke the counter rather than clearing it"
+
+
 def test_streak_stays_stuck_while_state_remains_blocked():
     s = StuckStreak(threshold=2)
     s.update("no_path_found")
