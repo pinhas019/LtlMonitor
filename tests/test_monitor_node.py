@@ -728,3 +728,96 @@ def test_the_stub_stands_aside_for_an_installed_but_unimported_rclpy(tmp_path,
 
     # …and with no real rclpy on the path it still installs, idempotently.
     assert ros_stub.install() is sys.modules["rclpy"]
+
+
+# =============================================================================
+# 5. A monitor that stops stepping must say so
+# =============================================================================
+
+def test_a_monitor_that_stops_stepping_says_so_on_the_verdict_topic():
+    """The failure this closes: the envelope publisher dies while the legacy one keeps
+    going, and `_on_observation` returns above the ledger, above missed-tick accounting
+    and above every log statement. Fifty legacy messages produced zero steps, zero
+    verdicts and zero log lines — a safety monitor that had stopped monitoring and said
+    nothing at all. The clock is a different publisher and is still ticking, so it is
+    the one thing left that knows time is passing.
+    """
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)
+    before = len(verdicts(node))
+
+    last_pulse = 1 + monitor_node._STALL_TICKS + 1
+    for seq in range(2, last_pulse + 1):
+        tick(node, seq)
+
+    stall = verdicts(node)[before:]
+    assert stall, "the clock advanced with no step and the monitor published nothing"
+    # A tick with no observation is exactly "not enough data", so the stall frame
+    # lands in the vocabulary already specified for it rather than a new one.
+    assert stall[-1]["verdict"] == "INCONCLUSIVE_NO_DATA"
+    assert stall[-1]["seq"] == last_pulse, \
+        "the frame carries the clock's index, not a stale observation's"
+    assert stall[-1]["missed_ticks"] >= monitor_node._STALL_TICKS
+
+
+def test_a_halted_monitor_is_allowed_to_be_quiet():
+    """A halted monitor is supposed to be silent. Crying wolf there would teach an
+    operator to ignore the one indication that matters."""
+    node = a_node()
+    tick(node, 1)
+    node.halted = True
+    before = len(verdicts(node))
+    for seq in range(2, 15):
+        tick(node, seq)
+    assert verdicts(node)[before:] == []
+
+
+def test_stepping_again_clears_the_stall():
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)
+    for seq in range(2, 2 + monitor_node._STALL_TICKS + 1):
+        tick(node, seq)
+    assert node._stalled is True
+
+    resumed = 2 + monitor_node._STALL_TICKS
+    tick(node, resumed)
+    observe(node, resumed)
+    assert node._stalled is False
+
+
+def test_the_legacy_wire_is_readmitted_only_after_a_longer_silence():
+    """Re-admission is deliberately slower than the indication: legacy arrivals carry no
+    `seq` and are numbered from their own counter, so re-admitting a merely *slow*
+    envelope double-steps the tick they share."""
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)                       # the envelope wins from here
+    legacy_observe(node)
+    steps_after_demotion = len(verdicts(node))
+
+    for seq in range(2, 2 + monitor_node._LEGACY_READMIT_TICKS + 1):
+        tick(node, seq)
+    assert node._legacy_readmitted is True
+
+    legacy_observe(node)
+    assert len(verdicts(node)) > steps_after_demotion, \
+        "the legacy wire should step again once the envelope has gone quiet"
+
+
+def test_a_returning_envelope_demotes_the_legacy_wire_again():
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)
+    for seq in range(2, 2 + monitor_node._LEGACY_READMIT_TICKS + 1):
+        tick(node, seq)
+    assert node._legacy_readmitted is True
+
+    back = 2 + monitor_node._LEGACY_READMIT_TICKS
+    tick(node, back)
+    observe(node, back)
+    assert node._legacy_readmitted is False
+    before = len(verdicts(node))
+    legacy_observe(node)
+    assert len(verdicts(node)) == before, "the legacy copy must not step again"
