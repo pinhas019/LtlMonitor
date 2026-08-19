@@ -73,6 +73,13 @@ class StuckStreak:
     def update(self, state: str) -> None:
         self._count = self._count + 1 if is_blocked_state(state) else 0
 
+    def reset(self) -> None:
+        """Forget the streak. An episode boundary (`arm`/`reset`, docs/clocking.md)
+        is not a recovery -- without this the previous episode's nine blocked ticks
+        carry over and nav_stuck fires on the first blocked observation of the next
+        run, which is exactly the false positive the debounce exists to prevent."""
+        self._count = 0
+
     @property
     def is_stuck(self) -> bool:
         return self._count >= self.threshold

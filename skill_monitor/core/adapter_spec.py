@@ -57,6 +57,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+import warnings
 from collections import ChainMap
 from pathlib import Path
 
@@ -380,6 +381,12 @@ class Step:
                 f"keys {list(self.keys)}")
         return {k: self._coerce(v) for k, v in zip(self.keys, vals)}
 
+    def reset(self):
+        """Clear this step's extractor state, if it has any. See AdapterSpec.reset()."""
+        streak = getattr(self.fn, "streak", None)
+        if streak is not None:
+            streak.reset()
+
     def _coerce(self, v):
         if self.cast is not None:
             v = CASTS[self.cast](v)
@@ -521,6 +528,21 @@ class AdapterSpec:
 
     def _by_id(self) -> dict:
         return {s.id: s for s in self.sources}
+
+    def reset(self):
+        """Clear every stateful extractor this descriptor loaded.
+
+        Debounce state lives in the extractor's closure, which belongs to the SPEC and
+        not to a SensorState -- so two SensorStates over one AdapterSpec share one
+        streak, and reloading the descriptor was the only way to clear it. There is an
+        episode boundary in docs/clocking.md (`arm`/`reset` restarts `step`), and
+        carrying the previous episode's nine blocked ticks across it fires nav_stuck on
+        the first blocked observation of a fresh run: precisely the false positive the
+        debounce exists to prevent. `SensorState.reset()` calls this.
+        """
+        for src in self.sources:
+            for step in src.steps:
+                step.reset()
 
     def manifest(self) -> dict:
         """The JSON this adapter announces on the wire, as the keyword arguments
@@ -763,6 +785,19 @@ class SensorState:
         #: Closed ticks. -1 until the first tick, so `ticks` is the index of the tick
         #: `sensor_eval()` is currently describing.
         self.ticks = -1
+        self._updates_since_tick = 0
+        self._warned_unticked = False
+        # A caller that never calls tick() gets a monitor whose sensor values are the
+        # schema defaults forever, and it is SILENT: sensor_eval() returns a full,
+        # plausible dict and every test stays green. DeclarativeAdapter is in exactly
+        # that state on dev today (P3 is what will call tick()), so this is a live
+        # regression rather than a hypothetical one -- make it detectable.
+        #
+        # The budget is derived rather than picked: a hundred times the messages the
+        # declared rates say one tick should hold, floored well above any plausible
+        # burst, so it cannot fire on a fast topic that is being ticked normally.
+        expected_per_tick = sum(s.expected_hz for s in spec.sources) / spec.tick_hz
+        self._untick_budget = max(1000, int(100 * expected_per_tick))
         # Uncontended under the default single-threaded executor, and load-bearing the
         # moment anyone adds a callback group, a MultiThreadedExecutor, or the server
         # tier's network thread: without it a message landing mid-tick can append to a
@@ -800,6 +835,16 @@ class SensorState:
             # as having delivered nothing, which under three-valued APs promotes
             # every AP over it to UNKNOWN and freezes the automaton.
             self._window_sources.add(source_id)
+            self._updates_since_tick += 1
+            if self._updates_since_tick > self._untick_budget and not self._warned_unticked:
+                self._warned_unticked = True      # once per un-ticked stretch, not per message
+                warnings.warn(
+                    f"{self.spec.name}: {self._updates_since_tick} messages have been "
+                    f"folded into the open window with no intervening tick(). Only "
+                    f"tick() writes the observation, so sensor_eval() is still "
+                    f"returning the schema defaults and the window is growing without "
+                    f"bound -- whoever owns this SensorState is not driving the clock",
+                    RuntimeWarning, stacklevel=2)
             return dict(self.values) | scratch
 
     def tick(self, t: float | None = None) -> dict:
@@ -844,6 +889,8 @@ class SensorState:
                 # exactly one window, not raise out of every tick from here on.
                 self._window.clear()
                 self._window_sources.clear()
+                self._updates_since_tick = 0
+                self._warned_unticked = False
                 raise
 
             self.values = candidate
@@ -852,7 +899,30 @@ class SensorState:
             self.ticks += 1
             self._window.clear()
             self._window_sources.clear()
+            self._updates_since_tick = 0
+            self._warned_unticked = False
             return dict(self.values)
+
+    def reset(self):
+        """Back to the pre-episode state: defaults held, window empty, tick index
+        before the first tick, and every stateful extractor cleared.
+
+        docs/clocking.md gives the episode a `step` index that `arm`/`reset` restarts.
+        Without this there was no way to restart anything but the values: the debounce
+        streak lives in the extractor's closure on the SPEC, so it survived
+        constructing a new SensorState, and the previous episode's blocked ticks
+        counted toward the next episode's nav_stuck.
+        """
+        with self._lock:
+            self.values = self.spec.defaults()
+            self._window.clear()
+            self._window_sources.clear()
+            self._refreshed = frozenset()
+            self._refreshed_sources = frozenset()
+            self.ticks = -1
+            self._updates_since_tick = 0
+            self._warned_unticked = False
+            self.spec.reset()
 
     def _fold(self, key: str, policy: str, samples: list):
         """The single value this key's samples collapse to, or `_MISSING` when the
@@ -908,6 +978,13 @@ class SensorState:
         period must not accumulate."""
         with self._lock:
             return sum(len(v) for v in self._window.values())
+
+    @property
+    def updates_since_tick(self) -> int:
+        """Messages folded into the OPEN window. Grows without bound exactly when
+        nobody is calling tick(), which is the one broken state `sensor_eval()` cannot
+        show you: it keeps returning a full, plausible dict of schema defaults."""
+        return self._updates_since_tick
 
 
 # ------------------------------------------------------------------- loading

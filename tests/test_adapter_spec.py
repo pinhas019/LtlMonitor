@@ -15,6 +15,8 @@ and they assert nothing about any particular robot's topics.
 
 import json
 import math
+import threading
+import warnings
 
 import pytest
 
@@ -517,6 +519,128 @@ def test_two_instances_do_not_share_debounce_state():
     b.tick()
     assert a.sensor_eval()["nav_stuck"] is True
     assert b.sensor_eval()["nav_stuck"] is False
+
+
+# ------------------------------------------------- the episode boundary: reset()
+
+def test_two_states_over_ONE_spec_share_the_streak():
+    """Pinned because it is surprising and because it is what reset() is for: the
+    streak lives in the extractor's closure, which belongs to the SPEC. Constructing
+    a fresh SensorState does not give you a fresh debounce."""
+    spec = _spec([_status_source(debounce_s=2.0)])
+    a, b = adapter_spec.SensorState(spec), adapter_spec.SensorState(spec)
+    a.update("status", {"state": "unreachable"})
+    a.tick()
+    b.update("status", {"state": "unreachable"})
+    b.tick()                                              # b's FIRST blocked tick
+    assert b.sensor_eval()["nav_stuck"] is True, (
+        "the shared streak stopped being shared; the reset() rationale needs revisiting")
+
+
+def test_reset_clears_the_streak_at_an_episode_boundary():
+    """`arm`/`reset` restarts the episode (docs/clocking.md). Carrying the previous
+    episode's blocked ticks across it fires nav_stuck on the first blocked
+    observation of a fresh run -- the exact false positive the debounce prevents."""
+    st = _state([_status_source(debounce_s=3.0)])
+    for _ in range(2):
+        st.update("status", {"state": "unreachable"})
+        st.tick()
+    assert st.sensor_eval()["nav_stuck"] is False         # 2 of 3
+
+    st.reset()
+
+    st.update("status", {"state": "unreachable"})
+    st.tick()
+    assert st.sensor_eval()["nav_stuck"] is False, (
+        "the previous episode's streak counted toward this one")
+    st.update("status", {"state": "unreachable"})
+    st.tick()
+    st.update("status", {"state": "unreachable"})
+    st.tick()
+    assert st.sensor_eval()["nav_stuck"] is True, "and the fresh streak still works"
+
+
+def test_reset_restores_the_defaults_the_window_and_the_tick_index():
+    st = _state([_range_source(aggregate="min"), _status_source()])
+    st.update("points", {"range": 0.2})
+    st.tick()
+    st.update("points", {"range": 0.3})                   # left in the OPEN window
+    assert st.sensor_eval()["min_range"] == 0.2 and st.ticks == 0
+
+    st.reset()
+    assert st.sensor_eval() == st.spec.defaults()
+    assert st.ticks == -1
+    assert st.pending_samples() == 0
+    assert st.refreshed_keys() == frozenset()
+    assert st.refreshed_sources() == frozenset()
+
+
+def test_reset_on_one_state_clears_the_shared_streak_for_the_other():
+    spec = _spec([_status_source(debounce_s=2.0)])
+    a, b = adapter_spec.SensorState(spec), adapter_spec.SensorState(spec)
+    a.update("status", {"state": "unreachable"})
+    a.tick()
+    b.reset()
+    b.update("status", {"state": "unreachable"})
+    b.tick()
+    assert b.sensor_eval()["nav_stuck"] is False
+
+
+# --------------------------------- the one broken state sensor_eval cannot show you
+
+def test_updating_forever_without_ticking_warns():
+    """A caller that never calls tick() gets the schema defaults forever, and it is
+    SILENT: sensor_eval() returns a full, plausible dict and every test stays green.
+    DeclarativeAdapter is in exactly that state on dev today -- P3 is what will call
+    tick() -- so this is a live regression, not a hypothetical one."""
+    st = _state([_range_source()])
+    budget = st._untick_budget
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(budget + 2):
+            st.update("points", {"range": 1.0})
+
+    assert len(caught) == 1, "warned per message, or not at all"
+    assert issubclass(caught[0].category, RuntimeWarning)
+    assert "tick()" in str(caught[0].message)
+    assert st.updates_since_tick == budget + 2
+    assert st.sensor_eval()["min_range"] == 10.0, "the schema default, forever"
+
+
+def test_a_ticked_state_never_warns_however_fast_the_topic():
+    """The budget is derived from the declared rates, so a genuinely fast source that
+    IS being ticked must stay silent -- a warning that cries wolf is not a guard."""
+    st = _state([_range_source(expected_hz=200.0)], tick_hz=1.0)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(50):
+            for _ in range(200):                          # a full second of samples
+                st.update("points", {"range": 1.0})
+            st.tick()
+    assert caught == [], [str(w.message) for w in caught]
+
+
+def test_the_declarative_adapter_does_not_tick_yet():
+    """Pinning the live regression itself, so merging cannot make it invisible.
+
+    DeclarativeAdapter._on_message calls update() and nothing calls tick(), so
+    get_sensor_eval() returns the defaults for the life of the process. P3 is the
+    package that drives the clock; when it does, THIS test is what has to change,
+    and its failure is the notification.
+    """
+    from skill_monitor.backend.adapters.declarative import DeclarativeAdapter
+
+    adapter = DeclarativeAdapter("real_g1")
+    before = adapter.get_sensor_eval()
+    for _ in range(50):
+        adapter.state.update("odom", _odom(z=0.2, vx=1.25))
+
+    assert adapter.get_sensor_eval() == before, (
+        "DeclarativeAdapter now moves its values -- if it calls tick(), delete this "
+        "test; if it does not, something else is writing the observation")
+    assert adapter.state.updates_since_tick == 50, (
+        "the window is where those 50 messages went, and it is not being closed")
 
 
 # ---------------------------------------------------- within-message chaining
