@@ -10,7 +10,25 @@ which rows reach the verdict builder.
 Nothing here simulates ROS. Publishers record, subscriptions are a dispatch table, and
 timers never fire; the node is then driven by calling its callbacks directly, which is
 what a real executor does anyway. `install()` refuses to run if a real `rclpy` is
-importable, so a ROS machine skips these tests rather than testing the stub.
+importable -- it asks `real_ros_present()`, not whether `rclpy` happens to have been
+imported yet, because an installed-but-unimported ROS is exactly the case where
+replacing `rclpy`, `std_msgs` and `geometry_msgs` for the whole pytest process does
+damage. The `pytestmark` skipif in the test modules does not cover this: skipif
+suppresses *tests*, and `install()` runs at module scope, before any of them.
+
+**What this stub is not.** Everything below is a fidelity gap, and a test that would
+only pass because of one of them is testing this file rather than the package:
+
+* **Timers never fire.** `create_timer` records the callback and stops. Anything the
+  node schedules -- `heartbeat`, `_do_shutdown` -- has zero coverage unless a test
+  calls it directly, which is why `test_monitor_node.py` does exactly that.
+* **The three QoS policy enums are one aliased class.** `DurabilityPolicy`,
+  `ReliabilityPolicy` and `HistoryPolicy` are all `_Policy`, so a nonsense pairing
+  like `DurabilityPolicy.RELIABLE` resolves here and would fail against real rclpy.
+* **`QoSProfile` accepts arbitrary keyword arguments** and never validates them.
+* **No transport.** No message loss, no QoS depth or history, no ordering between
+  topics, no delivery latency: a callback runs synchronously inside the call that
+  publishes to it. Nothing here can pin behaviour that depends on any of those.
 """
 
 from __future__ import annotations
@@ -140,19 +158,43 @@ def _qos_module() -> types.ModuleType:
     return qos
 
 
+#: Set on the stub `rclpy` so it can be told from a real one in `sys.modules`.
+_STUB_FLAG = "_is_skill_monitor_stub"
+
+
 def real_ros_present() -> bool:
     """True when this machine has a real `rclpy`, in which case the stub must not be
-    installed over it -- these tests are skipped there rather than testing a fiction."""
-    return importlib.util.find_spec("rclpy") is not None
+    installed over it -- these tests are skipped there rather than testing a fiction.
+
+    Answers the same way before and after `install()`. `importlib.util.find_spec` reads
+    `sys.modules` first and raises `ValueError: rclpy.__spec__ is None` for a module
+    built with `types.ModuleType`, which is every module in this file -- so an
+    already-installed stub is recognised by its flag rather than handed to `find_spec`.
+    """
+    existing = sys.modules.get("rclpy")
+    if existing is not None:
+        return not getattr(existing, _STUB_FLAG, False)
+    try:
+        return importlib.util.find_spec("rclpy") is not None
+    except (ImportError, ValueError):
+        # An `rclpy` whose own import machinery is broken is not one to shadow either.
+        return False
 
 
-def install() -> types.ModuleType:
-    """Put the stubs in `sys.modules` and return the stub `rclpy`. Idempotent."""
+def install() -> types.ModuleType | None:
+    """Put the stubs in `sys.modules` and return the stub `rclpy`. Idempotent.
+
+    Returns None, having changed nothing, when a real ROS is installed on this machine:
+    the modules replaced here are process-wide, and `sys.modules` is not the question --
+    a real `rclpy` that simply has not been imported yet is still the one that must win.
+    """
+    if real_ros_present():
+        return None
     if "rclpy" not in sys.modules or not getattr(
-        sys.modules["rclpy"], "_is_skill_monitor_stub", False
+        sys.modules["rclpy"], _STUB_FLAG, False
     ):
         rclpy = _rclpy_module()
-        rclpy._is_skill_monitor_stub = True
+        setattr(rclpy, _STUB_FLAG, True)
         node_mod = types.ModuleType("rclpy.node")
         node_mod.Node = Node
         rclpy.node = node_mod
