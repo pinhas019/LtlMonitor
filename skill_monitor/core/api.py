@@ -319,8 +319,8 @@ _TICK_FIELDS: dict[str, _Check] = {
 }
 
 
-def build_tick(*, seq: int, t: float, tick_hz: float, mode: str = "wall",
-               t0: float = 0.0) -> dict:
+def build_tick(*, seq: int, t: float, tick_hz: float, t0: float,
+               mode: str = "wall") -> dict:
     """The only thing that advances the system.
 
     `tick_hz` is the *effective* rate after any CLI override, not the descriptor
@@ -334,6 +334,12 @@ def build_tick(*, seq: int, t: float, tick_hz: float, mode: str = "wall",
     whole beginning of the new run, however far the previous one had got. Same `t0` and
     a lower `seq` is a redelivery to drop; a different `t0` is a new clock, and the
     consumer must reset its own tick bookkeeping to follow it.
+
+    **Required, and deliberately with no default**, unlike `mode`. A default would let
+    a producer that has never heard of `t0` emit a frame claiming `t0 == 0.0` that
+    validates perfectly -- and two such producers would be indistinguishable, which is
+    the exact failure this field exists to prevent. Forgetting it is a `TypeError` at
+    the call site instead of a wrong answer on the wire.
     """
     return _clocked_envelope(seq, t) | {"tick_hz": tick_hz, "mode": mode, "t0": t0}
 
