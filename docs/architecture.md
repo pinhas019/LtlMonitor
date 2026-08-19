@@ -118,6 +118,17 @@ over completely different topics:
 | `mujoco` | `/odom`, `/scan`, `/navigate_to_pose/_action/status`, `/vision/goal_similarity` |
 | `isaac_lab` | `/odom`, `/g1/lidar/points`, `/navigate_to_pose/_action/status`, `/vision/goal_similarity` |
 
+**Superseded, and the reason matters.** The robot no longer runs Nav2 — navigation is the
+TRAV algorithm on a RealSense D435i, no lidar. That change alone would have broken the two
+sim descriptors above, and it exposed a deeper fault: the schema read the *planner's own
+status* (`nav_state`, `nav_mode`, `nav_stuck`, `mission_finished`, `num_waypoints`,
+`current_target_idx`), so swapping planners broke the monitor. A monitor that must be told
+by the planner whether the planner is stuck is not independent of it.
+
+[P12](packages/P12-planner-independent-schema.md) redesigns the schema around the robot's
+own sensors plus the commanded waypoints, and forbids every planner topic by test. Until it
+lands, treat the topic table above as describing the old, planner-coupled design.
+
 ```bash
 python3 -c "from skill_monitor.core import adapter_spec as a; \
   print({n: sorted(a.load(n).keys()) == sorted(a.load('real_g1').keys()) for n in a.available()})"
@@ -156,6 +167,46 @@ the same schema keys, and the monitor package never reads `skill_monitor/adapter
 | dev overlay | `deploy/docker-compose.dev.yml` | the live source mount, applied over any of the above |
 
 Volumes: `/config` read-only (adapters + specs), `/data` read-write (verdicts + renders).
+
+### Trust boundary
+
+**No service in this system authenticates anything.** The clock's `/api/clock*` and the
+gateway's `/api/monitors/*` both accept unauthenticated state-changing POSTs — pausing the
+tick, arming or resetting a monitor, replacing the running spec. Two services were written
+to this contract independently and both defaulted to binding every interface, because the
+contract never said otherwise. It says so now:
+
+- **Bind loopback by default.** Exposing a service on `0.0.0.0` is a deliberate act, made
+  in a compose file where it is visible, not a library default.
+- **The tier boundary is the trust boundary.** Everything on the robot tier trusts
+  everything else on it. Nothing off the tier is trusted.
+- **If the network is not trusted, terminate TLS and authenticate in front.** A partial
+  auth layer inside these services would be worse than none, because it would be believed.
+- **CORS is not access control.** A wildcard `Access-Control-Allow-Origin` plus a granted
+  `Content-Type` header lets any web page an operator visits drive a cross-origin JSON POST
+  at the robot. State-changing routes must not be reachable that way.
+
+### Anything in this repo that serves HTTP
+
+The clock and the gateway were written a week apart, by different authors, against the same
+contract. Both bound every interface, both trusted `Content-Length` while ignoring
+`Transfer-Encoding`, and neither checked `Host`. Three identical defects, independently
+arrived at, because the contract asked for none of it. It asks now — this list is the
+minimum, and a review should reject a new HTTP surface that skips any of it:
+
+| requirement | why, concretely |
+|---|---|
+| bind loopback by default | exposure is a compose-file decision, visible in review, not a library default |
+| validate `Host` against an allowlist | binding loopback stops a *remote* attacker, not a browser on the operator's own machine. DNS rebinding makes the attacker's page same-origin with the service, so there is no preflight and it sets any header and method it likes |
+| reject `Transfer-Encoding`, or TE+CL together | a proxy prefers TE, this stack trusts CL, and the deployment story is "authenticate in a proxy in front" — so the desync lands precisely on the auth boundary and the smuggled request is the one nobody authorised |
+| bound the body, and `close_connection` on rejection | answering 413 without draining or closing leaves the undrained bytes to be parsed as the next request on the same socket |
+| bound in-flight requests and set a socket timeout | capping WebSockets is not enough: any handler that waits — a spec push, a dribbled body — parks a thread, and `MAX_BODY_BYTES` bounds the declared size, never the arrival rate |
+| a custom-header gate on state-changing methods | not authentication, and must not be described as such. It is CSRF defence: no forbidden-header-free browser API can set a non-safelisted header, so forms, `sendBeacon` and `no-cors` fetches are all refused |
+| override `handle_error` | the stdlib prints a full traceback per client reset; on an exposed port that is log exhaustion |
+
+None of this is authentication. If the network is not trusted, terminate TLS and
+authenticate in front — and note that doing so is what makes the smuggling and `Host` rules
+load-bearing rather than theoretical.
 
 Two caveats stated once rather than left implied: containerising the frontend means mounting
 `/var/run/docker.sock` into it, which is root-equivalent control of the host daemon — right

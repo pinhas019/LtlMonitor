@@ -26,10 +26,18 @@ Three rates, named once so they are never conflated again:
 | `max_age_s`, `debounce_s`, `emit_delay_s` | durations | seconds |
 | `max_steps`, `progress_violation_limit` | legacy spec budgets | **ticks** — see P11 |
 
-**Tick *k* is the half-open interval `[B_k, B_k+1)` where `B_k = t₀ + k·Δ`**, measured on
-the active clock — wall clock live, replay clock offline. Half-open is the point: every
-instant belongs to exactly one tick, so no sample is counted twice and none falls between
-ticks.
+**Tick *k* is the half-open interval `(B_k−1, B_k]` where `B_k = t₀ + k·Δ`**, measured on
+the active clock — wall clock live, replay clock offline. **A tick is named by the boundary
+that closes it**, so the pulse, the observation and the verdict carrying `seq=k` all describe
+the same interval: the one that just ended. Naming it by its opening boundary instead would
+put a permanent off-by-one between the pulse and everything downstream.
+
+Half-open is the other half of the point: every instant belongs to exactly one tick, so no
+sample is counted twice and none falls between ticks.
+
+**`seq` counts closed intervals, so it starts at 1.** `seq = 0` means no interval has closed
+yet — it is the value `GET /api/clock` returns before the first pulse, and it is not an
+interval anyone can describe. Interval 0 would have to end at `t₀`, before the clock existed.
 
 ```
         B_k                         B_k+1                       B_k+2
@@ -40,7 +48,8 @@ ticks.
          │   rate, into window k       │                          │
       open k                     close k / open k+1          close k+1
                                        │
-                                       └─▶ fold → commit → tick-steps
+                                       └─▶ fold → tick-steps → publish
+                                           (all-or-nothing)
                                            → emit observation(seq=k)
                                            → automaton steps once
                                            → emit verdict(seq=k)
@@ -203,6 +212,12 @@ hardware-agnosticism claim outright.
 ticks"; `_fn_stuck_streak` ([adapter_spec.py:86](../skill_monitor/core/adapter_spec.py#L86))
 advances inside `Step.apply`, i.e. once per incoming message. At a 5 Hz status topic that
 debounce is 2 s, not 10 s.
+
+**Superseded by [P12](packages/P12-planner-independent-schema.md):** `nav_stuck` is being
+removed altogether, along with every other key sourced from the planner's status stream. It
+becomes `no_progress`, derived from odometry against the commanded goal — which also fixes
+the deeper problem that a planner reporting `following` while physically wedged was
+structurally invisible. The debounce-in-ticks fix below still applies, to the new key.
 
 **In sim it never fires at all.** `mujoco.json` and `isaac_lab.json` attach the streak to
 the Nav2 source, whose `GoalStatusArray` publishes on status *transitions*, not periodically.

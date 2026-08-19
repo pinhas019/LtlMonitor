@@ -27,6 +27,7 @@ as a nine-branch sweep someone forgets.
 | [P6 gateway](P6-gateway.md) | `backend/feat-gateway` | `backend/gateway.py`, `deploy/Dockerfile.gateway`, `tests/test_gateway.py` | P0 |
 | [P7 frontend](P7-frontend.md) | `frontend/feat-observation-panel` | `frontend/*`, `deploy/Dockerfile.skill_center`, `tests/test_skill_center.py` | P0, P6 |
 | [P8 deploy](P8-deploy.md) | `deploy/feat-container-split` | `skill_monitor/__init__.py`, `deploy/*`, `sim/docker-compose.sim.yml`, `tests/test_config_resolution.py` | — |
+| [P12 planner-independent schema](P12-planner-independent-schema.md) | `core/feat-planner-independent-schema` | `adapters/nav_schema.json`, `adapters/real_g1.json`, the new extractors in `core/adapter_spec.py`, the regenerated spec, `tests/test_planner_independence.py` | **P2, P3** |
 | [P9 docs](P9-docs.md) | `docs/feat-architecture-map` | `docs/*`, `README.md`, `CONTRIBUTING.md` | — |
 
 Concatenate the "files owned" column and check for duplicates — that check is the guarantee

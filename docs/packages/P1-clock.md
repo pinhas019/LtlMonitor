@@ -48,9 +48,11 @@ In `replay` mode, an external driver advances the clock instead of wall time.
 ## Design
 
 **The tick is an interval, and the definition is the contract.** Tick *k* is the half-open
-interval `[t₀ + k·Δ, t₀ + (k+1)·Δ)` with `Δ = 1/tick_hz` **seconds** on the active clock.
-Half-open means every instant belongs to exactly one tick — no sample counted twice, none
-lost between ticks. Full semantics: [../clocking.md](../clocking.md#the-tick-defined).
+interval `(B_k−1, B_k]` where `B_k = t₀ + k·Δ` and `Δ = 1/tick_hz` **seconds** on the active
+clock. Half-open means every instant belongs to exactly one tick — no sample counted twice,
+none lost between ticks. A tick is **named by the boundary that closes it**, so `seq=n` on a
+pulse, an observation and a verdict all mean the same interval; `seq=0` means no interval
+has closed yet and never reaches the wire. Full semantics: [../clocking.md](../clocking.md#the-tick-defined).
 
 **The pulse never waits for data.** It fires on an empty interval, because that is precisely
 the tick that must report "not enough data" downstream. There is no watermark and no

@@ -136,3 +136,6 @@ venv.bak/
 # Project specific ignores
 output/
 scratch/
+
+# Agent worktrees — transient, never committed
+.claude/worktrees/
