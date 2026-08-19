@@ -1682,6 +1682,197 @@ def test_shipped_vision_source_reads_the_float32_data_field():
         assert st.refreshed_keys() == {"image_similarity_to_goal"}, name
 
 
+def test_real_g1_status_json_field_paths_and_casts_are_pinned():
+    """The planner's own status stream is what P12 redesigns -- but it SHIPS today and
+    it runs today, and until it is replaced a typo in one of these field names is a
+    monitor reporting the step default as if it were an observation. When P12 lands,
+    this test is rewritten with the schema; it is not deleted ahead of it.
+
+    The casts are pinned with values that need them. `path_manager` is JSON over a
+    `std_msgs/String`, so a number arriving as `"3"` is exactly what `cast: int` is
+    there for -- and with the cast dropped the key holds a string that every numeric
+    rule then compares wrongly.
+    """
+    st = adapter_spec.SensorState(adapter_spec.load("real_g1"))
+    st.update("status", {"mode": "AUTOMATIC", "state": "following", "finished": 0,
+                         "num_waypoints": "3", "current_target_idx": "1"})
+    st.tick()
+    v = st.sensor_eval()
+    assert v["nav_mode"] == "AUTOMATIC", "not the 'mode' field"
+    assert v["nav_state"] == "following", "not the 'state' field"
+    assert v["mission_finished"] is False, "not the 'finished' field, or cast dropped"
+    assert v["num_waypoints"] == 3, "cast: int dropped on num_waypoints"
+    assert v["current_target_idx"] == 1, "cast: int dropped on current_target_idx"
+
+    st.update("status", {"finished": 1})
+    st.tick()
+    assert st.sensor_eval()["mission_finished"] is True, "cast: bool dropped"
+
+
+def test_real_g1_status_step_defaults_are_pinned():
+    """An absent field falls back to the step's declared default rather than blanking
+    the key -- and those defaults are the "nothing has happened yet" reading every
+    rule is written against."""
+    st = adapter_spec.SensorState(adapter_spec.load("real_g1"))
+    st.update("status", {})                               # every field absent
+    st.tick()
+    v = st.sensor_eval()
+    assert v["nav_mode"] == "MANUAL"
+    assert v["nav_state"] == "waiting_inputs"
+    assert v["mission_finished"] is False
+    assert v["num_waypoints"] == 0 and v["current_target_idx"] == 0
+
+
+def test_real_g1_nav_stuck_debounces_at_the_declared_threshold():
+    """real_g1 still counts MESSAGES, deliberately -- the migration to `on: "tick"`
+    plus `debounce_s` lands with the schema redesign. Until then the shipped number is
+    10 and the descriptor is the only place it is written down: dropping it to 3 makes
+    nav_stuck fire in under a third of the intended window, and nothing else notices.
+    """
+    st = adapter_spec.SensorState(adapter_spec.load("real_g1"))
+    for _ in range(9):
+        st.update("status", {"state": "no_path_found"})
+    st.tick()
+    assert st.sensor_eval()["nav_stuck"] is False, "fired before the 10th message"
+
+    st.update("status", {"state": "no_path_found"})
+    st.tick()
+    assert st.sensor_eval()["nav_stuck"] is True, "did not fire on the 10th"
+
+    st.update("status", {"state": "following"})           # recovery clears it at once
+    st.tick()
+    assert st.sensor_eval()["nav_stuck"] is False
+
+
+@pytest.mark.parametrize("name", ["mujoco", "isaac_lab"])
+def test_sim_nav2_source_mapping_is_pinned(name):
+    """The sim descriptors translate Nav2's status into the planner vocabulary with
+    three steps whose ARGUMENTS carry the meaning: `const` says the sim is always
+    under automatic control, and `eq.to` says which state counts as mission-complete.
+    Both are plain strings in JSON that nothing else checks.
+    """
+    st = adapter_spec.SensorState(adapter_spec.load(name))
+    assert st.sensor_eval()["nav_mode"] == "MANUAL", "the schema default, pre-message"
+
+    st.update("nav2", None)                               # empty status_list
+    st.tick()
+    assert st.sensor_eval()["nav_state"] == "waiting_inputs", (
+        "an empty status_list overwrote the state instead of leaving it alone")
+
+    st.update("nav2", 2)                                  # executing
+    st.tick()
+    v = st.sensor_eval()
+    assert v["nav_state"] == "following"
+    assert v["nav_mode"] == "AUTOMATIC", "const value is not AUTOMATIC"
+    assert v["mission_finished"] is False
+
+    st.update("nav2", 4)                                  # succeeded
+    st.tick()
+    v = st.sensor_eval()
+    assert v["nav_state"] == "finished"
+    assert v["mission_finished"] is True, "eq.to is not 'finished'"
+
+    st.update("nav2", 6)                                  # aborted
+    st.tick()
+    v = st.sensor_eval()
+    assert v["nav_state"] == "no_path_found"
+    assert v["mission_finished"] is False
+
+
+@pytest.mark.parametrize("name", ["mujoco", "isaac_lab"])
+def test_sim_nav_stuck_debounces_at_the_declared_threshold(name):
+    st = adapter_spec.SensorState(adapter_spec.load(name))
+    for _ in range(9):
+        st.update("nav2", 6)                              # aborted -> no_path_found
+    st.tick()
+    assert st.sensor_eval()["nav_stuck"] is False, "fired before the 10th message"
+    st.update("nav2", 6)
+    st.tick()
+    assert st.sensor_eval()["nav_stuck"] is True
+
+
+def test_real_g1_points_height_band_is_pinned():
+    """`z_lo`/`z_hi` decide what counts as an obstacle at all. Narrowing 0.1-1.5 to
+    0.3-0.9 blinds the robot to anything outside a 60 cm slab -- a kerb, a table edge,
+    a low bar -- while the optical-remap test above stays green, because a wall at
+    chest height is inside every plausible band.
+
+    Written in the OPTICAL frame the descriptor declares, so it pins the band and the
+    remap together: body (x fwd, y left, z up) is optical (z, -x, -y).
+    """
+    st = adapter_spec.SensorState(adapter_spec.load("real_g1"))
+
+    # body z = 0.2 -- above the 0.1 floor, below a narrowed 0.3 one. 2 m ahead.
+    st.update("points", [(0.0, -0.2, 2.0)])
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 2.0, "the 0.1 m floor moved up"
+
+    # body z = 1.4 -- under the 1.5 ceiling, above a narrowed 0.9 one. 3 m ahead.
+    st.update("points", [(0.0, -1.4, 3.0)])
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 3.0, "the 1.5 m ceiling moved down"
+
+    # ...and the band still EXCLUDES what it is there to exclude: floor and ceiling.
+    st.update("points", [(0.0, -0.05, 2.0), (0.0, -1.6, 2.0)])
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 10.0, "the band widened"
+
+
+def test_isaac_lab_range_height_band_is_pinned():
+    """The same band, in the body frame isaac_lab's cloud is already in."""
+    st = adapter_spec.SensorState(adapter_spec.load("isaac_lab"))
+
+    st.update("range", [(2.0, 0.0, 0.2)])
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 2.0, "the 0.1 m floor moved up"
+
+    st.update("range", [(3.0, 0.0, 1.4)])
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 3.0, "the 1.5 m ceiling moved down"
+
+    st.update("range", [(2.0, 0.0, 0.05), (2.0, 0.0, 1.6)])
+    st.tick()
+    assert st.sensor_eval()["min_range"] == 10.0, "the band widened"
+
+
+#: Adapter-level `defaults` overrides, per descriptor. Nav2 reports no waypoint count,
+#: so the sim descriptors declare the single implicit goal `send_goal.py` sends; a rule
+#: like `current_target_idx < num_waypoints` reads differently at any other number, and
+#: real_g1 gets the real count off its status topic and must NOT override.
+SHIPPED_DEFAULT_OVERRIDES = {
+    "real_g1": {},
+    "mujoco": {"num_waypoints": 1},
+    "isaac_lab": {"num_waypoints": 1},
+}
+
+
+def test_shipped_adapter_level_defaults_are_pinned():
+    assert set(adapter_spec.available()) == set(SHIPPED_DEFAULT_OVERRIDES)
+    for name, overrides in SHIPPED_DEFAULT_OVERRIDES.items():
+        held = adapter_spec.SensorState(adapter_spec.load(name)).sensor_eval()
+        assert held["num_waypoints"] == overrides.get("num_waypoints", 0), name
+        for key, value in overrides.items():
+            assert held[key] == value, f"{name}: {key}"
+
+
+#: What the evaluator's console block shows for each robot. Emptying it, or dropping a
+#: key from it, leaves an operator staring at a monitor that reports nothing -- and no
+#: other test looks at this list.
+SHIPPED_DESCRIBE_KEYS = {
+    "real_g1": ["min_range", "nav_mode", "nav_state", "image_similarity_to_goal"],
+    "mujoco": ["min_range", "nav_state", "image_similarity_to_goal"],
+    "isaac_lab": ["min_range", "nav_state", "image_similarity_to_goal"],
+}
+
+
+def test_shipped_describe_lists_are_pinned():
+    assert set(adapter_spec.available()) == set(SHIPPED_DESCRIBE_KEYS)
+    for name, keys in SHIPPED_DESCRIBE_KEYS.items():
+        spec = adapter_spec.load(name)
+        assert spec.describe_keys == keys, name
+        assert set(keys) <= set(spec.keys()), f"{name}: describes a key it cannot read"
+
+
 def test_every_shipped_descriptor_ticks_without_data():
     """A tick fires even when nothing arrived -- that is the tick that has to report
     that nothing arrived."""
