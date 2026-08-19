@@ -277,15 +277,16 @@ def test_a_nan_epoch_does_not_readmit_every_redelivery():
 
 
 def test_a_field_a_newer_clock_adds_is_not_a_malformed_tick():
-    """`api.validate_tick` closes the payload, so P1's `t0` reads as an unknown field --
-    and a monitor that drops the pulse for that reason goes deaf to the very clock that
-    would have told it about the restart."""
-    newer = api.build_tick(seq=1, t=1.0, tick_hz=1.0) | {"t0": 1000.0}
+    """`api.validate_tick` closes the payload, so any field a later release adds reads as
+    an unknown one -- and a monitor that drops the pulse for that reason goes deaf to the
+    very clock that would have told it about a restart. `t0` was the worked example until
+    P1 landed and made it known; the rule outlives it, so the example moves on."""
+    newer = api.build_tick(seq=1, t=1.0, tick_hz=1.0, t0=1000.0) | {"drift_ppm": 12.0}
     assert api.validate_tick(newer) != []                      # the contract says so…
     assert manifest.tick_problems_that_matter(api.validate_tick(newer)) == []
 
     broken = {"schema_version": 1, "seq": "eleven", "t": 1.0, "tick_hz": 1.0,
-              "mode": "wall"}
+              "mode": "wall", "t0": 1000.0}
     assert manifest.tick_problems_that_matter(api.validate_tick(broken)) != []
 
 

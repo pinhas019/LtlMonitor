@@ -113,6 +113,11 @@ class Node:
     def get_logger(self) -> Logger:
         return self._logger
 
+    def get_topic_names_and_types(self):
+        # ponytail: only the topics this node itself made. A real graph also lists
+        # every other node's — give the stub a settable list when a test needs one.
+        return [(topic, []) for topic in sorted({*self.publishers, *self.subscriptions})]
+
     def destroy_node(self) -> None:
         pass
 
