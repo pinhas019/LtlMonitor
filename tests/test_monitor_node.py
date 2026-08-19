@@ -13,7 +13,9 @@ stepped, which a real one would only obscure.
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 
 import pytest
 
@@ -612,3 +614,51 @@ def test_the_ablation_records_the_fault_the_token_was_graded_from():
             {"name": "fell_over", "fault_category": "SAFETY", "status": "VIOLATED"},
         ],
     }) == "fell_over"
+
+
+# =============================================================================
+# …and the stub itself: standing aside on a machine that has real ROS
+# =============================================================================
+
+_ROS_MODULES = (
+    "rclpy", "rclpy.node", "rclpy.qos",
+    "std_msgs", "std_msgs.msg", "geometry_msgs", "geometry_msgs.msg",
+)
+
+
+def test_real_ros_present_answers_the_same_after_the_stub_is_installed():
+    """It is called from `install()`, which runs when the stub may already be in
+    `sys.modules` from another test module. `importlib.util.find_spec` raises
+    `ValueError: rclpy.__spec__ is None` for a `types.ModuleType`, so asking it about an
+    installed stub turned the guard into a crash instead of an answer."""
+    assert sys.modules["rclpy"]._is_skill_monitor_stub is True
+    assert ros_stub.real_ros_present() is False
+
+
+def test_the_stub_stands_aside_for_an_installed_but_unimported_rclpy(tmp_path,
+                                                                    monkeypatch):
+    """The docstring promised `install()` refuses to run when a real `rclpy` is
+    importable; the only guard was `"rclpy" not in sys.modules`, and a real ROS that no
+    one has imported yet is not in `sys.modules`. On a ROS machine that replaced rclpy,
+    std_msgs and geometry_msgs for the whole pytest process -- and `pytestmark` does not
+    save it, because skipif suppresses tests while `install()` runs at module scope."""
+    real = tmp_path / "rclpy"
+    real.mkdir()
+    (real / "__init__.py").write_text("_is_the_real_thing = True\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    saved = {name: sys.modules[name] for name in _ROS_MODULES if name in sys.modules}
+    for name in _ROS_MODULES:
+        sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+    try:
+        assert ros_stub.real_ros_present() is True
+        assert ros_stub.install() is None
+        assert "rclpy" not in sys.modules, "the stub was installed over a real rclpy"
+        assert "std_msgs" not in sys.modules
+        assert "geometry_msgs" not in sys.modules
+    finally:
+        sys.modules.update(saved)
+
+    # …and with no real rclpy on the path it still installs, idempotently.
+    assert ros_stub.install() is sys.modules["rclpy"]
