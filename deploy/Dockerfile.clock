@@ -19,10 +19,17 @@ ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app:${PYTHONPATH}
 
 # Documentation only -- the compose files run this with network_mode: host, so the port
 # is the host's. 8081, because 8080 is the gateway.
+#
+# The service binds 127.0.0.1 by default and the compose files pass no --host, so under
+# network_mode: host it is reachable by the rest of the tier's stack -- the gateway
+# proxies /api/clock* -- and by nothing off the box. That default is load-bearing: this
+# API has no authentication, and POST /api/clock/mode {"paused": true} stops the tick
+# the safety monitor advances on. Publishing it is an explicit --host 0.0.0.0, with
+# something in front that terminates TLS and authenticates.
 EXPOSE 8081
 
-# --tick-hz/--rate, --mode/--source, --paused, --port. The compose files pass the
-# --rate/--source spelling:
+# --tick-hz/--rate, --mode/--source, --paused, --port, --host. The compose files pass
+# the --rate/--source spelling:
 #   docker run ... skill-monitor/clock --rate 1.0 --source wall
 #   docker run ... skill-monitor/clock --rate 1.0 --source replay --paused
 ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 -m skill_monitor.backend.clock_node \"$@\"", "--"]
