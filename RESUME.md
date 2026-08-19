@@ -1,7 +1,139 @@
-# Resume — session of 2026-08-17
+# Resume
 
-Handoff for continuing in a new chat. Plan of record: `THESIS_PLAN.md` on TRAV
-branch `ltl-skill-monitor` (revision 4).
+**Newest session first.** Sessions 1 and 2 below are kept for the decisions they
+record, not for their status lines — every "unpushed", test count and `/ltl/*` topic
+name in them is out of date. Session 3 is the current state.
+
+---
+
+# Session 3 — package split, waves 1–2 (2026-08-19)
+
+Everything is pushed. `git clone git@github.com:pinhas019/LtlMonitor.git` and
+`git checkout dev` is the whole handoff; nothing lives on one disk.
+
+```
+origin  git@github.com:pinhas019/LtlMonitor.git
+dev     ecd3634    python3 -m pytest  →  704 passed, ~15 s
+```
+
+Setup on a fresh machine: Python 3.10 and `pytest`. There is no `requirements.txt`
+and the suite needs nothing else. **`rclpy` and `spot` are not installed and are not
+needed** — `tests/ros_stub.py` fakes the ROS layer, and everything in
+`skill_monitor/backend/` is therefore *unrun* code on a dev host. Say so in commits
+rather than implying it was tested. The package is on `sys.path` via a `.pth` in user
+site-packages; `pip install -e .` fails here (setuptools predates PEP 660).
+
+## Where the work is
+
+The plan of record is [docs/packages/README.md](docs/packages/README.md) — ownership
+matrix, merge order, and the P0–P12 briefs. Read that plus
+[docs/architecture.md](docs/architecture.md), [docs/api.md](docs/api.md) and
+[docs/clocking.md](docs/clocking.md) before touching code.
+
+| package | branch | state |
+|---|---|---|
+| P0 contracts | `core/feat-wire-contract` | **merged** (PR #1 carried the docs; the module landed with it) |
+| P1 clock | `core/feat-clock-service` | **merged** — PR #2 |
+| P2 observation | `core/feat-observation-window` | **merged** — PR #3 |
+| P6 gateway | `backend/feat-gateway` | **merged** — PR #5 |
+| P12 planner-independent schema (doc) | `docs/feat-planner-independent-schema` | **merged** — PR #1. Implementation not started |
+| P4 monitor | `backend/feat-verdict-topic` | **PR #4 open**, rebased on `ecd3634`, 773 pass. Wants a re-review |
+| P5 supervisor (doc) | `docs/feat-episode-end-stops-actuating` | **PR #6 open**, docs only, rebased, 704 pass |
+| P3 evaluator | `backend/feat-evaluator-tick` | not started |
+| P5 supervisor (code) | `backend/refactor-supervisor-token` | not started |
+| P7 frontend | `frontend/feat-observation-panel` | not started |
+| P8 deploy | `deploy/feat-container-split` | not started |
+| P9 docs | `docs/feat-architecture-map` | not started |
+
+Open PRs: [#4](https://github.com/pinhas019/LtlMonitor/pull/4),
+[#6](https://github.com/pinhas019/LtlMonitor/pull/6).
+
+## What landed, and the bugs it killed
+
+- **`core/api.py`** is now the single wire contract: `/monitor/*` topic constants,
+  `SCHEMA_VERSION`, and a builder + validator per payload. JSON in
+  `std_msgs/String`, so `core/` keeps its no-ROS property and the gateway stays a
+  pass-through.
+- **The clock is a service.** `Δ = 1/tick_hz` **seconds**; tick *k* is the half-open
+  interval `(B_k−1, B_k]`, named by the boundary that closes it; `seq=0` means nothing
+  has closed yet, so the first pulse is `seq=1`. `t0` is the restart discriminator —
+  same `t0` with a lower `seq` is a redelivery to drop, a different `t0` is a new clock.
+  Without it a restarted clock made the monitor permanently deaf (every re-numbered
+  pulse read as stale); that is fixed and tested.
+- **The observation window** folds event-driven arrivals and emits on the tick.
+  `SensorState.tick()` is the *sole* writer of held values, so they are tick-stable.
+- **The gateway** proxies ROS to HTTP/WS with the payload byte-identical on both
+  transports. Hardened over real loopback sockets: loopback bind, Host allowlist
+  (DNS rebinding), `Transfer-Encoding` and negative `Content-Length` rejected
+  (CL.TE smuggling — an earlier body-limit fix answered 413 without draining, and a
+  pipelined `POST /api/clock/mode {"paused":true}` executed), `X-Skill-Monitor`
+  required (CSRF), body cap, stream cap.
+
+## Next actions, in order
+
+1. **Re-review and merge PR #4.** Four blockers were fixed and pushed. Outstanding
+   non-blocking findings: `tests/ros_stub.py` timers never fire and its QoS enums are
+   aliased strings; `_mode_sources` is recomputed per call; the `fault_category` alias
+   loop in `tests/test_manifest.py` asserts what the fixture already fixed.
+2. **After #4 merges**, drop `skill_monitor/backend/ablation_runner.py` and
+   `.../monitor_node.py` from `AWAITING_MIGRATION` in `tests/test_api.py:506` —
+   `test_the_migration_allowlist_is_still_accurate` fails if an entry no longer has a
+   literal, so it will tell you. Branch `chore/prune-migration-allowlist`.
+3. **PR #6** carries the episode-end decision (see below) but the agent stalled before
+   applying the matching corrections to `architecture.md` and `clocking.md`. Finish
+   those, then merge.
+4. **Wave 3 — P3, P5, P7** can then run concurrently. P7 must import from
+   `core/discovery.py` rather than re-scanning, and must send `X-Skill-Monitor` on
+   every gateway call.
+5. **P12 implementation** is blocked on two facts only a robot can supply: the D435i
+   depth topic name (likely `/camera/camera/depth/color/points`) and calibration of
+   `arrival_radius`, the `closing_speed` epsilon, the `no_progress` `debounce_s` and
+   the `min_range` height band.
+
+## Decisions taken this session (do not re-litigate)
+
+1. **Merges happen only through a pull request, and the merge is fast-forward.** Never
+   `git merge` a feature branch into `dev` locally. Pull with `git pull --rebase`.
+   This is rule 1 in [CONTRIBUTING.md](CONTRIBUTING.md#non-negotiable) and it was
+   violated once in wave 1; the fix was to leave it and use PRs from then on.
+2. **The monitor is planner-independent.** It reads the robot's own sensors and the
+   waypoints the robot was *commanded* to reach — never the planner's self-report.
+   TRAV replaced Nav2 and the monitor should not have noticed. `/path_manager/status`,
+   `/traversable_path*` and `/filtered_map` are forbidden inputs — **the decision is
+   recorded but nothing enforces it yet**; `test_no_forbidden_topic_in_any_descriptor`
+   ships with P12's implementation, and six of today's fourteen schema keys still come
+   from `/path_manager/status`. See
+   [docs/packages/P12-planner-independent-schema.md](docs/packages/P12-planner-independent-schema.md).
+3. **Episode-end is stop-actuating.** The supervisor treats the end of an episode the
+   same as a halt token: it stops actuating. This resolves the TIMEOUT/PROGRESS
+   divergence found in the token/halt agreement table. PR #6 specifies it.
+4. **Hardware agnosticism is verified, not asserted.** `real_g1`, `mujoco` and
+   `isaac_lab` expose an identical 14-key schema over completely different topics:
+   ```bash
+   python3 -c "from skill_monitor.core import adapter_spec as a; \
+     print({n: sorted(a.load(n).keys()) == sorted(a.load('real_g1').keys()) for n in a.available()})"
+   ```
+
+## Watch out for
+
+- **Rebasing a wave-1 branch onto today's `dev` breaks quietly.** `t0` became a
+  *required* field of `build_tick`, so a fixture that omits it now raises at the call
+  site — and, worse, a pulse without `t0` is refused by `validate_tick`, which
+  silently stops the clock. Four stall tests on PR #4 were asserting against a
+  detector that was never being pulsed. Run the whole suite after every rebase, not
+  the package's own file.
+- The suite takes ~15 s on `dev` but ~80 s on `backend/feat-verdict-topic`; that is
+  the branch's own tests, not a hang.
+- Agent worktrees under `.claude/worktrees/` are gitignored and were all pruned. A
+  stalled agent can leave a worktree whose index is reset to an *ancestor* commit —
+  it looks like 500 deleted lines and is not real work. Diff it against the branch's
+  own history before believing it.
+
+---
+
+# Session 1 — 2026-08-17
+
+Plan of record: `THESIS_PLAN.md` on TRAV branch `ltl-skill-monitor` (revision 4).
 
 ---
 
