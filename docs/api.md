@@ -257,7 +257,7 @@ so the frontend has one origin.
 a `wall` clock: a `manual` clock stepped three times reports 3.0 however long the process
 has been running. `GET /api/clock/health` carries both it and a true `uptime_s`.
 
-Two constraints that are part of the contract, not implementation detail:
+Three constraints that are part of the contract, not implementation detail:
 
 - **`GET /api/clock` is a sample, not a stream.** It is up to Δ seconds stale by
   construction and polling it will miss ticks. Anything that must not miss a tick uses the
@@ -266,6 +266,10 @@ Two constraints that are part of the contract, not implementation detail:
   change is recorded in the verdict stream. `max_steps` is tick-denominated until P11, so a
   120-tick phase budget is 2 minutes at 1 Hz and 24 seconds at 5 Hz — a rate change
   mid-episode would silently redefine every timeout in the spec.
+- **The clock service has no authentication and binds loopback by default.** `POST
+  /api/clock/mode {"paused": true}` stops the tick for every service on the tier.
+  Exposing it is a deliberate `--host 0.0.0.0`, behind something that terminates TLS
+  and authenticates — the same rule the gateway states for itself.
 
 ## Gateway API
 

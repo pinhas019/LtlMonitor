@@ -18,6 +18,23 @@ property `core/` has, for the same reason.
 **Standalone**: this service pulses and answers queries with nothing else on the graph.
 That is its whole job, so it has no degraded mode.
 
+**No authentication, and this is deliberate.** Every endpoint is open to anything that
+can reach the port, and the write endpoints are not read-only conveniences: `POST
+/api/clock/mode {"paused": true}` stops the tick for every service on the tier, and on
+the robot tier that is the clock the safety monitor advances on. A token check bolted on
+here would be worse than none, because it would be believed -- there is no session
+store, no rate limit, no audit trail and no CSRF defence in this file. If the network is
+not trusted, terminate TLS and authenticate *in front* of this process (a reverse proxy,
+or the gateway's own front door), the same way P6 says for the gateway.
+
+What this file does instead is refuse to make the exposure accidental: **the default
+bind is `127.0.0.1`**, so a clock is reachable by the containers sharing its network
+namespace -- which under `network_mode: host` is the whole tier's stack, including the
+gateway that proxies `/api/clock*` -- and by nothing else. Publishing it to a network is
+`--host 0.0.0.0`, an act someone has to perform on purpose and can be grepped for in a
+compose file. CORS stays `*`: a same-origin policy is not a security boundary when there
+are no credentials to protect, and pretending otherwise only breaks the browser client.
+
 The HTTP surface is stdlib `http.server` plus ~30 lines of RFC 6455 framing rather than a
 web framework: the clock must build in a bare `ros:humble` image with no pip install, and
 one send-only WebSocket is not worth a dependency in every tier's image.
@@ -34,16 +51,46 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from skill_monitor.core import api
-from skill_monitor.core.clock import ArmedTracker, ClockService, TickEngine
+from skill_monitor.core.clock import (
+    MAX_TICK_HZ, ArmedTracker, ClockService, TickEngine, valid_tick_hz,
+)
 
 #: Not 8080 -- that is the gateway (P6), and both tiers run with host networking.
 DEFAULT_PORT = 8081
 
-#: How much finer than the tick period the poll timer runs. The pulse count does not
-#: depend on this (that is the engine's invariant); only how promptly a boundary is
-#: noticed does. Capped so a 0.1 Hz clock does not sleep for seconds at a time.
+#: Loopback. Exposing the clock has to be a deliberate `--host 0.0.0.0` -- see the
+#: module docstring for why an unauthenticated `pause` is worth that friction.
+DEFAULT_HOST = "127.0.0.1"
+
+#: The largest request body this service will read. Every payload it accepts is a few
+#: dozen bytes (`{"tick_hz": 5.0}`), so this is pure denial-of-service ceiling rather
+#: than a real limit; without it a declared `Content-Length` is an allocation request
+#: from anyone who can open the port. The other copy of this shape is
+#: `skill_monitor/backend/gateway.py` (`MAX_BODY_BYTES`, `_read_body`), whose ceiling is
+#: 8 MiB because it accepts pushed skill specs. Two call sites is not a shared helper.
+MAX_BODY_BYTES = 64 * 1024
+
+#: How much finer than the tick period the poll timer runs.
+#:
+#: The pulse count does not depend on this -- that is the engine's invariant -- so this
+#: number is chosen for CPU cost alone, and it is spent on a Jetson beside the
+#: perception stack. Latency is therefore *proportional*: a boundary is noticed within
+#: Delta/20, i.e. 5% of a period, at every rate. A 0.1 Hz clock noticing a boundary
+#: 0.5 s late is exactly as prompt, in the only units the tick has, as a 1 Hz clock
+#: noticing one 50 ms late.
+#:
+#: The previous absolute 20 ms ceiling made the divisor dead at every realistic rate: it
+#: won for any tick_hz below 2.5, so the shipped 1 Hz clock woke 50 times a second to
+#: discover that nothing had happened 49 of them.
 _POLL_DIVISOR = 20
-_POLL_CEILING_S = 0.02
+
+#: Never busier than 5 kHz, whatever the rate. At `MAX_TICK_HZ` this is Delta/5, so the
+#: floor still leaves five polls per period; it binds only above 250 Hz.
+_POLL_FLOOR_S = 0.0002
+
+#: And never lazier than once a second, so a pathologically slow clock (Delta > 20 s)
+#: still wakes often enough to notice a shutdown. This one only makes latency better.
+_POLL_CEILING_S = 1.0
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -115,7 +162,9 @@ class ClockRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         # The frontend may be served from anywhere, and the clock is queryable
         # standalone -- with no gateway in front of it there is no other origin to
-        # inherit. Read-only data about a tick; nothing here is worth a credential.
+        # inherit. Not because the endpoints are harmless (`mode` pauses the tick) but
+        # because there are no credentials here for a same-origin policy to protect:
+        # the boundary is the loopback bind and whatever proxy fronts it, never CORS.
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
@@ -130,9 +179,28 @@ class ClockRequestHandler(BaseHTTPRequestHandler):
             return
         self._respond(*self.service.handle("GET", path))
 
+    def _read_body(self) -> bytes | None:
+        """The request body, or `None` having already answered why there is not one.
+
+        Same shape as `skill_monitor/backend/gateway.py:_read_body` -- 400 on a
+        `Content-Length` that is not an integer, 413 above `MAX_BODY_BYTES` -- and
+        deliberately a second copy rather than a shared helper, because two call sites
+        in two processes with two different ceilings is not an abstraction.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._respond(400, {"error": "Content-Length is not an integer"})
+            return None
+        if length > MAX_BODY_BYTES:
+            self._respond(413, {"error": f"body larger than {MAX_BODY_BYTES} bytes"})
+            return None
+        return self.rfile.read(length) if length > 0 else b""
+
     def do_POST(self):  # noqa: N802 - stdlib hook
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
+        raw = self._read_body()
+        if raw is None:
+            return
         if raw:
             try:
                 body = json.loads(raw)
@@ -191,13 +259,18 @@ class ClockRequestHandler(BaseHTTPRequestHandler):
             self.service.unsubscribe(sink)
 
 
-def serve_http(service: ClockService, *, host: str = "0.0.0.0", port: int = DEFAULT_PORT,
+def serve_http(service: ClockService, *, host: str = DEFAULT_HOST,
+               port: int = DEFAULT_PORT,
                log=lambda message: None) -> ThreadingHTTPServer:
     """Start the HTTP surface on a daemon thread and return the server.
 
     Threading, because a WebSocket client holds its connection open for the run: a
     single-threaded server would answer `GET /api/clock` for exactly as long as nobody
     was streaming.
+
+    `host` defaults to loopback. There is no authentication on any of these endpoints
+    and one of them pauses the tick the safety monitor advances on, so binding to a
+    network is a caller's explicit decision, never this function's default.
     """
     handler = type("BoundClockRequestHandler", (ClockRequestHandler,),
                    {"service": service, "log_line": staticmethod(log)})
@@ -209,6 +282,18 @@ def serve_http(service: ClockService, *, host: str = "0.0.0.0", port: int = DEFA
 
 # ------------------------------------------------------------------------ cli
 
+def _tick_hz_arg(value: str) -> float:
+    """`--tick-hz`, validated by the same rule `POST /api/clock/rate` applies.
+
+    Here rather than in `main`, so an out-of-range rate is a usage error on the command
+    line instead of a traceback out of a constructor after `rclpy.init`.
+    """
+    try:
+        return valid_tick_hz(float(value))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="clock_node",
@@ -217,9 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
     # --rate / --source are what deploy/docker-compose.*.yml pass; --tick-hz / --mode are
     # the names in the docs. Aliases rather than a rename: the compose files belong to
     # P8, and a flag name is not worth a cross-package edit.
-    parser.add_argument("--tick-hz", "--rate", dest="tick_hz", type=float, default=1.0,
-                        help="declared tick frequency in Hz; the period is 1/tick_hz "
-                             "SECONDS on the active clock (default: 1.0)")
+    parser.add_argument("--tick-hz", "--rate", dest="tick_hz", type=_tick_hz_arg,
+                        default=1.0,
+                        help=f"declared tick frequency in Hz, 0 < hz <= {MAX_TICK_HZ:g}; "
+                             f"the period is 1/tick_hz SECONDS on the active clock "
+                             f"(default: 1.0)")
     parser.add_argument("--mode", "--source", dest="mode", default="wall",
                         choices=list(api.CLOCK_MODES),
                         help="wall: live. replay: advanced by a driver, so replay speed "
@@ -230,8 +317,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "ticks and no gap. An explicit step still advances")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"HTTP port for the clock API (default: {DEFAULT_PORT})")
-    parser.add_argument("--host", default="0.0.0.0",
-                        help="HTTP bind address (default: 0.0.0.0)")
+    parser.add_argument("--host", default=DEFAULT_HOST,
+                        help=f"HTTP bind address (default: {DEFAULT_HOST}). There is no "
+                             f"authentication on this API and POST /api/clock/mode can "
+                             f"pause the tick every service advances on, so publishing "
+                             f"it to a network is an explicit --host 0.0.0.0 behind a "
+                             f"proxy that authenticates")
     parser.add_argument("--no-http", action="store_true",
                         help="topic only; for a tier that reaches the clock over DDS")
     return parser
@@ -243,8 +334,12 @@ def poll_period(delta: float) -> float:
     Only affects how promptly a boundary is noticed. The pulse count is a function of
     elapsed clock time and the declared rate, never of this number -- which is the
     invariant that lets it be chosen for CPU cost alone.
+
+    `Delta/_POLL_DIVISOR`, clamped by a floor (never busier than 5 kHz) and a ceiling
+    (never lazier than 1 s). Both clamps only ever make the period *smaller* than the
+    tick, so the guarantee that survives every rate is `poll_period(d) <= d / 5`.
     """
-    return max(0.001, min(delta / _POLL_DIVISOR, _POLL_CEILING_S))
+    return min(_POLL_CEILING_S, max(_POLL_FLOOR_S, delta / _POLL_DIVISOR))
 
 
 def main(argv=None) -> None:

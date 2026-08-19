@@ -16,6 +16,8 @@ The four, from docs/packages/P1-clock.md:
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 from skill_monitor.core import api
@@ -772,3 +774,134 @@ def test_the_poll_timer_is_finer_than_the_tick():
     for tick_hz in (0.1, 1.0, 10.0, 100.0):
         period = clock_node.poll_period(1.0 / tick_hz)
         assert 0.0 < period <= 1.0 / tick_hz
+
+
+def test_the_poll_timer_costs_a_fixed_fraction_of_the_tick():
+    """Proportional latency, so the divisor is not dead at every rate anyone runs.
+
+    The old `min(delta/20, 0.02)` let the 20 ms ceiling win for any tick_hz below 2.5:
+    the shipped 1 Hz clock woke 50 times a second, on a Jetson beside the perception
+    stack, to discover that nothing had happened 49 of them. And the comment claimed the
+    cap stopped a slow clock "sleeping for seconds at a time" -- which `min` cannot do,
+    since it only ever makes the period smaller.
+
+    What is meant instead: a boundary is noticed within Delta/20 at every rate, clamped
+    by a floor (never busier than 5 kHz) and a real ceiling (never lazier than 1 s).
+    """
+    from skill_monitor.backend import clock_node
+
+    assert clock_node.poll_period(1.0) == pytest.approx(0.05)     # 20 Hz, not 50
+    assert clock_node.poll_period(10.0) == pytest.approx(0.5)     # a 0.1 Hz clock
+
+    # The guarantee that survives every rate: at most a fifth of a period.
+    for tick_hz in (0.01, 0.05, 0.1, 1.0, 2.5, 10.0, 250.0, MAX_TICK_HZ):
+        delta = 1.0 / tick_hz
+        period = clock_node.poll_period(delta)
+        assert 0.0 < period <= delta / 5.0
+
+    # Both clamps bind in the direction their names claim.
+    assert clock_node.poll_period(1e-6) == clock_node._POLL_FLOOR_S
+    assert clock_node.poll_period(10_000.0) == clock_node._POLL_CEILING_S == 1.0
+
+
+# =============================================================================
+# The unauthenticated surface: what it binds, and what it will read
+# =============================================================================
+
+def test_the_default_bind_is_loopback():
+    """There is no auth on this API and one endpoint pauses the safety monitor's clock.
+
+    `POST /api/clock/mode {"paused": true}` stops the tick for every service on the
+    tier, and both compose files use host networking. Exposure has to be a deliberate
+    act someone can grep a compose file for.
+    """
+    import inspect
+
+    from skill_monitor.backend import clock_node
+
+    assert clock_node.DEFAULT_HOST == "127.0.0.1"
+    assert clock_node.build_parser().parse_args([]).host == "127.0.0.1"
+    assert (inspect.signature(clock_node.serve_http).parameters["host"].default
+            == "127.0.0.1")
+    # ...and it is still reachable as an explicit choice.
+    assert clock_node.build_parser().parse_args(["--host", "0.0.0.0"]).host == "0.0.0.0"
+
+
+def test_the_docstring_says_there_is_no_authentication():
+    """P6 says it for the gateway; a reader of this file must not have to infer it."""
+    from skill_monitor.backend import clock_node
+
+    assert "No authentication" in clock_node.__doc__
+
+
+def test_the_cli_refuses_a_rate_the_service_would_refuse():
+    """A usage error on the command line, not a traceback after rclpy.init."""
+    from skill_monitor.backend import clock_node
+
+    assert clock_node.build_parser().parse_args(["--rate", "1000"]).tick_hz == 1000.0
+    for bad in ("0", "-1", "1e11", "1000.5", "fast", "inf"):
+        with pytest.raises(SystemExit):
+            clock_node.build_parser().parse_args(["--rate", bad])
+
+
+class _FakeBody:
+    """Just enough of a request for `_read_body`: headers, a socket, and an answer."""
+
+    def __init__(self, raw: bytes, content_length=None):
+        from skill_monitor.backend import clock_node
+
+        self._handler = object.__new__(clock_node.ClockRequestHandler)
+        self._handler.headers = {
+            "Content-Length": (str(len(raw)) if content_length is None
+                               else content_length)
+        }
+        self._handler.rfile = io.BytesIO(raw)
+        self._handler.path = "/api/clock/rate"
+        self._handler._respond = self._capture
+        self.answered = None
+
+    def _capture(self, status, payload):
+        self.answered = (status, payload)
+
+    def read(self):
+        return self._handler._read_body()
+
+    def post(self, service):
+        self._handler.service = service
+        self._handler.do_POST()
+        return self.answered
+
+
+def test_a_malformed_content_length_is_a_400_not_a_500():
+    """`int(self.headers.get(...))` on garbage raised ValueError out of the handler."""
+    request = _FakeBody(b"{}", content_length="not-a-number")
+    assert request.read() is None
+    assert request.answered[0] == 400
+    assert "Content-Length" in request.answered[1]["error"]
+
+
+def test_an_oversized_body_is_a_413_and_is_never_read():
+    """The declared length is the allocation, so it is refused before `rfile.read`."""
+    from skill_monitor.backend import clock_node
+
+    oversize = clock_node.MAX_BODY_BYTES + 1
+    request = _FakeBody(b"", content_length=str(oversize))
+    assert request.read() is None
+    assert request.answered[0] == 413
+    assert str(clock_node.MAX_BODY_BYTES) in request.answered[1]["error"]
+    # Nothing was consumed from the socket: the ceiling is the point.
+    assert request._handler.rfile.tell() == 0
+
+
+def test_a_body_within_the_limit_still_routes():
+    """The limit is a ceiling on abuse, not a change to what the API accepts."""
+    service, engine, _ = _service()
+    assert _FakeBody(b'{"tick_hz": 4.0}').post(service) == (200, service.get_state())
+    assert engine.tick_hz == 4.0
+
+    # An empty body is still a legitimate POST (it is how /step is called).
+    empty = _FakeBody(b"", content_length="0")
+    assert empty.read() == b""
+
+    # And a body that is not JSON is still the 400 it always was.
+    assert _FakeBody(b"{not json").post(service)[0] == 400
