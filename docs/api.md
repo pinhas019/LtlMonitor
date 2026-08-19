@@ -147,7 +147,7 @@ because a silent drop is indistinguishable from a sensor that stopped.
 
 ---
 
-## `/monitor/verdict` — monitor → supervisor, frontend
+## `/monitor/verdict` *(latched)* — monitor → supervisor, frontend
 
 Produced by P4, **exactly once per tick the monitor stepped** — one automaton step, one
 verdict, never two. That is not the same as "once per pulse the clock emitted", and the
@@ -164,6 +164,11 @@ So a consumer must reconstruct the tick axis from `seq` and `missed_ticks`, not 
 counting messages. A verdict stream with no holes is a claim the monitor is not in a
 position to make: the observation is what says a tick happened, and the monitor emits
 for the ticks it actually judged.
+
+The end of an episode is no exception to that rule. It travels in the
+[`terminal`](#terminal--the-episode-end-signal) field of the verdict for the tick that
+ended it, so the run's last message is the verdict that ended it — not a second frame
+repeating the same `seq`.
 
 ```json
 {
@@ -192,9 +197,86 @@ for the ticks it actually judged.
 | `failure_modes[]` | the spec's named failure modes, **and the phase machine's own fault**. A phase invariant breach that never reached this list halted the monitor while the token said CONTINUE, and a supervisor obeying the token would not have stopped the robot. A phase fault is named `phase:<phase>:<invariant｜timeout｜progress｜precondition>` |
 | `failure_modes[].confidence` | **required, and per mode**: the freshness of the sources feeding *that* mode's APs, not one number for all of them. One global scalar lets a quiet battery topic de-escalate a collision the depth camera saw perfectly well. Without any confidence at all, a VIOLATED derived from a dead sensor grades at 1.0 and the ladder goes straight to ABORT |
 | `failure_modes[].fault_category` | closed: a category the engine cannot classify ships as `PROGRESS`, which never reaches HALT, and the spec is **rejected at load** naming the unrecognised spelling. An unclassifiable fault is not thereby a severe one |
-| `intervention.action` | one rung of `CONTINUE < WARN < SLOW < REPLAN < HALT < ABORT`. The monitor decides; the supervisor only enforces — and the monitor's own halt is this same decision, so the token and the process's behaviour cannot disagree on one tick |
+| `terminal` | **required, and the only thing on the wire that says the episode ended.** `null` ｜ `SUCCESS` ｜ `FAILURE` ｜ `ABORTED` — see below |
+| `intervention.action` | one rung of `CONTINUE < WARN < SLOW < REPLAN < HALT < ABORT`. The monitor decides; the supervisor enforces this **and** `terminal` — the two are separate legs of one stop rule, see [P5](packages/P5-supervisor.md). The monitor's own halt is this same decision, so the token and the process's behaviour cannot disagree on one tick |
 | `seconds_to_timeout` | ships **beside** `steps_to_timeout`, never replacing it, until spec bounds move to seconds (P11) |
 | `missed_ticks` | pulses the monitor did not see. Logged, never interpolated |
+
+### `terminal` — the episode-end signal
+
+Present on every verdict, never omitted. A closed set of four values:
+
+| value | means |
+|---|---|
+| `null` | the episode is still running. This verdict is not the last one |
+| `"SUCCESS"` | the episode ended, and it ended the way the spec says success looks |
+| `"FAILURE"` | the episode ended on a fault the monitor observed |
+| `"ABORTED"` | the episode ended without the monitor observing either — it was stopped from outside, or the monitor stopped for a reason that is not about the skill |
+
+`terminal` is a statement about **the episode**, not about the robot and not about the
+world. Non-null means exactly one thing, and it is checkable: *this is the last verdict of
+this episode; the monitor has stopped stepping and will publish nothing further until
+`arm`/`reset` on `/monitor/command`.* Consumers must not read `"FAILURE"` as "the skill
+failed at its task" — a monitor stopped by a spec reload also reports `"FAILURE"` today
+(see the follow-up recorded in [P5](packages/P5-supervisor.md#the-follow-up-p4-owes)).
+The three non-null values exist to keep the ablation's outcome column honest; **the stop
+rule reads only null vs non-null**, so a consumer that only needs the rule is unaffected
+if a fourth value is ever added.
+
+**The completeness obligation.** Every way an episode can end must put a non-null
+`terminal` on the wire, in a verdict the monitor actually publishes, before it stops
+publishing. There is no second channel, no sentinel `verdict` word, and no "the stream
+went quiet" convention: a consumer that has to infer the end from silence cannot tell an
+ended episode from a paused monitor, a dropped observation, or a dead node.
+
+The paths, and where each is decided:
+
+| the episode ends because … | `terminal` |
+|---|---|
+| a named failure mode breached and graded at or above the stopping rung | `FAILURE` |
+| a phase invariant was violated | `FAILURE` |
+| a phase precondition failed on entry | `FAILURE` |
+| a phase exceeded its `timing_bounds.max_steps` | `FAILURE` |
+| a phase's `progress_condition` failed `progress_violation_limit` times | `FAILURE` |
+| the spec's `terminal_failure.condition` became true | `FAILURE` |
+| the spec's `terminal_success.condition` became true | `SUCCESS` |
+| **the phase ladder ran to completion — the last phase's `exit_condition` held** | `SUCCESS` |
+| **an external `__done__` / termination signal arrived** | `ABORTED` |
+| the monitor process stops for any other reason it can see coming | `ABORTED` |
+
+The two bold rows are the ones that do not hold today; they are the substance of the
+follow-up P4 owes.
+
+A fault that is *breached but graded below the stopping rung* — the low-confidence SAFETY
+case — does **not** end the episode. `terminal` stays `null`, monitoring continues, and
+the same fault ends the episode as soon as the data backing it is fresh again. The
+episode-end signal and the intervention token are two answers to two different questions
+about one tick; they are allowed to differ, and `terminal` is what makes the difference
+legible instead of implicit.
+
+**Durability.** `terminal` is a single edge: it appears on one verdict and is never
+repeated, because the monitor stops publishing immediately after. A one-shot message on a
+`VOLATILE` topic is not a sound carrier for a signal a supervisor must never miss — a
+supervisor that starts, restarts, or resubscribes after the episode ended sees only
+silence and, under P5's rule, has no basis to stop. `/monitor/verdict` must therefore be
+published `TRANSIENT_LOCAL`, depth 1, like `/monitor/manifest` and `/monitor/adapter`, so
+that the last verdict of an episode is still readable by a late joiner. Consumers already
+have `seq` and `t` to tell a latched replay from a live tick.
+
+**The closing frame — open, and nothing depends on it yet.** "Exactly once per tick" holds
+for every verdict today, the episode's last one included: `terminal` rides the verdict of
+the tick that ended it, and the monitor stops publishing after it. `_halt()` says so at
+the point it happens — *"the run's last message is the verdict that ended it and not a
+second frame for the same tick"*.
+
+The unresolved case is an episode ended from *outside*, between ticks — the `__done__` row
+above, one of the two that do not hold today. It would owe a verdict with no tick of its
+own, and the two ways out are a closing frame repeating the previous `seq` and `t` (which
+a consumer would have to fold onto the tick it repeats rather than count as a new one), or
+holding `terminal` until the next tick's verdict, which costs up to one tick of latency on
+a signal a supervisor must not miss. That is P4's follow-up to settle alongside the row
+itself. Until it does, no verdict shares a `seq` with another and a consumer may keep
+treating `seq` as unique.
 
 ---
 
