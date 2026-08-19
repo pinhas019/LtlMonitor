@@ -149,7 +149,21 @@ because a silent drop is indistinguishable from a sensor that stopped.
 
 ## `/monitor/verdict` — monitor → supervisor, frontend
 
-Produced by P4, exactly once per tick.
+Produced by P4, **exactly once per tick the monitor stepped** — one automaton step, one
+verdict, never two. That is not the same as "once per pulse the clock emitted", and the
+difference is the honest part:
+
+| the monitor … | verdict? |
+|---|---|
+| admits an observation and steps | **yes**, exactly one |
+| receives a redelivered or backwards `seq` | no — the tick already produced its verdict |
+| never receives the observation for a tick | no — the gap is counted in the *next* verdict's `missed_ticks` |
+| is paused, halted or idle | no — it is not stepping, and a frame for a tick it did not judge would be the first lie in the record |
+
+So a consumer must reconstruct the tick axis from `seq` and `missed_ticks`, not by
+counting messages. A verdict stream with no holes is a claim the monitor is not in a
+position to make: the observation is what says a tick happened, and the monitor emits
+for the ticks it actually judged.
 
 ```json
 {
@@ -172,10 +186,13 @@ Produced by P4, exactly once per tick.
 
 | field | notes |
 |---|---|
+| `step` | int on every verdict P4 publishes, because it only publishes for ticks it stepped and a stepped tick is inside an episode. The field stays `int｜null` in the envelope for producers that are not the monitor |
 | `verdict` | `SATISFIED` ｜ `VIOLATED` ｜ `UNDECIDED` ｜ `INCONCLUSIVE_NO_DATA` |
 | `formulas[].status` | the automaton's own `MonitorStatus` — `INCONCLUSIVE` here means "the prefix neither proves nor refutes", a **different axis** from `INCONCLUSIVE_NO_DATA` |
-| `failure_modes[].confidence` | **required.** Without it a VIOLATED derived from a dead sensor grades at 1.0 and the ladder goes straight to ABORT |
-| `intervention.action` | one rung of `CONTINUE < WARN < SLOW < REPLAN < HALT < ABORT`. The monitor decides; the supervisor only enforces |
+| `failure_modes[]` | the spec's named failure modes, **and the phase machine's own fault**. A phase invariant breach that never reached this list halted the monitor while the token said CONTINUE, and a supervisor obeying the token would not have stopped the robot. A phase fault is named `phase:<phase>:<invariant｜timeout｜progress｜precondition>` |
+| `failure_modes[].confidence` | **required, and per mode**: the freshness of the sources feeding *that* mode's APs, not one number for all of them. One global scalar lets a quiet battery topic de-escalate a collision the depth camera saw perfectly well. Without any confidence at all, a VIOLATED derived from a dead sensor grades at 1.0 and the ladder goes straight to ABORT |
+| `failure_modes[].fault_category` | closed: a category the engine cannot classify ships as `PROGRESS`, which never reaches HALT, and the spec is **rejected at load** naming the unrecognised spelling. An unclassifiable fault is not thereby a severe one |
+| `intervention.action` | one rung of `CONTINUE < WARN < SLOW < REPLAN < HALT < ABORT`. The monitor decides; the supervisor only enforces — and the monitor's own halt is this same decision, so the token and the process's behaviour cannot disagree on one tick |
 | `seconds_to_timeout` | ships **beside** `steps_to_timeout`, never replacing it, until spec bounds move to seconds (P11) |
 | `missed_ticks` | pulses the monitor did not see. Logged, never interpolated |
 
