@@ -506,7 +506,6 @@ def test_api_imports_no_ros():
 AWAITING_MIGRATION = {
     "skill_monitor/backend/evaluator_node.py",        # P3 -- feat-evaluator-tick
     "skill_monitor/backend/monitor_node.py",          # P4 -- feat-verdict-topic
-    "skill_monitor/backend/ablation_runner.py",       # P4 -- feat-verdict-topic
     "skill_monitor/backend/intervention_supervisor.py",  # P5 -- refactor-supervisor-token
     "skill_monitor/frontend/skill_center.py",         # P7 -- feat-observation-panel
 }
