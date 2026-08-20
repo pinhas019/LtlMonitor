@@ -613,6 +613,82 @@ def test_a_mode_named_after_a_severity_does_not_hijack_the_evidence():
     ) is None
 
 
+def _two_safety_breaches():
+    """The shipped situation: one mode read by a dead source, one by a fresh source."""
+    mode_sources = manifest.expression_source_map(
+        {"collision_imminent": "G(!collision_risk)", "fell_over": "G(upright)"},
+        manifest.ap_source_map(_APS, _adapter()),
+    )
+    blind = {"name": "collision_imminent", "fault_category": "SAFETY",
+             "status": "VIOLATED"}                      # reads `points`, which is dead
+    proven = {"name": "fell_over", "fault_category": "SAFETY",
+              "status": "VIOLATED"}                     # reads `odom`, which is fresh
+    return mode_sources, blind, proven
+
+
+def test_a_breach_on_a_dead_sensor_does_not_grade_the_one_the_evidence_proves():
+    """Same tick, same facts: the depth camera is dead so `collision_imminent` grades
+    0.0, the IMU is fresh so `fell_over` is proven at 1.0. The token was graded from
+    whichever was authored first, so in `formulas_g1.json`'s own order the unbelievable
+    mode masked the proven one and a robot on the floor was published as WARN -- the
+    supervisor obeys the token and nothing else, so it would not have stopped."""
+    mode_sources, blind, proven = _two_safety_breaches()
+    for order in ([blind, proven], [proven, blind]):
+        v = _verdict(confidence=0.5, stale_sources=["points"],
+                     mode_sources=mode_sources, failure_modes=order)
+        assert [fm["confidence"] for fm in v["failure_modes"]] == (
+            [0.0, 1.0] if order[0] is blind else [1.0, 0.0]
+        )
+        assert v["intervention"]["action"] == "ABORT", "list position decided the rung"
+        assert v["intervention"]["confidence"] == 1.0
+
+    # The de-escalation itself is untouched: a lone breach on its own dead sensor is
+    # still held back, because nothing else is violated to outrank it.
+    lone = _verdict(confidence=0.5, stale_sources=["points"],
+                    mode_sources=mode_sources, failure_modes=[blind])
+    assert lone["intervention"]["action"] == "WARN"
+
+
+def test_the_breach_that_is_named_is_the_breach_the_rung_was_graded_from():
+    """`intervention_block` reports the evidence and `decide_intervention` grades the
+    rung. If they pick different entries the token states one fault's rung beside
+    another fault's confidence, and the record cannot be read back.
+
+    A de-escalated SAFETY breach beside a VIOLATED PROGRESS one is where they come
+    apart: safety-first names the first, the ladder grades the second higher (REPLAN
+    over WARN), and no reordering of the list can make first-match agree."""
+    mode_sources = manifest.expression_source_map(
+        {"collision_imminent": "G(!collision_risk)", "wandered": "G(upright)"},
+        manifest.ap_source_map(_APS, _adapter()),
+    )
+    modes = [
+        {"name": "collision_imminent", "fault_category": "SAFETY",
+         "status": "VIOLATED"},
+        {"name": "wandered", "fault_category": "PROGRESS", "status": "VIOLATED"},
+    ]
+    v = _verdict(confidence=0.5, stale_sources=["points"],
+                 mode_sources=mode_sources, failure_modes=modes)
+    named = manifest.breached_mode(v["failure_modes"])
+    assert named["name"] == "wandered"
+    assert v["intervention"]["action"] == "REPLAN"
+    assert v["intervention"]["category"] == named["fault_category"]
+    assert v["intervention"]["confidence"] == named["confidence"] == 1.0
+
+
+def test_ties_on_the_ladder_keep_the_safety_first_then_authored_order():
+    """Worst-of is the rule; the old precedence is what breaks the tie, so the same
+    facts pick the same entry on every run and an operator can say why."""
+    modes = [
+        {"name": "wandered", "fault_category": "PROGRESS", "status": "VIOLATED"},
+        {"name": "stalled", "fault_category": "TIMEOUT", "status": "VIOLATED"},
+    ]
+    assert manifest.breached_mode(modes)["name"] == "wandered"   # both REPLAN: authored
+    safety_too = modes + [{"name": "shaky", "fault_category": "SAFETY",
+                           "status": "VIOLATED", "confidence": 0.1}]
+    # …and a SAFETY mode too unsure to outrank them does not win on being SAFETY.
+    assert manifest.breached_mode(safety_too)["name"] == "wandered"
+
+
 def test_seconds_to_timeout_accompanies_steps_to_timeout():
     """Beside, never replacing: spec bounds stay tick-denominated until P11 and a
     consumer asserting on the existing field has to keep working."""
