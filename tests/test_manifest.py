@@ -607,6 +607,25 @@ def test_a_mode_named_after_a_severity_does_not_hijack_the_evidence():
     ]
     assert manifest.breached_mode(modes)["name"] == "fell_over"   # safety is preferred
     assert manifest.breached_mode(modes[:1])["name"] == "wandered"
+
+
+def test_the_imminence_is_read_off_the_bound_the_severity_names():
+    """`steps_to_timeout` and `violations_to_fault` count unrelated things, so reporting
+    the first one that happens to be set put the timeout's horizon beside a PROGRESS
+    severity: a fault two violations away, published as a hundred steps of headroom."""
+    v = _verdict(steps_to_timeout=100, violations_to_fault=2, violations_seen=1)
+    assert v["risk"]["severity"] == "PROGRESS"       # progress is what is going wrong…
+    assert v["intervention"]["imminence"] == "2 steps"   # …so that is the count reported
+
+    # The timeout branch still reads its own bound, and outranks progress when both warn.
+    both = _verdict(steps_to_timeout=2, violations_to_fault=1, violations_seen=1)
+    assert both["risk"]["severity"] == "TIMEOUT"
+    assert both["intervention"]["imminence"] == "2 steps"
+
+    # No bound is warning, so there is no imminence to report -- not the raw countdown.
+    quiet = _verdict(steps_to_timeout=100, violations_to_fault=90, violations_seen=1)
+    assert quiet["risk"]["severity"] is None
+    assert quiet["intervention"]["imminence"] is None
     assert manifest.breached_mode([]) is None
     assert manifest.breached_mode(
         [{"name": "x", "fault_category": "SAFETY", "status": "INCONCLUSIVE"}]

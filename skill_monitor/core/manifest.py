@@ -942,10 +942,17 @@ def intervention_block(
         imminence = _imminence_label(0)  # already violated
     else:
         confidence = _unit(risk.get("trigger_confidence", 1.0))
-        steps = risk.get("steps_to_timeout")
-        if steps is None:
-            steps = risk.get("violations_to_fault")
-        imminence = _imminence_label(steps) if risk.get("severity") else None
+        # `severity` names which bound fired, so the imminence is read off *that* bound.
+        # Preferring `steps_to_timeout` reported the timeout's horizon beside a PROGRESS
+        # severity, and the two are unrelated counts: a run stalling two violations short
+        # of a fault, with a hundred steps left on its clock, published "100 steps" as the
+        # imminence of the fault. No fallback -- TIMEOUT cannot fire without
+        # `steps_to_timeout`, PROGRESS cannot fire without `violations_to_fault`, and with
+        # no severity there is no imminence to report.
+        severity = risk.get("severity")
+        steps = (risk.get("violations_to_fault") if severity == "PROGRESS"
+                 else risk.get("steps_to_timeout"))
+        imminence = _imminence_label(steps) if severity else None
     return api.build_intervention(
         action=decision.action.name,
         category=wire_fault_category(decision.category),
