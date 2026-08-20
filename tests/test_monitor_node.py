@@ -823,6 +823,52 @@ def test_a_halted_monitor_is_allowed_to_be_quiet():
     assert verdicts(node)[before:] == []
 
 
+def test_the_stall_detector_can_still_see_across_a_clock_restart():
+    """`_silent_since` held a `seq` from the epoch that ended, and the new clock counts
+    from its own beginning, so `clock_seq - _silent_since` was negative for as long as
+    the previous run was longer than this one. The detector went quiet for exactly the
+    stretch it exists to report: a monitor that has stopped stepping, saying nothing."""
+    node = a_node()
+    for seq in range(1, 201):                 # a long, healthy run on the first clock
+        tick(node, seq, t0=1000.0)
+        observe(node, seq)
+    assert node._stalled is False
+    mark = len(verdicts(node))
+
+    for seq in range(1, 60):                  # the clock restarts; nothing steps again
+        tick(node, seq, t0=2000.0)
+
+    stall = verdicts(node)[mark:]
+    assert stall, "59 pulses of silence on a new clock and the monitor published nothing"
+    assert node._stalled is True
+    assert stall[-1]["verdict"] == "INCONCLUSIVE_NO_DATA"
+    assert stall[-1]["missed_ticks"] >= monitor_node._STALL_TICKS
+
+
+def test_missed_ticks_is_a_count_and_never_goes_below_zero():
+    """A negative `missed_ticks` reached the wire and `api.validate_verdict` accepted
+    it: a consumer reconstructing the tick axis from `seq` and `missed_ticks` would have
+    read the monitor as having seen more ticks than the clock ever sent."""
+    node = a_node()
+    for seq in range(1, 201):
+        tick(node, seq, t0=1000.0)
+        if seq <= 3:
+            observe(node, seq)                # stalls early, so the stall is already on
+    mark = len(verdicts(node))
+
+    for seq in range(1, 6):
+        tick(node, seq, t0=2000.0)
+
+    published = verdicts(node)[mark:]
+    assert published, "the stall was already being announced; the restart did not end it"
+    for v in published:
+        assert v["missed_ticks"] >= 0
+        assert api.validate_verdict(v) == []
+
+    # …and the schema itself now refuses one, so no producer can ship it again.
+    assert api.validate_verdict(dict(published[-1], missed_ticks=-2)) != []
+
+
 def test_stepping_again_clears_the_stall():
     node = a_node()
     tick(node, 1)

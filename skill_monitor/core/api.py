@@ -140,6 +140,9 @@ UNIT_INTERVAL: _Check = (
     lambda v: _is_number(v) and 0.0 <= v <= 1.0,
     "a number in [0.0, 1.0]",
 )
+#: A count of things that happened. The bound is the point: an unbounded INT let a
+#: producer's own bookkeeping slip ship -141 pulses as a valid `missed_ticks`.
+COUNT: _Check = (lambda v: _is_int(v) and v >= 0, "an int >= 0")
 ANY: _Check = (lambda v: True, "anything")
 
 
@@ -491,8 +494,9 @@ _VERDICT_FIELDS: dict[str, _Check] = {
     "terminal": STRING_OR_NULL,
     "risk": OBJECT,
     "intervention": OBJECT,
-    # Pulses the monitor did not see. Logged, never interpolated.
-    "missed_ticks": INT,
+    # Pulses the monitor did not see. Logged, never interpolated -- and counted, so a
+    # negative is a producer talking about a tick axis it is no longer on.
+    "missed_ticks": COUNT,
 }
 
 

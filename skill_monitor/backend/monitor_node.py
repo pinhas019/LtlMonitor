@@ -909,6 +909,7 @@ class LtlMonitorNode(Node):
                     f"stream begins again and the ledger starts over."
                 )
             self.clock_epoch = epoch
+            self._begin_silence_window()
 
         # Last, so it judges against this pulse rather than the one before it.
         self._watch_for_stepping_silence()
@@ -1516,6 +1517,28 @@ class LtlMonitorNode(Node):
             )
             self._refused_run = 0
 
+    def _begin_silence_window(self) -> None:
+        """Start the stall window over, because a new clock's ticks are a new stream.
+
+        `_silent_since` is a `seq`, and a `seq` only means anything inside the epoch it
+        was read in. Carried across a restart it was measured against a clock counting
+        from its own beginning, so `clock_seq - _silent_since` went *negative*:
+        `missed_ticks` below zero on a field the wire says is a count, and -- whenever
+        the run before the restart got further than the new one has -- a stall that
+        never fires at all. Fifty-nine pulses of total silence with `silent` at -141 and
+        not one frame published: the detector blind in exactly the scenario it exists
+        for, which is a monitor that has stopped monitoring failing to say so.
+
+        `_stalled` is deliberately *not* cleared here. Whether the automaton is
+        advancing is a property of this process, and a monitor that had stopped stepping
+        has not started again because the clock it listens to restarted. Clearing it
+        would re-arm the announcement from scratch and buy `_STALL_TICKS` more pulses of
+        the same silence -- a smaller version of the bug above. `_legacy_readmitted` is
+        left for the same reason: it says which *observation* wire may step, which no
+        clock has an opinion about, and the next envelope clears it anyway.
+        """
+        self._silent_since = self.clock_seq
+
     def _watch_for_stepping_silence(self) -> None:
         """Say so on api.VERDICT when the clock advances and the automaton does not.
 
@@ -1537,7 +1560,11 @@ class LtlMonitorNode(Node):
             self._silent_since = self.clock_seq
             return
 
-        silent = self.clock_seq - self._silent_since
+        # Clamped, so that a `_silent_since` from some other counting -- an epoch this
+        # window was not opened in, a future bug of the same shape -- cannot put a
+        # negative count of pulses on the wire. `_begin_silence_window` is the fix; this
+        # is the guarantee that `missed_ticks` stays a count whatever else goes wrong.
+        silent = max(0, self.clock_seq - self._silent_since)
         if silent >= _STALL_TICKS and not self._stalled:
             self._stalled = True
             self.get_logger().error(
