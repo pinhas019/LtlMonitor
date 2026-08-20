@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.parse
 
 import pytest
 
@@ -43,6 +44,16 @@ def test_a_gateway_told_of_no_directory_serves_no_files():
     "/..%2f..%2fetc/passwd",
     "/subdir/index.html",
     "/.hidden.html",
+    # A Windows separator is a separator here too, or `..\..\etc` is a legal name.
+    "/..\\..\\etc\\passwd",
+    "/etc/passwd",                      # absolute, once the leading `/` is stripped
+    "/index.html/",                     # a trailing slash is not the same resource
+    "/%252e%252e%252findex.html",       # decoded once by the client, not again by us
+    "/INDEX.HTML",                      # the extension allowlist is case-sensitive
+    # A NUL in the name makes `Path.resolve` raise ValueError, not OSError. Uncaught it
+    # escapes `_route`, and the client gets a closed socket and zero bytes instead of a
+    # 404 -- an anonymous, one-request way to turn a served gateway into a non-HTTP one.
+    "/a\x00.html",
 ])
 def test_nothing_outside_the_directory_is_reachable(served, path):
     assert served.static_file(path) is None
@@ -53,6 +64,10 @@ def test_only_the_extensions_the_console_is_built_from_are_served(served):
     they are not downloadable -- and why a key dropped in there later would not be."""
     assert served.static_file("/web.py") is None
     assert served.static_file("/mock_monitor.py") is None
+    # And not SVG. An SVG navigated to runs script *in this origin*, which is the origin
+    # holding the `X-Skill-Monitor` grant and the websocket `Origin` grant -- so a file
+    # dropped in the served directory would be stored XSS against the robot's controls.
+    assert ".svg" not in gateway.Gateway.STATIC_TYPES
 
 
 def test_a_symlink_out_of_the_directory_is_not_a_way_in(tmp_path, monkeypatch):
@@ -81,6 +96,19 @@ def test_the_console_names_its_own_origin():
     assert "http://localhost:8080" in origins
     assert web.own_origins("0.0.0.0", 9000) == ["http://127.0.0.1:9000",
                                                 "http://localhost:9000"]
+
+
+def test_an_ipv6_origin_is_spelled_the_way_a_browser_spells_it():
+    """A browser reached at `[::1]:8080` sends `Origin: http://[::1]:8080`. Without the
+    brackets the allowlist holds `http://::1:8080`, which matches nothing the browser
+    will ever send and which `urlsplit` cannot pull a hostname out of either -- so the
+    Host allowlist derived from it is wrong in the same breath."""
+    assert web.own_origins("::1", 8080) == ["http://127.0.0.1:8080",
+                                            "http://localhost:8080",
+                                            "http://[::1]:8080"]
+    assert urllib.parse.urlsplit("http://[::1]:8080").hostname == "::1"
+    # A wildcard IPv6 bind names nothing of its own, but it *is* reached at [::1].
+    assert "http://[::1]:9000" in web.own_origins("::", 9000)
 
 
 def test_the_stream_carries_the_tick():
@@ -114,7 +142,12 @@ def frames(bus, timeout=3.0):
 
 def test_every_frame_the_mock_publishes_validates(bus):
     """The fiction is held to the contract, not to a resemblance of it. This is the one
-    test that fails when the wire moves and the mock does not."""
+    test that fails when the wire moves and the mock does not.
+
+    Every topic the mock puts on the wire, streamed or latched -- because each of them
+    reaches a browser through a route of its own, and one that is only *nearly* the
+    contract is a pane rendering a field no real monitor will ever send.
+    """
     seen = frames(bus)
     assert api.validate_tick(seen[api.TICK]) == []
     assert api.validate_observation(seen[api.OBSERVATION]) == []
@@ -122,6 +155,25 @@ def test_every_frame_the_mock_publishes_validates(bus):
     assert api.validate_adapter(json.loads(bus.latched(mock_monitor.NS, api.ADAPTER))) == []
     assert api.validate_skill_manifest(
         json.loads(bus.latched(mock_monitor.NS, api.MANIFEST))) == []
+    assert api.validate_spec_status(
+        json.loads(bus.latched(mock_monitor.NS, api.SPEC_STATUS))) == []
+
+
+def test_the_answer_to_a_pushed_spec_validates_too(bus):
+    """The latched `spec_status` is rebuilt on every `load_spec`, so validating only the
+    one built at startup would leave the reload path free to grow a field of its own."""
+    bus.publish(mock_monitor.NS, api.LOAD_SPEC,
+                json.dumps(api.build_load_spec(spec=bus.spec)))
+    assert api.validate_spec_status(
+        json.loads(bus.latched(mock_monitor.NS, api.SPEC_STATUS))) == []
+
+    spec = json.loads(json.dumps(bus.spec))
+    spec["atomic_propositions"]["impossible"] = "True when no_such_sensor > 1."
+    bus.publish(mock_monitor.NS, api.LOAD_SPEC,
+                json.dumps(api.build_load_spec(spec=spec)))
+    rejected = json.loads(bus.latched(mock_monitor.NS, api.SPEC_STATUS))
+    assert rejected["ok"] is False
+    assert api.validate_spec_status(rejected) == []
 
 
 def test_an_ap_is_true_for_the_reason_its_rule_gives(bus):
