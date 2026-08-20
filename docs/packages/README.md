@@ -25,7 +25,7 @@ as a nine-branch sweep someone forgets.
 | [P4 monitor](P4-monitor.md) | `backend/feat-verdict-topic` | `backend/monitor_node.py`, `core/manifest.py`, `tests/test_manifest.py` | P0 |
 | [P5 supervisor](P5-supervisor.md) | `backend/refactor-supervisor-token` | `backend/intervention_supervisor.py`, `core/supervisor_logic.py`, `core/monitor_action.py`, their tests | P0, P4's verdict shape |
 | [P6 gateway](P6-gateway.md) | `backend/feat-gateway` | `backend/gateway.py`, `deploy/Dockerfile.gateway`, `tests/test_gateway.py` | P0 |
-| [P7 operator surface](P7-frontend.md) | `docs/feat-p7-operator-surface` | `frontend/*`, `deploy/Dockerfile.skill_center`, `tests/test_skill_center.py` | P0, **P6 (merged)** |
+| [P7 operator surface](P7-frontend.md) | `docs/feat-p7-operator-surface` | `frontend/*`, `deploy/Dockerfile.skill_center`, `tests/test_skill_center.py`, `tests/test_web_ui.py` | P0, **P6 (merged)** |
 | [P8 deploy](P8-deploy.md) | `deploy/feat-container-split` | `skill_monitor/__init__.py`, `deploy/*`, `sim/docker-compose.sim.yml`, `tests/test_config_resolution.py` | — |
 | [P12 planner-independent schema](P12-planner-independent-schema.md) | `core/feat-planner-independent-schema` | `adapters/nav_schema.json`, `adapters/real_g1.json`, the new extractors in `core/adapter_spec.py`, the regenerated spec, `tests/test_planner_independence.py` | **P2, P3** |
 | [P9 docs](P9-docs.md) | `docs/feat-architecture-map` | `docs/*`, `README.md`, `CONTRIBUTING.md` | — |
@@ -43,7 +43,7 @@ that the packages are concurrent rather than merely parallel.
 ## What P7 asks of its neighbours
 
 The operator surface is the one package that can only show what somebody else publishes, so
-[P7](P7-frontend.md) names six payload fields and six routes or topic constants it wants —
+[P7](P7-frontend.md) names six payload fields and four routes or topic constants it wants —
 from **P0, P3, P4, P6 and P12**, not from P3 and P4 alone. They are listed in that document
 with their owners and their reasons. Three rules keep this from becoming P7 editing other
 packages' files:
@@ -54,7 +54,12 @@ packages' files:
   why the two manifest fields are the only ones a single package can add alone.
 - **A route is P6's, whoever owns the payload.** Topic names are P0's constants and routes
   are `gateway.py`, so "the package that owns the payload adds it" is not true of a topic
-  pair. P7 asks in a PR comment; it does not reach across.
+  pair. P7 asks in a PR comment; it does not reach across. The one exception is on the
+  record: static-file serving and `api.TICK` on `STREAM_TOPICS` are two changes P7 made to
+  `gateway.py` itself, because without them there is no page to serve and no tick to show
+  on it. They are named in [P7's Files owned](P7-frontend.md#files-owned), and their tests
+  live in `tests/test_web_ui.py` rather than in P6's own test file — which is the cost of
+  the exception and the reason it is not a precedent.
 - **P7 must render without any of the fields.** Each pane degrades to "not reported by this
   build" and names the gap. A frontend that cannot start until four other packages land is a
   frontend that gets built last and rushed. The *routes* are the exception, and P7 says which

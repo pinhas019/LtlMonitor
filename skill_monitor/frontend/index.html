@@ -1,0 +1,640 @@
+<!doctype html>
+<!--
+  The operator console. One file, no build step, no dependency: it is served by the
+  gateway that serves the API, so it has the one origin that is allowed to open a
+  stream and to set X-Skill-Monitor.
+
+  Everything here is rendered from the wire. There is no navigation vocabulary in this
+  file and no spec read from disk -- a robot whose schema this page has never seen
+  renders the same way, which is the property the whole system is claimed on.
+
+  Where a pane needs a field no producer publishes yet, it says so by name and says who
+  owns it. It does not invent the field, and it does not hide the pane.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>skill monitor — console</title>
+<style>
+  :root {
+    --bg:#12141a; --panel:#1a1d26; --line:#2b3040; --ink:#dfe3ee; --dim:#7f889e;
+    --ok:#4ec9a0; --warn:#e0b25a; --bad:#e2626b; --acc:#6aa9ff; --unknown:#8b7fd0;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { position:sticky; top:0; z-index:5; background:var(--panel);
+           border-bottom:1px solid var(--line); padding:8px 14px;
+           display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
+  header .k { color:var(--dim); font-size:11px; text-transform:uppercase;
+              letter-spacing:.06em; display:block; }
+  header .v { font-size:15px; }
+  .grid { display:grid; gap:12px; padding:12px;
+          grid-template-columns:repeat(auto-fit,minmax(430px,1fr)); align-items:start; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:6px; }
+  section > h2 { margin:0; padding:8px 12px; font-size:12px; font-weight:600;
+                 letter-spacing:.08em; text-transform:uppercase; color:var(--dim);
+                 border-bottom:1px solid var(--line); display:flex;
+                 justify-content:space-between; align-items:center; gap:8px; }
+  section > .body { padding:10px 12px; overflow:auto; max-height:46vh; }
+  table { border-collapse:collapse; width:100%; }
+  th,td { text-align:left; padding:3px 8px 3px 0; vertical-align:top;
+          border-bottom:1px solid #232734; white-space:nowrap; }
+  th { color:var(--dim); font-weight:500; font-size:11px; }
+  td.wrap, th.wrap { white-space:normal; overflow-wrap:anywhere; }
+  /* Fixed layout so a long rule wraps inside its column instead of widening the table
+     past the pane -- `width:100%` alone loses to a cell's min-content width. */
+  table.fixed { table-layout:fixed; }
+  .pill { border-radius:10px; padding:1px 8px; font-size:11px; display:inline-block;
+          border:1px solid currentColor; }
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .dim{color:var(--dim)} .acc{color:var(--acc)} .unk{color:var(--unknown)}
+  .missing { color:var(--dim); border-left:2px solid var(--warn); padding:6px 10px;
+             background:#20222c; border-radius:0 4px 4px 0; }
+  .missing code { color:var(--warn); }
+  textarea { width:100%; min-height:230px; background:#0e1016; color:var(--ink);
+             border:1px solid var(--line); border-radius:4px; padding:8px;
+             font:12px/1.5 ui-monospace,monospace; resize:vertical; }
+  button { background:#242938; color:var(--ink); border:1px solid var(--line);
+           border-radius:4px; padding:4px 10px; cursor:pointer; font:inherit; }
+  button:hover { border-color:var(--acc); color:var(--acc); }
+  button:disabled { opacity:.4; cursor:default; }
+  canvas { display:block; width:100%; height:34px; background:#0e1016;
+           border:1px solid var(--line); border-radius:3px; }
+  .plot { margin-bottom:7px; }
+  .plot .lbl { display:flex; justify-content:space-between; font-size:11px;
+               color:var(--dim); padding-bottom:1px; }
+  .bar { height:7px; background:#0e1016; border-radius:3px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--acc); }
+  .rule { color:var(--dim); white-space:normal; }
+  .key { color:var(--acc); }
+  .mock { color:#12141a; background:var(--warn); font-weight:700; padding:2px 8px;
+          border-radius:3px; letter-spacing:.08em; }
+</style>
+</head>
+<body>
+
+<header>
+  <div><span class="k">skill</span><span class="v" id="h-skill">—</span></div>
+  <div><span class="k">verdict</span><span class="v" id="h-verdict">—</span></div>
+  <div><span class="k">intervention</span><span class="v" id="h-action">—</span></div>
+  <div><span class="k">phase</span><span class="v" id="h-phase">—</span></div>
+  <div><span class="k">step / max</span><span class="v" id="h-step">—</span></div>
+  <div><span class="k">tick</span><span class="v" id="h-tick">—</span></div>
+  <div style="margin-left:auto" id="h-badges"></div>
+</header>
+
+<div class="grid">
+
+  <section>
+    <h2>1 · description and spec <span><button id="reload">apply · restarts the episode</button></span></h2>
+    <div class="body">
+      <p id="spec-desc" class="dim wrap" style="margin:0 0 8px"></p>
+      <textarea id="spec-text" spellcheck="false"></textarea>
+      <div style="margin-top:6px" id="spec-status"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2 · loaded config</h2>
+    <div class="body" id="config"></div>
+  </section>
+
+  <section>
+    <h2>3 · input data <span class="dim" id="in-note"></span></h2>
+    <div class="body" id="inputs"></div>
+  </section>
+
+  <section>
+    <h2>4 · plots <span class="dim">last 180 ticks</span></h2>
+    <div class="body" id="plots"></div>
+  </section>
+
+  <section>
+    <h2>5 · atomic propositions <span class="dim">rule → keys → value</span></h2>
+    <div class="body" id="aps"></div>
+  </section>
+
+  <section>
+    <h2>6 · automaton</h2>
+    <div class="body" id="automaton"></div>
+  </section>
+
+  <section>
+    <h2>7 · clock <span><button id="step">step</button></span></h2>
+    <div class="body"><div id="clock"></div><div id="step-note"></div></div>
+  </section>
+
+  <section>
+    <h2>8 · timing</h2>
+    <div class="body" id="timing"></div>
+  </section>
+
+</div>
+
+<script>
+"use strict";
+
+const HDR = { "X-Skill-Monitor": "1", "Content-Type": "application/json" };
+const S = {
+  seg: null, manifest: null, adapter: null, status: null,
+  tick: null, obs: null, verdict: null,
+  hist: [],            // recent observations, for the plots
+  arrivals: [],        // wall-clock ms between verdicts, measured here
+  dropped: 0, connected: false,
+};
+const PLOT_N = 180;
+
+const $ = id => document.getElementById(id);
+const txt = (s) => (s === null || s === undefined) ? "—" : String(s);
+const num = (v, d = 3) => (typeof v === "number" && isFinite(v)) ? +v.toFixed(d) : txt(v);
+const esc = s => String(s).replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ headers: HDR }, opts || {}));
+  const body = await r.text();
+  let parsed = null;
+  try { parsed = JSON.parse(body); } catch (e) { /* keep the text */ }
+  return { status: r.status, body: parsed, text: body };
+}
+
+/* -- a field nobody publishes yet is named, with its owner ------------------ */
+function missing(field, owner, why) {
+  return `<div class="missing">no <code>${esc(field)}</code> on the wire.
+    ${esc(why)}<br><span class="dim">${esc(owner)} publishes it; this pane fills in
+    the moment it does. Nothing here is inferred in the meantime.</span></div>`;
+}
+
+/* == bootstrap ============================================================== */
+
+async function boot() {
+  const health = await api("/api/health");
+  const monitors = await api("/api/monitors");
+  const list = (monitors.body && monitors.body.monitors) || [];
+  renderBadges(health.body);
+  if (!list.length) {
+    $("config").innerHTML = missing("monitor", "P4",
+      "the gateway has discovered no namespace advertising /monitor/verdict.");
+    setTimeout(boot, 2000);
+    return;
+  }
+  S.seg = list[0].path;
+  S.services = (monitors.body || {}).services;
+  await refreshLatched();
+  connect();
+}
+
+async function refreshLatched() {
+  for (const [verb, slot] of [["manifest", "manifest"], ["adapter", "adapter"],
+                              ["spec_status", "status"]]) {
+    const r = await api(`/api/monitors/${S.seg}/${verb}`);
+    S[slot] = r.status === 200 ? r.body : null;
+  }
+  renderSpec(); renderConfig(); renderStatus();
+}
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/api/monitors/${S.seg}/stream`);
+  ws.onopen = () => { S.connected = true; renderBadges(); };
+  ws.onclose = () => { S.connected = false; renderBadges(); setTimeout(connect, 1500); };
+  ws.onmessage = ev => {
+    let frame;
+    try { frame = JSON.parse(ev.data); } catch (e) { return; }
+    if (frame.dropped) S.dropped = frame.dropped;
+    const p = frame.payload;
+    if (!p) return;
+    if (frame.topic.endsWith("/tick")) { S.tick = p; renderClock(); }
+    else if (frame.topic.endsWith("/observation")) { S.obs = p; onObservation(p); }
+    else if (frame.topic.endsWith("/verdict")) { S.verdict = p; onVerdict(p); }
+    else if (frame.topic.endsWith("/spec_status")) { S.status = p; renderStatus(); }
+  };
+}
+
+function onObservation(o) {
+  S.hist.push(o);
+  if (S.hist.length > PLOT_N) S.hist.shift();
+  renderInputs(); renderPlots(); renderAps(); renderClock();
+}
+
+function onVerdict(v) {
+  const now = performance.now();
+  if (S.lastAt) S.arrivals.push(now - S.lastAt);
+  if (S.arrivals.length > 60) S.arrivals.shift();
+  S.lastAt = now;
+  renderHeader(); renderAutomaton(); renderTiming();
+}
+
+/* == header ================================================================= */
+
+function verdictClass(v) {
+  return { SATISFIED: "ok", VIOLATED: "bad", UNDECIDED: "dim",
+           INCONCLUSIVE_NO_DATA: "unk" }[v] || "dim";
+}
+const ACTION_CLASS = { CONTINUE: "ok", WARN: "warn", SLOW: "warn",
+                       REPLAN: "warn", HALT: "bad", ABORT: "bad" };
+
+function renderHeader() {
+  const v = S.verdict; if (!v) return;
+  $("h-skill").textContent = v.skill_name || "—";
+  $("h-verdict").innerHTML = `<span class="${verdictClass(v.verdict)}">${esc(v.verdict)}</span>`;
+  const a = (v.intervention || {}).action;
+  $("h-action").innerHTML =
+    `<span class="${ACTION_CLASS[a] || "dim"}">${esc(txt(a))}</span>` +
+    ` <span class="dim">conf ${num((v.intervention || {}).confidence, 2)}</span>`;
+  $("h-phase").textContent = `${txt(v.phase)}${v.phase_index === null ? "" : ` [${v.phase_index}]`}`;
+  const max = phaseMaxSteps(v.phase_index);
+  const left = (v.risk || {}).steps_to_timeout;
+  // `step` counts the episode; `max_steps` bounds the *phase*. Comparing them directly
+  // reads as "72 / 120" when the phase is 42 ticks old, so the in-phase count is
+  // derived from the bound the monitor is actually measuring against.
+  const inPhase = (max === null || typeof left !== "number") ? null : max - left;
+  $("h-step").innerHTML = max === null
+    ? `${txt(v.step)} <span class="dim">/ unbounded</span>`
+    : `${txt(inPhase)}<span class="dim">/${max} in phase · ${txt(left)} left ·
+       ${txt(v.step)} this episode</span>`;
+  renderBadges();
+}
+
+function phaseMaxSteps(i) {
+  const phases = (S.manifest || {}).execution_phases;
+  if (!Array.isArray(phases) || i === null || i === undefined || !phases[i]) return null;
+  const b = (phases[i].timing_bounds || {}).max_steps;
+  return typeof b === "number" ? b : null;
+}
+
+function renderBadges(health) {
+  if (health) S.health = health;
+  const svc = ((S.health || {}).services || {});
+  const ros = svc.ros || {};
+  const bits = [];
+  if (ros.mock) bits.push(`<span class="mock">MOCK DATA</span>`);
+  bits.push(`<span class="pill ${S.connected ? "ok" : "bad"}">${S.connected ? "stream" : "no stream"}</span>`);
+  if (S.dropped) bits.push(`<span class="pill warn">${S.dropped} dropped</span>`);
+  if ((S.verdict || {}).missed_ticks) {
+    bits.push(`<span class="pill warn">${S.verdict.missed_ticks} missed ticks</span>`);
+  }
+  $("h-badges").innerHTML = bits.join(" ");
+}
+
+/* == 1 · description and spec =============================================== */
+
+function renderSpec() {
+  const m = S.manifest;
+  if (!m) { $("spec-text").value = ""; return; }
+  $("spec-desc").textContent = m.description || "(the spec declares no description)";
+  const spec = Object.assign({}, m);
+  // The envelope the manifest is wrapped in is the wire's, not the spec's: pushing it
+  // back would be asking the monitor to load a document it never authored.
+  for (const k of ["schema_version", "seq", "t", "phases", "source"]) delete spec[k];
+  if (document.activeElement !== $("spec-text")) {
+    $("spec-text").value = JSON.stringify(spec, null, 2);
+  }
+}
+
+function renderStatus() {
+  const s = S.status;
+  if (!s) { $("spec-status").innerHTML = `<span class="dim">no spec_status latched</span>`; return; }
+  const problems = s.problems || [];
+  $("spec-status").innerHTML = s.ok && !problems.length
+    ? `<span class="ok">accepted</span> <span class="dim">${esc(txt(s.skill_name))} · via ${esc(txt(s.source))}</span>`
+    : `<span class="bad">rejected</span><ul style="margin:4px 0 0 16px;padding:0">` +
+      problems.map(p => `<li class="bad">${esc(p)}</li>`).join("") + `</ul>`;
+}
+
+$("reload").onclick = async () => {
+  const btn = $("reload"); btn.disabled = true;
+  let spec;
+  try { spec = JSON.parse($("spec-text").value); }
+  catch (e) {
+    $("spec-status").innerHTML = `<span class="bad">not JSON: ${esc(e.message)}</span>`;
+    btn.disabled = false; return;
+  }
+  const r = await api(`/api/monitors/${S.seg}/spec`, {
+    method: "POST", body: JSON.stringify(spec),
+  });
+  S.status = r.body && r.body.problems !== undefined ? r.body : (r.body || null);
+  renderStatus();
+  await refreshLatched();
+  S.hist = []; S.arrivals = [];
+  btn.disabled = false;
+};
+
+/* == 2 · loaded config ====================================================== */
+
+function renderConfig() {
+  const a = S.adapter, m = S.manifest, svc = (S.services || {});
+  if (!a) { $("config").innerHTML = missing("/monitor/adapter", "P3",
+    "the evaluator has not latched what this robot can observe."); return; }
+  const rows = [
+    ["adapter", esc(a.adapter)],
+    ["describes", `<span class="dim wrap">${esc(a.doc || "—")}</span>`],
+    ["tick_hz", `${num(a.tick_hz)} <span class="dim">Δ = ${num(1 / a.tick_hz)} s</span>`],
+    ["spec source", esc(txt((m || {}).source))],
+    ["schema keys", `${Object.keys(a.schema || {}).length}`],
+    ["ros", `${svc.ros && svc.ros.available ? '<span class="ok">available</span>' : '<span class="bad">absent</span>'}
+             <span class="dim wrap">${esc((svc.ros || {}).detail || "")}</span>`],
+    ["clock", `<span class="dim">${esc(JSON.stringify(svc.clock || {}))}</span>`],
+  ];
+  const ins = (a.sources || []).map(s =>
+    `<tr><td class="key wrap">${esc(s.topic)}</td><td class="dim wrap">${esc(s.type)}</td>
+     <td>${num(s.expected_hz, 1)} Hz</td>
+     <td class="${s.required ? "warn" : "dim"}">${s.required ? "required" : "optional"}</td></tr>`).join("");
+  const outs = ["/monitor/tick", "/monitor/observation", "/monitor/verdict",
+                "/monitor/manifest", "/monitor/adapter", "/monitor/spec_status"];
+  $("config").innerHTML =
+    `<table>${rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td class="wrap">${v}</td></tr>`).join("")}</table>
+     <p class="dim" style="margin:10px 0 2px">topics in</p>
+     <table class="fixed"><colgroup><col style="width:38%"><col><col style="width:16%"><col style="width:20%"></colgroup>${ins}</table>
+     <p class="dim" style="margin:10px 0 2px">topics out</p>
+     <div class="dim">${outs.map(t => `<span class="key">${esc(t)}</span>`).join(" · ")}</div>
+     <div class="missing" style="margin-top:10px">
+       real or simulated is a <b>declaration</b>, not a fact: it is the adapter name and
+       doc above, chosen by whoever launched the evaluator. Replay a bag through
+       <code>real_g1</code> and this page will say <code>real_g1</code>, correctly — the
+       engine cannot tell, and a badge claiming otherwise would be the lie.
+     </div>`;
+}
+
+/* == 3 · input data ========================================================= */
+
+function keysOfSource(id) {
+  const s = ((S.adapter || {}).sources || []).find(x => x.id === id);
+  return (s && s.keys) || [];
+}
+
+function renderInputs() {
+  const o = S.obs, a = S.adapter;
+  if (!o || !a) return;
+  const health = o.data_health || {};
+  const rows = (a.sources || []).map(src => {
+    const h = health[src.id] || {};
+    const slow = h.expected_hz && h.rate_hz < 0.6 * h.expected_hz;
+    const cls = h.refreshed === false ? "bad" : (slow ? "warn" : "ok");
+    const vals = keysOfSource(src.id)
+      .map(k => `<span class="key">${esc(k)}</span> ${esc(fmt(o.sensors[k]))}`)
+      .join("<br>");
+    return `<tr>
+      <td class="wrap"><span class="${cls}">●</span> ${esc(src.id)}<br>
+          <span class="dim">${esc(src.topic)}</span></td>
+      <td>${num(h.rate_hz, 2)}<span class="dim">/${num(h.expected_hz, 1)} Hz</span><br>
+          <span class="dim">age ${num(h.age_s, 2)} s</span></td>
+      <td>${txt(h.samples_this_tick)}<br><span class="dim">drop ${txt(h.dropped)}</span></td>
+      <td class="wrap">${vals || '<span class="dim">—</span>'}</td></tr>`;
+  }).join("");
+  $("inputs").innerHTML =
+    `<table class="fixed"><colgroup><col style="width:30%"><col style="width:19%"><col style="width:13%"><col></colgroup><tr><th>source</th><th>rate</th><th>tick</th><th>values this tick</th></tr>${rows}</table>`;
+  $("in-note").innerHTML = "raw payloads: " + missingRawEcho();
+}
+
+function missingRawEcho() {
+  // /monitor/raw_echo_request is on the wire contract but the gateway exposes no
+  // ingress route for it, so this page cannot ask for one. Said plainly rather than
+  // rendered as a dead toggle.
+  return `<span class="warn">no route</span>`;
+}
+
+function fmt(v) {
+  if (v === undefined) return "—";
+  if (typeof v === "number") return num(v);
+  if (typeof v === "boolean") return v ? "true" : "false";
+  return String(v);
+}
+
+/* == 4 · plots ============================================================== */
+
+function renderPlots() {
+  const a = S.adapter; if (!a) return;
+  const numeric = Object.keys(a.schema || {}).filter(k =>
+    S.hist.some(o => typeof o.sensors[k] === "number"));
+  if (!$("plots").childElementCount) {
+    $("plots").innerHTML = numeric.map(k =>
+      `<div class="plot"><div class="lbl"><span class="key">${esc(k)}</span>
+        <span id="pv-${esc(k)}"></span></div><canvas id="pc-${esc(k)}"></canvas></div>`).join("");
+  }
+  for (const k of numeric) {
+    const series = S.hist.map(o => o.sensors[k]).filter(v => typeof v === "number");
+    const el = $("pv-" + k); if (el) el.textContent = num(series[series.length - 1]);
+    drawSpark($("pc-" + k), series);
+  }
+}
+
+function drawSpark(canvas, series) {
+  if (!canvas || series.length < 2) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+  const g = canvas.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  let lo = Math.min(...series), hi = Math.max(...series);
+  if (hi - lo < 1e-9) { hi = lo + 1; lo -= 1; }   // a flat line belongs in the middle
+  g.beginPath();
+  series.forEach((v, i) => {
+    const x = (i / (PLOT_N - 1)) * w;
+    const y = h - 2 - ((v - lo) / (hi - lo)) * (h - 4);
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.strokeStyle = "#6aa9ff"; g.lineWidth = 1; g.stroke();
+}
+
+/* == 5 · atomic propositions ================================================ */
+
+/* The executable half of "True when <expr>. <prose>". The terminator is a
+   sentence-ending period -- one followed by whitespace or the end -- and never any
+   period, because matching any period cuts `min_range < 0.25` down to `min_range < 0`,
+   which is never true for a distance. Same rule as core/spec_contract.py. */
+function ruleOf(description) {
+  const m = /[Tt]rue when\s+([\s\S]+?)(?:\.\s|\.$|$)/.exec(String(description));
+  return m ? m[1].trim().replace(/\.$/, "") : "";
+}
+
+/* Which schema keys a rule reads. The same question `spec_contract.sensor_keys_in_rule`
+   answers server-side; here it is a word-boundary match against the keys the adapter
+   declares, which is exact for the identifiers that matter and cannot invent a key the
+   robot does not have. String literals are stripped first so a nav_state value spelled
+   like a key is not counted as one. */
+function keysInRule(description) {
+  const body = ruleOf(description).replace(/'[^']*'|"[^"]*"/g, " ");
+  return Object.keys((S.adapter || {}).schema || {})
+    .filter(k => new RegExp(`\\b${k}\\b`).test(body));
+}
+
+function renderAps() {
+  const m = S.manifest, o = S.obs;
+  if (!m || !o) return;
+  const aps = m.atomic_propositions || {};
+  const unknown = new Set(o.unknown_aps || []);
+  const rows = Object.keys(aps).sort().map(name => {
+    const rule = aps[name];
+    const keys = keysInRule(rule);
+    const value = unknown.has(name)
+      ? `<span class="unk">UNKNOWN</span>`
+      : (o.ap_values[name] ? `<span class="ok">true</span>` : `<span class="dim">false</span>`);
+    const live = keys.map(k =>
+      `<span class="key">${esc(k)}</span>=${esc(fmt(o.sensors[k]))}`).join(" ");
+    return `<tr><td class="wrap">${esc(name)}</td><td>${value}</td>
+      <td class="wrap"><span class="rule">${esc(rule)}</span><br>${live ||
+        '<span class="dim">reads no declared key</span>'}</td></tr>`;
+  }).join("");
+  $("aps").innerHTML =
+    `<table class="fixed"><colgroup><col style="width:26%"><col style="width:16%"><col></colgroup><tr><th>ap</th><th>this tick</th><th class="wrap">rule → keys it reads → live values</th></tr>${rows}</table>
+     <p class="dim" style="margin:8px 0 0">confidence ${num(o.confidence, 2)} ·
+       ${unknown.size} unknown · clock <span class="key">${esc(o.clock)}</span> ·
+       membership by ${esc(o.tick_membership)}</p>`;
+}
+
+/* == 6 · automaton ========================================================== */
+
+function renderAutomaton() {
+  const v = S.verdict; if (!v) return;
+  const auto = v.automata || (S.manifest || {}).automata;
+  if (!auto) {
+    $("automaton").innerHTML =
+      missing("verdict.automata / formulas[].state", "P4",
+        "the monitor publishes each formula's status but not the Büchi automaton it " +
+        "stepped, so there is no graph to draw and no current state to light.") +
+      formulaTable(v);
+    return;
+  }
+  $("automaton").innerHTML = auto.map(drawAutomaton).join("") + formulaTable(v);
+}
+
+function formulaTable(v) {
+  const cls = { ACCEPTED: "ok", VIOLATED: "bad", INCONCLUSIVE: "dim" };
+  const rows = (v.formulas || []).concat(v.failure_modes || []).map(f =>
+    `<tr><td>${esc(f.name)}</td>
+     <td><span class="${cls[f.status] || "dim"}">${esc(f.status)}</span></td>
+     <td class="dim">${esc(txt(f.fault_category))}</td>
+     <td class="dim">${f.confidence === undefined ? "" : num(f.confidence, 2)}</td></tr>`).join("");
+  return `<table style="margin-top:8px">
+    <tr><th>formula</th><th>status</th><th>category</th><th>conf</th></tr>${rows}</table>`;
+}
+
+/* One column per BFS depth, current state lit, and only the edges this run actually
+   took drawn solid -- a path the page did not witness is a path it must not claim. */
+function drawAutomaton(a) {
+  const states = a.states || [], edges = a.edges || [];
+  const path = new Set((a.path || []).map(String));
+  const depth = {}, order = [];
+  states.filter(s => s.initial).map(s => s.id).forEach(id => {
+    depth[id] = 0; order.push(id);
+  });
+  for (let i = 0; i < order.length; i++) {
+    for (const e of edges) {
+      if (String(e.from) === String(order[i]) && depth[e.to] === undefined) {
+        depth[e.to] = depth[order[i]] + 1; order.push(e.to);
+      }
+    }
+  }
+  const cols = {};
+  states.forEach(s => {
+    const d = depth[s.id] === undefined ? 0 : depth[s.id];
+    (cols[d] = cols[d] || []).push(s);
+  });
+  const W = 120, H = 46, pad = 22;
+  const pos = {};
+  Object.keys(cols).forEach(d => cols[d].forEach((s, i) => {
+    pos[s.id] = { x: pad + d * W, y: pad + i * H };
+  }));
+  const w = pad * 2 + Math.max(1, Object.keys(cols).length) * W;
+  const h = pad * 2 + Math.max(...Object.values(cols).map(c => c.length), 1) * H;
+  const line = edges.map(e => {
+    const f = pos[e.from], t = pos[e.to]; if (!f || !t) return "";
+    const on = path.has(String(e.from)) && path.has(String(e.to));
+    return `<path d="M${f.x + 16} ${f.y} C${f.x + 60} ${f.y} ${t.x - 60} ${t.y} ${t.x - 16} ${t.y}"
+      fill="none" stroke="${on ? "#6aa9ff" : "#2b3040"}" stroke-width="${on ? 2 : 1}"
+      ${on ? "" : 'stroke-dasharray="3 3"'}/>`;
+  }).join("");
+  const node = states.map(s => {
+    const p = pos[s.id]; if (!p) return "";
+    const cur = String(s.id) === String(a.current);
+    const fill = cur ? "#6aa9ff" : (path.has(String(s.id)) ? "#2b3a55" : "#1a1d26");
+    return `<g><circle cx="${p.x}" cy="${p.y}" r="15" fill="${fill}"
+      stroke="${s.accepting ? "#4ec9a0" : "#2b3040"}" stroke-width="${s.accepting ? 2.5 : 1.5}"/>
+      <text x="${p.x}" y="${p.y + 4}" text-anchor="middle" font-size="11"
+        fill="${cur ? "#12141a" : "#dfe3ee"}">${esc(s.label || s.id)}</text></g>`;
+  }).join("");
+  return `<p class="dim" style="margin:4px 0">${esc(a.formula || a.name || "")}</p>
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto">${line}${node}</svg>`;
+}
+
+/* == 7 · clock ============================================================== */
+
+function renderClock() {
+  const t = S.tick, o = S.obs, a = S.adapter;
+  const declared = a ? a.tick_hz : null;
+  const rows = [
+    ["seq", txt((t || o || {}).seq)],
+    ["t", num((t || o || {}).t, 3)],
+    ["t0", t ? num(t.t0, 3) : missingInline("tick.t0")],
+    ["tick_hz", t ? `${num(t.tick_hz)} ${declared && t.tick_hz !== declared
+        ? `<span class="bad">≠ adapter's ${num(declared)}</span>` : ""}`
+      : (declared !== null ? `${num(declared)} <span class="dim">(adapter's)</span>`
+                           : missingInline("tick.tick_hz"))],
+    ["Δ", declared ? `${num(1 / declared)} s` : "—"],
+    ["mode", t ? esc(t.mode) : missingInline("tick.mode")],
+    ["step", txt((o || {}).step)],
+    ["clock source", o ? `<span class="key">${esc(o.clock)}</span>${
+        o.clock === "internal" ? ' <span class="warn">free-running, not the clock service</span>' : ""}` : "—"],
+    ["missed", txt((S.verdict || {}).missed_ticks)],
+  ];
+  $("h-tick").innerHTML = t
+    ? `${txt(t.seq)} <span class="dim">@ ${num(t.tick_hz)} Hz ${esc(t.mode)}</span>`
+    : `<span class="dim">no /monitor/tick</span>`;
+  $("clock").innerHTML =
+    `<table>${rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td class="wrap">${v}</td></tr>`).join("")}</table>` +
+    (t ? "" : `<p class="dim" style="margin:8px 0 0">no /monitor/tick seen on this
+       namespace yet; seq and t above are the observation's own.</p>`);
+}
+
+function missingInline(f) { return `<span class="dim">no ${esc(f)}</span>`; }
+
+// Outside #clock on purpose: renderClock rewrites that element on the next pulse, and
+// a refusal that vanishes within a tick is a refusal the operator never reads.
+$("step").onclick = async () => {
+  const r = await api("/api/clock/step", { method: "POST", body: "{}" });
+  $("step-note").innerHTML = r.status < 400
+    ? `<p class="ok">stepped</p>`
+    : `<p class="bad">step refused (${r.status}): ${esc(r.text.slice(0, 300))}</p>`;
+};
+
+/* == 8 · timing ============================================================= */
+
+function renderTiming() {
+  const v = S.verdict, o = S.obs;
+  const budget = S.adapter ? 1000 / S.adapter.tick_hz : null;
+  const reported = (v && v.timing) || (o && o.timing) || null;
+  let html = "";
+  if (reported) {
+    const total = Object.values(reported).reduce((a, b) => a + b, 0);
+    html += Object.entries(reported).map(([stage, ms]) =>
+      `<div class="plot"><div class="lbl"><span>${esc(stage)}</span><span>${num(ms, 2)} ms</span></div>
+       <div class="bar"><i style="width:${Math.min(100, budget ? 100 * ms / budget : 0)}%"></i></div></div>`).join("");
+    html += `<p class="${budget && total > budget ? "bad" : "ok"}" style="margin:6px 0 0">
+      ${num(total, 2)} ms of a ${num(budget, 1)} ms tick budget</p>`;
+  } else {
+    html += missing("verdict.timing", "P3 and P4",
+      "no producer reports how long a tick cost it, so this pane cannot show where " +
+      "the time went inside the monitor.");
+  }
+  const arr = S.arrivals;
+  if (arr.length > 2) {
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+    html += `<p class="dim" style="margin:10px 0 2px">measured in this browser, not
+      reported by the monitor — the interval between verdicts arriving here, which is
+      the pulse plus the whole path to this page:</p>
+      <table><tr><th>mean</th><td>${num(mean, 1)} ms</td>
+      <th>p50</th><td>${num(sorted[Math.floor(sorted.length / 2)], 1)} ms</td>
+      <th>max</th><td>${num(sorted[sorted.length - 1], 1)} ms</td>
+      <th>budget</th><td class="${budget && mean > budget * 1.2 ? "warn" : "dim"}">${num(budget, 1)} ms</td></tr></table>`;
+  }
+  $("timing").innerHTML = html;
+}
+
+boot();
+</script>
+</body>
+</html>

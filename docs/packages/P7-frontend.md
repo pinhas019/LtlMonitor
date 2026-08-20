@@ -7,10 +7,11 @@ against, the automaton it is driving, the clock driving that, and what the whole
 to compute. It renders what it is told exists and imports nothing from the monitor — a
 robot with a vocabulary this package has never heard of must render unchanged.
 
-It is a **browser** surface served over the P6 gateway. The Tk panel it replaces — still on
-disk at `frontend/skill_center.py`, and deleted by this package rather than by this
-document — cannot show a point cloud, cannot draw a live automaton, and cannot be opened
-from the far side of a link. All three are requirements now.
+It is a **browser** surface served over the P6 gateway. The Tk panel it is meant to replace
+cannot show a point cloud, cannot draw a live automaton, and cannot be opened from the far
+side of a link; all three are requirements now. It is still on disk at
+`frontend/skill_center.py` and still this package's — see [Files owned](#files-owned) for
+why removing it is a later commit and not this one.
 
 ## Where it sits
 
@@ -24,53 +25,62 @@ flowchart LR
   CLK --> GW
   EVAL --> GW
   MON --> GW
-  GW -- "WS /api/monitors/{seg}/stream<br/>observation + verdict" --> FE
-  GW -- "WS /api/clock/stream<br/>the tick" --> FE
-  GW -- "GET manifest / adapter / spec_status<br/>latched" --> FE
-  FE -- "POST command, spec" --> GW
-  FE -- "POST /api/clock/{step,mode}" --> GW
+  GW -- "WS /api/monitors/{seg}/stream<br/>tick + observation + verdict" --> FE
+  GW -- "GET health / monitors / manifest / adapter / spec_status<br/>latched" --> FE
+  FE -- "POST spec" --> GW
+  FE -- "POST /api/clock/step" --> GW
 ```
 
-One **host**, not one socket. The direct-DDS client is gone — it existed so the panel could
-run on the lab bench, and the gateway now runs there too — but what replaces it is three
-shapes on one origin, and the page is simpler if it is honest about which is which up
-front. See [Inputs](#inputs) for the row-by-row mapping and for the two topics that have no
-route at all today.
+One **host**, one socket. The direct-DDS client is gone — it existed so the panel could run
+on the lab bench, and the gateway now runs there too — and what replaces it is two shapes
+on one origin: a stream, and a set of reads. The page is simpler if it is honest about
+which is which up front. See [Inputs](#inputs) for the row-by-row mapping and for the two
+topics that have no route at all today.
+
+`/monitor/tick` is on that one socket rather than on a second one because `api.TICK` joined
+`STREAM_TOPICS`. `WS /api/clock/stream` still exists and still carries what the clock
+*sent*; the monitor's own pulses are a different question — whether this namespace is being
+clocked at all, and by what — and that is the one the console asks. It opens no second
+socket to ask it.
 
 ## Services
 
-`skill-surface` — static assets served by the gateway itself, so there is no second
-process, no second port and no CORS. **No build step**: hand-written HTML, CSS and ES
-modules, loaded directly. A toolchain that has to be installed before the operator can see
-a verdict is a toolchain that will be broken on the day it matters.
+`python3 -m skill_monitor.frontend.web` — the gateway and the page in one process, on one
+origin, so there is no second port and no CORS. **No build step**: one hand-written HTML
+file with its CSS and script inline, served directly. A toolchain that has to be installed
+before the operator can see a verdict is a toolchain that will be broken on the day it
+matters.
 
-The gateway serves no static files today — it answers `/api/*` and 404s everything else — so
-this is a request of P6, not a description. It sits in the
-[backend asks](#what-this-pane-set-requires-from-the-backend) with the rest, because
-`gateway.py` is P6's file and this package's own non-goals say so.
+One origin is not a convenience. The gateway refuses a state-changing request without
+`X-Skill-Monitor` and refuses a websocket from an `Origin` it was not told about; a page
+served from anywhere else would need both of those relaxed to work at all. This launcher
+names its own origin so the operator never has to work out that
+`--allow-origin http://127.0.0.1:8080` is the incantation.
 
-`--mock` should move to the gateway. `skill_center.py` has one today; `gateway.py` does not
-(`--host --port --clock-url --stale-after --queue --spec-timeout --max-streams
---max-requests --allow-origin --allow-host --no-ros --log-level`), and a mock that
-synthesises the whole wire is the difference between developing this surface on a laptop
-and not developing it at all. Also a P6 ask, and also in that table.
+`--mock` belongs here rather than in the gateway: the simulated monitor is a *frontend*
+fixture, and `backend/` importing `frontend/` to find it would invert the layering the
+package split exists for. It is injected through `MonitorBus`, the same seam `RclpyBus`
+uses, and it says on the wire that it is a fiction — `services.ros.mock` is where the
+page's MOCK DATA badge comes from. Its frames are built by `core.api`'s builders and
+checked by `core.api`'s validators, so it cannot drift into an approximation of the
+contract.
 
 ## Inputs
 
 Every payload is byte-identical to the topic it came from — see
-[api.md](../api.md#gateway-api) — but the *transports* are three, not one, and the split is
+[api.md](../api.md#gateway-api) — but the *transports* are two, not one, and the split is
 the gateway's deliberate rule rather than an accident: **WS is the stream, REST is the
 sample**. Anything that must not miss a tick is subscribed; anything latched is fetched,
 because a client that reconnects wants the current value rather than a wait for a change
 that may never come. `gateway.py` states it as a design constraint and refuses to grow a
-`GET .../latest`. So the page opens two sockets and does three GETs, and the row below says
-which is which.
+`GET .../latest`. So the page opens one socket and does five GETs on boot, and the row
+below says which is which.
 
 | input | how it reaches the page | gives the surface | producer |
 |---|---|---|---|
-| [`/monitor/tick`](../api.md#monitortick--clock--everyone) | **`WS /api/clock/stream`** — a *second* socket, proxied verbatim from the clock; the frame is the identical payload | `seq`, `t`, `t0`, effective `tick_hz`, `mode` | P1 |
-| [`/monitor/observation`](../api.md#monitorobservation--evaluator--monitor-frontend) | `WS /api/monitors/{seg}/stream` | `sensors` (every schema key, every tick), `ap_values`, `unknown_aps`, `confidence`, per-source `data_health` | P3 |
-| [`/monitor/verdict`](../api.md#monitorverdict--monitor--supervisor-frontend) | the same socket — `STREAM_TOPICS` is exactly these two | `step`, verdict, per-formula status, failure modes with `fault_category` and per-mode confidence, `risk`, `intervention`, `missed_ticks` | P4 |
+| [`/monitor/tick`](../api.md#monitortick--clock--everyone) | `WS /api/monitors/{seg}/stream` — since `api.TICK` joined `STREAM_TOPICS`; the frame is the identical payload | `seq`, `t`, `t0`, effective `tick_hz`, `mode` | P1 |
+| [`/monitor/observation`](../api.md#monitorobservation--evaluator--monitor-frontend) | the same socket | `sensors` (every schema key, every tick), `ap_values`, `unknown_aps`, `confidence`, per-source `data_health` | P3 |
+| [`/monitor/verdict`](../api.md#monitorverdict--monitor--supervisor-frontend) | the same socket — `STREAM_TOPICS` is exactly these three | `step`, verdict, per-formula status, failure modes with `fault_category` and per-mode confidence, `risk`, `intervention`, `missed_ticks` | P4 |
 | [`/monitor/adapter`](../api.md#monitoradapter-latched--evaluator--everyone) *(latched)* | `GET /api/monitors/{seg}/adapter` | the loaded descriptor: schema, every source's topic, type, `expected_hz`, resolved steps | P3 |
 | [`/monitor/manifest`](../api.md#monitormanifest-latched--monitor--everyone) *(latched)* | `GET .../manifest` | the spec as authored — description, APs with their rules, formulas, phases, bounds — and `source` | P4 |
 | `/monitor/spec_status` *(latched)* | `GET .../spec_status`, and also returned inline by the spec POST | whether the last pushed spec was accepted, and why not | P4 |
@@ -100,23 +110,47 @@ otherwise specified as if the transport existed.
 
 ### The eight panes, and what each is actually reading
 
-**1 — Spec and config, editable, hot-reloaded.** Two editors side by side: the free-language
-skill **description** the spec was generated from, and the **adapter descriptor**. Both come
-off latched topics, so opening the page shows what is loaded right now rather than what is
-on someone's disk. `load_spec` already exists end to end — constant, ingress route, latched
-answer. `load_adapter` exists nowhere: it needs a topic constant from P0, an `INGRESS_TOPICS`
-entry from P6, and a handler from P3, in that order. The descriptor editor therefore ships
-read-only first, with the push disabled and the reason on the button.
+Numbered as the page numbers them, so a heading here and a heading on screen are the same
+heading.
 
-**Reloading the descriptor ends the episode, and the surface must say so before it sends.**
+**1 — Description and spec, editable, hot-reloaded.** The free-language skill
+**description** the spec was generated from, read-only above the spec itself in an editor,
+with the last `spec_status` — accepted, or rejected with every reason — under it. Both come
+off latched topics, so opening the page shows what is loaded right now rather than what is
+on someone's disk, and the editor is not overwritten by a refresh while the operator is
+typing in it. `load_spec` exists end to end — constant, ingress route, latched answer — so
+this is the one editor that reaches the wire.
+
+**The descriptor is read-only here, and not because it was skipped.** `load_adapter` exists
+nowhere: it needs a topic constant from P0, an `INGRESS_TOPICS` entry from P6, and a handler
+from P3, in that order. Until then the loaded descriptor is rendered in pane 2 rather than
+offered as an editor whose apply button could not do anything.
+
+**Reloading either document ends the episode, and the surface must say so before it sends.**
 A descriptor swap can change the schema, and the automaton's APs are compiled against those
 keys — a live swap would leave the monitor stepping an automaton whose propositions refer to
 fields that no longer exist, silently always-false. Spec reload has the same problem for the
-same reason. So both are: validate → confirm → reset → reload → re-arm, and the confirm
-dialogue names the episode it is about to end. A hot reload that quietly invalidates the
-evidence is worse than a restart, because a restart is visible.
+same reason: the intent is validate → confirm → reset → reload → re-arm, with the
+confirmation naming the episode it is about to end. **Today the warning is on the button
+(`apply · restarts the episode`) and there is no confirmation step** — the page discards its
+own plot history and re-reads the latched topics on apply, so the operator is not left
+reading pre-reload evidence, but a misclick still lands. The dialogue is owed. A hot reload
+that quietly invalidates the evidence is worse than a restart, because a restart is visible.
 
-**2 — Raw input, per topic.** One row per source from the adapter's `sources`: topic name,
+**2 — Loaded configuration.** What this monitor is actually running: descriptor name and
+where it was loaded from, spec name and `source`, every topic subscribed and every topic
+published, the clock mode, `step` against the spec's `max_steps` with the remaining budget,
+and the declared provenance of the data.
+
+**On "is it real or simulated" — the monitor cannot know, and the surface must not pretend
+otherwise.** Hardware agnosticism is the whole claim: `real_g1`, `mujoco` and `isaac_lab`
+declare an identical schema over different topics, and the engine is unable to tell them
+apart. So the surface reports the descriptor's **declared** provenance and labels it as a
+declaration by whoever launched the container — not a verified fact. A badge reading "REAL"
+that the monitor inferred would be a lie the first time someone replays a bag through the
+real descriptor, which is a thing this project does on purpose.
+
+**3 — Raw input, per topic.** One row per source from the adapter's `sources`: topic name,
 message type, `expected_hz` against measured `rate_hz`, `age_s`, `samples_this_tick`,
 `refreshed`, `dropped`. A source below its expected rate renders as an alert, not as a
 number to notice.
@@ -127,13 +161,13 @@ is not free and the panel is usually across a link.
 
 **This pane's echo half cannot be built yet, and the design should not pretend it can.**
 `/monitor/raw_echo_request` has no publish route and `/monitor/raw_echo` has no read route;
-both live in `gateway.py`, which this package's own non-goals forbid it from editing. So the
-row table ships — it is `data_health` off the observation, which already streams — and the
-echo is a disabled affordance naming the missing route, until P6 adds it. What matters is
+both are routes in `gateway.py`, which is P6's to add. So the row table ships — it is
+`data_health` off the observation, which already streams — and the echo says "no route"
+rather than offering a toggle that does nothing, until P6 adds it. What matters is
 that the row table was never the fallback for the echo: it is the pane, and the echo is the
 zoom.
 
-**3 — Plots, most of which cost nothing extra.** Every observation already carries every
+**4 — Plots, most of which cost nothing extra.** Every observation already carries every
 schema key, every tick. So these time series are genuinely free: `min_range` over time
 against the collision threshold, the `linear_vel` and `angular_vel` traces, and `confidence`
 over time. Ring buffer in the page, no server-side history, no new topic. This is the pane
@@ -160,7 +194,7 @@ against P12's keys, not P3's, and it renders when they exist.
 reading of data that already exists — the monitor should not grow a renderer to prove it can.
 The shipped visualisation stack (`sim/Dockerfile.foxglove`) is where a human looks at depth.
 
-**4 — Which AP is evaluated against which data.** For each AP: its rule, the sensor keys the
+**5 — Which AP is evaluated against which data.** For each AP: its rule, the sensor keys the
 rule references, the live value of each of those keys, and the resulting boolean — or its
 name in `unknown_aps`, which is the case that matters, because an AP that could not be
 evaluated is not an AP that is false.
@@ -171,7 +205,7 @@ exactly this, because it is how a pushed spec is validated against the schema. P
 the map on the manifest rather than making every client re-parse the rules and drift from
 the validator.
 
-**5 — The automaton, with the current state lit and the path from the initial state.** Per
+**6 — The automaton, with the current state lit and the path from the initial state.** Per
 formula: states, edges, the accepting and sink sets, the initial state, the current state,
 and the sequence of states this episode has actually passed through.
 
@@ -198,24 +232,32 @@ alarming. The surface renders the category as given and does not re-rank it: an
 unclassifiable fault is not thereby a severe one, and the spec that named it was already
 rejected at load if the spelling was unrecognised.
 
-**6 — Clock.** `seq`, `t`, `t0` as a wall time, effective `tick_hz`, `mode`, and
-`missed_ticks` from the verdict. `seq`/`t`/`t0`/`tick_hz`/`mode` arrive on
-`WS /api/clock/stream`; the page also reads `GET /api/clock` on load so it has values before
-the first pulse. Plus the control: `manual` mode and a step button turn the whole system
-into a debugger where one click advances every service by exactly one tick.
+**7 — Clock.** `seq`, `t`, `t0` as a wall time, effective `tick_hz`, `mode`, and
+`missed_ticks` from the verdict. `seq`/`t`/`t0`/`tick_hz`/`mode` arrive on the monitor
+stream, on `/monitor/tick`, which is why that topic had to join `STREAM_TOPICS`. Until the
+first pulse arrives the pane says it has seen no tick rather than showing a zero, and it
+also names the observation's `clock` field, because a monitor free-running on its own timer
+and a monitor driven by the clock service are the same numbers with different meanings.
+Plus the control: a step button, which in `manual` mode turns the whole system into a
+debugger where one click advances every service by exactly one tick. The step ships; the
+mode *switch* does not yet, so the pane reports `mode` and does not set it, and a step
+pressed against a free-running clock shows the refusal it got rather than swallowing it.
 
-**That `GET /api/clock` must carry `X-Skill-Monitor` or it is a 403.** The whole proxied
-clock surface is gated, reads included — see [The rest](#the-rest). This pane is the reason
-the rule has to be stated as "every clock request" rather than "every mutating call": under
-the looser rule, the one pane that opens on page load fails first.
+**Every clock request must carry `X-Skill-Monitor` or it is a 403, reads included.** The
+whole proxied clock surface is gated — see [The rest](#the-rest) — so the rule has to be
+stated as "every clock request" rather than "every mutating call". The page obeys the
+stricter rule everywhere by construction: the header is on the one `fetch` wrapper the page
+makes all its requests through, `GET`s included, so no pane can acquire a read that 403s by
+being written later.
 
 The effective rate is the one on the wire, never the descriptor's — a CLI override that the
 panel does not reflect makes every seconds-denominated number on the page wrong.
 
-**7 — Cost.** How long the tick took, split by stage: fold, AP evaluation, automaton step,
-verdict publication. Shown as the current tick and a rolling distribution, against the tick
-budget `1/tick_hz` — the number that matters is not the mean, it is how close the worst tick
-came to the budget, because that is the one that will start dropping ticks.
+**8 — Cost (the page names it "timing", after the field it wants).** How long the tick took,
+split by stage: fold, AP evaluation, automaton step, verdict publication. Shown as the
+current tick and a rolling distribution, against the tick budget `1/tick_hz` — the number
+that matters is not the mean, it is how close the worst tick came to the budget, because
+that is the one that will start dropping ticks.
 
 This needs new fields. Nothing times itself today, and a benchmark the operator cannot see
 is a benchmark nobody runs.
@@ -232,22 +274,9 @@ they are: ticks the monitor did not judge. Reconstructing the tick axis from `se
 `missed_ticks` rather than from message counts is the same discipline every other consumer
 of the verdict owes.
 
-**8 — Loaded configuration.** What this monitor is actually running: descriptor name and
-where it was loaded from, spec name and `source`, every topic subscribed and every topic
-published, the clock mode, `step` against the spec's `max_steps` with the remaining budget,
-and the declared provenance of the data.
-
-**On "is it real or simulated" — the monitor cannot know, and the surface must not pretend
-otherwise.** Hardware agnosticism is the whole claim: `real_g1`, `mujoco` and `isaac_lab`
-declare an identical schema over different topics, and the engine is unable to tell them
-apart. So the surface reports the descriptor's **declared** provenance and labels it as a
-declaration by whoever launched the container — not a verified fact. A badge reading "REAL"
-that the monitor inferred would be a lie the first time someone replays a bag through the
-real descriptor, which is a thing this project does on purpose.
-
 ### What this pane set requires from the backend
 
-Six payload fields and six routes or topic constants — and the ownership is not one package
+Six payload fields and four routes or topic constants — and the ownership is not one package
 per row, which was the assumption worth correcting. `api.validate_*` is **closed by
 default**: `_check_fields` reports every unknown field as a problem unless the caller passes
 `closed=False`, and only the manifest does. So a payload field is not a matter of "the
@@ -285,9 +314,14 @@ draws no track until then.
 | `/monitor/load_adapter` and `/monitor/adapter_status` as constants, each with a `VALIDATORS` entry, and `adapter_status` in `api.LATCHED_TOPICS` | **P0** | api.md is explicit: topic names are "declared once as constants in `core/api.py`. Nothing else in the repo may contain a `/monitor/...` string literal". The gateway's ingress routes call `validate_for_topic`, and an unregistered topic there is itself a problem, not a pass |
 | the `load_adapter` ingress route — an `INGRESS_TOPICS` entry | **P6** | `gateway.py` is P6's file. The *GET* for `adapter_status` costs nothing once the constant lands, because `LATCHED_ROUTES` is derived from `api.LATCHED_TOPICS` |
 | validate-and-answer for a pushed descriptor | **P3** | mirroring `load_spec`/`spec_status` exactly — same shape, same latched status |
-| the `raw_echo_request` ingress route and a way to read `/monitor/raw_echo` | **P6 alone** | pane 2's echo half. Both constants and both validators are already in `core/api.py`, so P0 owes nothing here — only the transport is missing |
-| static-file serving | **P6** | one route. Without it there is no page to load, only an API |
-| `gateway --mock` | **P6** | without it this surface can only be developed against a live ROS graph, which is the machine nobody building a frontend has |
+| the `raw_echo_request` ingress route and a way to read `/monitor/raw_echo` | **P6 alone** | pane 3's echo half. Both constants and both validators are already in `core/api.py`, so P0 owes nothing here — only the transport is missing |
+
+**Two rows left this table by being built rather than by being asked for.** Static-file
+serving was a P6 ask and is now `Gateway(static_dir=...)`, off by default; `api.TICK` on
+`STREAM_TOPICS` was never a separate ask and is the second of the two `gateway.py` changes.
+Both are described under [Files owned](#files-owned), with the note that P7's tests are what
+cover them. `--mock` was also asked of the gateway and is not there either — it lives in
+`frontend/web.py`, for the layering reason in [Services](#services), and needed no route.
 
 **A gap in the ownership matrix, not an ask.** The `automata` row is the one that cannot be
 satisfied from a payload owner's own files. `skill_monitor/core/automata.py` is the only file
@@ -305,12 +339,13 @@ build" when its field is absent, and the surface is usable the day the WebSocket
 That is deliberate: a frontend that cannot be started until P0, P3, P4 and P12 have all
 landed is a frontend that gets built last and rushed.
 
-**One of the routes is.** Static-file serving is not a degradation: without it the browser
-has nothing to fetch, and there is no surface to run at all. The other two P6 routes are not
-blocking but are not degradations either — the descriptor push and the raw echo ship
-*visibly disabled*, naming the route they wait on, which is a different thing from a pane
-that renders with a field missing. All three are P6's, and P7 asks for them in a PR comment
-rather than editing `gateway.py`.
+**The one route that was blocking has landed.** Static-file serving was not a degradation —
+without it the browser has nothing to fetch and there is no surface to run at all — which is
+why it is the change this package did make to `gateway.py` rather than wait on. The two
+routes still outstanding are not blocking and are not degradations either: the descriptor
+push and the raw echo ship *visibly disabled*, naming the route they wait on, which is a
+different thing from a pane that renders with a field missing. Both are P6's, and P7 asks
+for them in a PR comment rather than writing them.
 
 ### The rest
 
@@ -344,78 +379,94 @@ including `GET`.** The gateway's own rule, from its module docstring and enforce
 method-transparent, so the gateway cannot know which of the clock's `GET`s have side effects:
 `GET /api/clock/step` advances a tick and is reachable from an `<img>` tag, and treating the
 whole proxied surface as state-changing is the only policy consistent with not enumerating
-it. A page that learns the rule as "mutating calls only" ships a pane 6 that 403s on load, so
-the rule the code enforces is the rule this document states.
+it. A page that learns the rule as "mutating calls only" ships a clock pane that 403s on the
+first read it makes, so the rule the code enforces is the rule this document states — and
+the page sets the header on every request rather than on the ones it believes are mutating.
 
 WebSocket handshakes are exempt, because a browser cannot set a header on one at all; they
 are gated on `Origin` instead, which means `--allow-origin` must name the console's origin
-before either socket opens. See [api.md](../api.md#the-trust-boundary) — which still states
-the narrower rule, and is P9's file to correct.
+before the stream opens — which is why `web.py` names it rather than leaving it to an
+operator. See [api.md](../api.md#the-trust-boundary) — which still states the narrower rule,
+and is P9's file to correct.
 
 ## Files owned
 
-- `skill_monitor/frontend/*` — the Tk panel is deleted here, not left as a second surface to
-  keep honest, and `STATE_TOPIC` goes with it
-- `skill_monitor/frontend/static/*` — the page
+- `skill_monitor/frontend/index.html` — the page, entire
+- `skill_monitor/frontend/web.py` — the launcher
+- `skill_monitor/frontend/mock_monitor.py` — the fiction
+- `skill_monitor/frontend/skill_center.py` — the Tk panel, still here; see below
 - `deploy/Dockerfile.skill_center`
-- `tests/test_skill_center.py`
+- `tests/test_web_ui.py`, `tests/test_skill_center.py`
 
-`tests/test_gateway.py` is **not** on that list — it is P6's, along with `gateway.py`
-itself. Anything that exercises the gateway's own behaviour, `--mock` frames included, is
-written there by P6, not here.
+The Tk panel (`frontend/skill_center.py`) is **not** deleted with this landing. It is the
+surface that works today, the console does not yet cover its container controls, and
+removing it is a clean commit of its own rather than noise inside this one — it and
+`STATE_TOPIC` are still this package's to move. Two surfaces is a debt with a due date,
+not a design.
+
+Two changes were needed in `gateway.py`, which is P6's:
+
+- `Gateway(static_dir=...)` and one route. Defaults to `None`, so an API-only gateway
+  serves no files; the directory's contents are matched against an extension allowlist and
+  must be direct children, resolved and compared against the resolved directory.
+- `api.TICK` added to `STREAM_TOPICS`. `t0` and `mode` exist on no other topic, and the
+  monitor's *own* pulses are the only place a console can see that it is being clocked by
+  something other than the gateway's proxied clock — or by nothing at all.
+
+**Both of those are covered from `tests/test_web_ui.py`, which is P7's file, and that seam
+is worth naming.** The ownership rule has not changed — `gateway.py` and
+`tests/test_gateway.py` are P6's, and anything exercising the gateway's own behaviour is
+written there by P6 — but a reviewer of P6 will not find `test_the_root_is_the_console` or
+`test_the_stream_carries_the_tick` in P6's own test file, and could revert either change
+without a single P6 test going red.
 
 ## Depends on
 
-P0 for payloads and topic names; **P6 for the transport, which is merged** — though "merged"
-means the two stream routes, the three latched GETs and the two ingress POSTs, and not the
-static files, the mock, or the raw-echo and `load_adapter` routes this package still needs.
-The payload fields above are wanted, not required — build against their absence first. The
-X-Y track waits on P12 and is drawn by nothing until then.
+P0 for payloads and topic names; **P6 for the transport, which is merged** — the stream
+routes, the three latched GETs and the two ingress POSTs. The static route and the `TICK`
+entry on `STREAM_TOPICS` are in `gateway.py` too, added here and listed under
+[Files owned](#files-owned) as the two lines of P6's file this package touched. The
+raw-echo and `load_adapter` routes are still owed and still P6's. The payload fields above
+are wanted, not required — build against their absence first. The X-Y track waits on P12
+and is drawn by nothing until then.
 
 ## Test plan
 
-No browser and no ROS. The view models are pure functions from recorded frames; the DOM is
-thin enough that testing it would test the DOM.
+No browser and no sockets. Two things here can rot silently, and they are what
+`tests/test_web_ui.py` holds:
 
-- `test_view_model_from_one_recorded_frame` — every pane's model built from one captured
-  tick, asserted field by field
-- `test_a_schema_the_panel_has_never_seen_renders` — the gripper vocabulary, unchanged
-- `test_a_source_below_expected_rate_is_an_alert`
-- `test_ap_dependencies_agree_with_the_validator` — the published map equals
-  `sensor_keys_in_rule` for every AP in the shipped spec. This is the drift guard
-- `test_an_unevaluated_ap_is_not_a_false_ap` — a name in `unknown_aps` renders as unknown
-- `test_automaton_path_starts_where_the_page_connected` — a page joining at step 40 claims
-  no knowledge of steps 1–39
-- `test_every_pane_degrades_when_its_field_is_absent` — a build with none of the new payload
-  fields renders, with each gap named
-- `test_a_pane_with_no_route_says_so_rather_than_failing` — descriptor push and raw echo,
-  whose transports do not exist, render disabled and name the missing route
-- `test_raw_echo_is_off_by_default_and_single_source`
-- `test_reloading_a_document_confirms_before_it_resets` — neither spec nor descriptor reload
-  can reach the wire without the episode-ending confirmation
-- `test_seconds_come_from_the_effective_tick_hz` — not the descriptor's
-- `test_provenance_is_rendered_as_a_declaration` — never as a verified fact
-- `test_cost_does_not_join_two_streams_of_different_cardinality` — feed a frame sequence with
-  paused ticks: the observation half has samples the verdict half does not, and the
-  distribution counts only ticks that produced both
-- `test_a_phase_fault_is_visible_without_an_automaton` — a `phase:<phase>:<kind>` entry in
-  `failure_modes` renders with its `fault_category`, though no formula changed status
-- `test_clock_step_posts_exactly_one_step`
-- `test_every_clock_request_sends_the_csrf_header` — reads included, because
-  `GET /api/clock` is gated. The old name for this test was
-  `..._every_mutating_call_...`, which is the wrong rule and would have passed while
-  pane 6 403'd on load
+**The file route** — `test_the_root_is_the_console`,
+`test_a_gateway_told_of_no_directory_serves_no_files`,
+`test_nothing_outside_the_directory_is_reachable` (`..`, an encoded `..`, a subdirectory
+spelling, a dotfile), `test_only_the_extensions_the_console_is_built_from_are_served`
+(`web.py` and `mock_monitor.py` sit in the served directory and are not downloadable),
+`test_a_symlink_out_of_the_directory_is_not_a_way_in`,
+`test_the_console_names_its_own_origin`, `test_the_stream_carries_the_tick`.
 
-**`--mock` is tested by P6, not here.** A `test_mock_gateway_frames_validate` — `--mock`
-frames pass `api.validate_*`, so the mock cannot drift from the contract it stands in for —
-is the right test and the wrong file: `tests/test_gateway.py` is P6's, and P7 owns only
-`tests/test_skill_center.py`. P7 asks for it alongside the flag.
+**The mock** — `test_every_frame_the_mock_publishes_validates` is the one that fails when
+the wire moves; `test_an_ap_is_true_for_the_reason_its_rule_gives` (evaluated from the
+spec's own rule, so an AP-pane review is not reviewing a coincidence);
+`test_a_stale_source_makes_its_aps_unknown_not_false`;
+`test_pushing_a_spec_restarts_the_episode_and_says_which_spec_is_loaded`;
+`test_a_spec_the_robot_cannot_evaluate_is_refused_with_its_reasons`;
+`test_the_episode_ends_rather_than_counting_past_its_own_bounds`;
+`test_the_mock_says_on_the_wire_that_it_is_a_fiction`;
+`test_the_mock_splits_a_rule_with_the_shared_splitter`.
 
-It is also **sequenced after P0.** A mock that emits `timing` or `provenance` before P0 opens
-`_OBSERVATION_FIELDS`, `_VERDICT_FIELDS` and `_ADAPTER_FIELDS` fails that test by
-construction — the frames are rejected as carrying unknown fields, and the failure looks like
-a broken mock rather than a payload the contract has not yet admitted. So the mock emits the
-fields it has, and gains the rest when P0 lands.
+**Still asked for, and not written here yet** —
+`test_every_clock_request_sends_the_csrf_header`, *reads included*. The whole proxied clock
+surface is gated, not only its POSTs, so the rule the page has to obey is "every clock
+request" and not "every mutating call"; a test carrying the second name would pass while a
+pane that reads the clock on load 403s. The page does obey it — `HDR` is applied to every
+`fetch`, `GET` included — but nothing in this file fails when that stops being true.
+
+**Not covered, and named rather than implied.** The page's own JavaScript has no test
+runner in this repo, so the rendering is checked by running it: a headless load asserting
+zero uncaught exceptions, then driving the two write paths (apply a renamed spec, apply an
+unevaluable one, press step with no clock service) and reading back what the page shows.
+That is a manual check today. The pure parts of it — `ruleOf` and `keysInRule`, which are a
+second implementation of `spec_contract` — are the ones worth a runner first, because a
+second implementation is exactly where the decimal-point bug lived three times before.
 
 ## Done when
 
@@ -425,9 +476,21 @@ witnessed; provenance reads as a declaration; a build missing every new backend 
 renders, naming what it cannot show; and the two panes whose routes do not exist say which
 route they are waiting for rather than failing.
 
+**Where this stands.** Six of the eight panes render from the wire as it is today. Two do
+not, and say why in place: the automaton has no `automata` to draw and shows the formula
+statuses instead, and timing has no `verdict.timing` and shows only the frame interval this
+browser measured, labelled as such. The AP map is a second implementation of
+`sensor_keys_in_rule` in JavaScript rather than the validator's own answer off the wire;
+`ap_dependencies` replaces it and deletes that code. Raw payload echo has no gateway
+ingress route for `raw_echo_request`, so the pane says "no route" rather than offering a
+dead toggle.
+
 ## Non-goals
 
-A 3D point-cloud viewport. Serving the API or adding routes to `gateway.py` (P6) — which is
-why the static files, the mock, the raw-echo routes and `load_adapter` are asks and not work
-items. Deciding verdicts (P4). Generating specs — the surface edits and pushes the
-description, the describer generates. The docker-socket root-equivalence policy (P8).
+A 3D point-cloud viewport. Serving the API — the `/api/*` surface is P6's, which is why the
+raw-echo routes and `load_adapter` are asks and not work items. The static route and the
+`TICK` entry are the stated exception, not a licence: they are the two lines of
+`gateway.py` without which there is no page at all and no tick to show on it, they are
+named in [Files owned](#files-owned), and any further route belongs to P6. Deciding
+verdicts (P4). Generating specs — the surface edits and pushes the description, the
+describer generates. The docker-socket root-equivalence policy (P8).
