@@ -25,7 +25,7 @@ as a nine-branch sweep someone forgets.
 | [P4 monitor](P4-monitor.md) | `backend/feat-verdict-topic` | `backend/monitor_node.py`, `core/manifest.py`, `tests/test_manifest.py` | P0 |
 | [P5 supervisor](P5-supervisor.md) | `backend/refactor-supervisor-token` | `backend/intervention_supervisor.py`, `core/supervisor_logic.py`, `core/monitor_action.py`, their tests | P0, P4's verdict shape |
 | [P6 gateway](P6-gateway.md) | `backend/feat-gateway` | `backend/gateway.py`, `deploy/Dockerfile.gateway`, `tests/test_gateway.py` | P0 |
-| [P7 frontend](P7-frontend.md) | `frontend/feat-observation-panel` | `frontend/*`, `deploy/Dockerfile.skill_center`, `tests/test_skill_center.py` | P0, P6 |
+| [P7 operator surface](P7-frontend.md) | `frontend/feat-operator-surface` | `frontend/*`, `deploy/Dockerfile.skill_center`, `tests/test_skill_center.py` | P0, **P6 (merged)** |
 | [P8 deploy](P8-deploy.md) | `deploy/feat-container-split` | `skill_monitor/__init__.py`, `deploy/*`, `sim/docker-compose.sim.yml`, `tests/test_config_resolution.py` | — |
 | [P12 planner-independent schema](P12-planner-independent-schema.md) | `core/feat-planner-independent-schema` | `adapters/nav_schema.json`, `adapters/real_g1.json`, the new extractors in `core/adapter_spec.py`, the regenerated spec, `tests/test_planner_independence.py` | **P2, P3** |
 | [P9 docs](P9-docs.md) | `docs/feat-architecture-map` | `docs/*`, `README.md`, `CONTRIBUTING.md` | — |
@@ -39,6 +39,19 @@ that the packages are concurrent rather than merely parallel.
 2. Data path in order, each rebased on `dev`: **P2 → P3 → P4 → P5**.
 3. **P1, P6, P7, P8, P9** merge whenever green.
 4. A final pass reconciles the interface boundaries and runs the whole suite once.
+
+## What P7 asks of its neighbours
+
+The operator surface is the one package that can only show what somebody else publishes, so
+[P7](P7-frontend.md) names five fields and one topic pair it wants from P3 and P4. They are
+listed in that document with their owners and their reasons. Two rules keep this from
+becoming P7 editing other packages' files:
+
+- **The owning package adds the field**, in its own branch, to the payload it already owns.
+  P7 asks in a PR comment; it does not reach across.
+- **P7 must render without any of them.** Each pane degrades to "not reported by this build"
+  and names the gap. A frontend that cannot start until two other packages land is a
+  frontend that gets built last and rushed.
 
 ## Rules for every package
 
