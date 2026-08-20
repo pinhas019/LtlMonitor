@@ -54,9 +54,9 @@ sequenceDiagram
   E->>M: /monitor/observation seq=k
   E->>F: /monitor/observation seq=k
   M->>M: automaton steps once for interval k
-  M->>P: /monitor/verdict seq=k + intervention token
+  M->>P: /monitor/verdict seq=k — intervention.action + terminal
   M->>F: /monitor/verdict seq=k
-  P->>P: enforce token if enabled
+  P->>P: enforce both legs if enabled
 ```
 
 ## Topic names
@@ -80,6 +80,10 @@ importing the constant, not a sweep that a branch can forget.
 
 Latched means `TRANSIENT_LOCAL`, depth 1, reliable: a client that connects mid-mission
 receives the last value immediately instead of waiting for a change that may never come.
+The marker is a statement about what the publisher does today, not about what it ought to
+do — `/monitor/verdict` carries no marker because it is `VOLATILE`, and the durable
+profile it needs is a *different* one (depth 10, not depth 1) for the reason given under
+[`terminal`](#terminal--the-episode-end-signal).
 
 ---
 
@@ -147,7 +151,7 @@ because a silent drop is indistinguishable from a sensor that stopped.
 
 ---
 
-## `/monitor/verdict` *(latched)* — monitor → supervisor, frontend
+## `/monitor/verdict` — monitor → supervisor, frontend
 
 Produced by P4, **exactly once per tick the monitor stepped** — one automaton step, one
 verdict, never two. That is not the same as "once per pulse the clock emitted", and the
@@ -204,7 +208,7 @@ repeating the same `seq`.
 
 ### `terminal` — the episode-end signal
 
-Present on every verdict, never omitted. A closed set of four values:
+Present on every verdict, never omitted. `null`, plus three non-null values:
 
 | value | means |
 |---|---|
@@ -217,11 +221,20 @@ Present on every verdict, never omitted. A closed set of four values:
 world. Non-null means exactly one thing, and it is checkable: *this is the last verdict of
 this episode; the monitor has stopped stepping and will publish nothing further until
 `arm`/`reset` on `/monitor/command`.* Consumers must not read `"FAILURE"` as "the skill
-failed at its task" — a monitor stopped by a spec reload also reports `"FAILURE"` today
-(see the follow-up recorded in [P5](packages/P5-supervisor.md#the-follow-up-p4-owes)).
-The three non-null values exist to keep the ablation's outcome column honest; **the stop
-rule reads only null vs non-null**, so a consumer that only needs the rule is unaffected
-if a fourth value is ever added.
+failed at its task": a phase timeout ends the episode as `"FAILURE"` while the token
+published on that same tick says `REPLAN` — the monitor's own reading is that the plan
+needs redoing, not that the skill failed. `"ABORTED"` is meanwhile a value the monitor
+cannot currently reach at all: the string appears nowhere in `skill_monitor/`, so every
+episode end that reaches the wire today is `"SUCCESS"` or `"FAILURE"` (see the follow-up
+recorded in [P5](packages/P5-supervisor.md#the-follow-up-p4-owes)).
+
+The three non-null values exist to keep the ablation's outcome column honest. The set is
+**closed**: adding a value is a `schema_version` change, not something a producer may do
+on its own. It is not yet closed in the *validator* — `api.validate_verdict` still types
+this field as any string, so a typo'd `"Success"` passes — item 6 of the
+[follow-up](packages/P5-supervisor.md#the-follow-up-p4-owes) closes it.
+**The stop rule reads only null vs non-null**, so a consumer that only needs the rule is
+unaffected if a fourth non-null value is ever added.
 
 **The completeness obligation.** Every way an episode can end must put a non-null
 `terminal` on the wire, in a verdict the monitor actually publishes, before it stops
@@ -242,10 +255,13 @@ The paths, and where each is decided:
 | the spec's `terminal_success.condition` became true | `SUCCESS` |
 | **the phase ladder ran to completion — the last phase's `exit_condition` held** | `SUCCESS` |
 | **an external `__done__` / termination signal arrived** | `ABORTED` |
-| the monitor process stops for any other reason it can see coming | `ABORTED` |
+| **the monitor process stops for any other reason it can see coming** | `ABORTED` |
 
-The two bold rows are the ones that do not hold today; they are the substance of the
-follow-up P4 owes.
+The three bold rows are the ones that do not hold today; they are the substance of the
+follow-up P4 owes. The last of them fails twice over: the string `"ABORTED"` appears
+nowhere in `skill_monitor/`, so nothing can assign it — and a stop that *did* route
+through `_halt` or `_enter_idle` would report `"FAILURE"` anyway, since `self._terminal
+or "FAILURE"` is what both of those default to.
 
 A fault that is *breached but graded below the stopping rung* — the low-confidence SAFETY
 case — does **not** end the episode. `terminal` stays `null`, monitoring continues, and
@@ -258,10 +274,23 @@ legible instead of implicit.
 repeated, because the monitor stops publishing immediately after. A one-shot message on a
 `VOLATILE` topic is not a sound carrier for a signal a supervisor must never miss — a
 supervisor that starts, restarts, or resubscribes after the episode ended sees only
-silence and, under P5's rule, has no basis to stop. `/monitor/verdict` must therefore be
-published `TRANSIENT_LOCAL`, depth 1, like `/monitor/manifest` and `/monitor/adapter`, so
-that the last verdict of an episode is still readable by a late joiner. Consumers already
-have `seq` and `t` to tell a latched replay from a live tick.
+silence and, under P5's rule, has no basis to stop. `/monitor/verdict` is published
+`VOLATILE` with depth 10 today, so it must move to **`TRANSIENT_LOCAL` + `RELIABLE` +
+`KEEP_LAST`, depth 10** — durability so a late joiner gets the last verdict at all, and
+the existing depth kept so a live subscriber that falls a message behind does not lose
+ticks the stream is supposed to be complete about.
+
+**Depth 1 was rejected.** That is what the three genuinely latched topics use — the
+`_LATCHED` profile shared by `/monitor/manifest`, `/monitor/adapter` and
+`/monitor/spec_status` — and it is right for a document that changes rarely and wrong for
+a per-tick stream: it
+retains one sample, so a reconnecting client is handed a single frame and no history, and
+a reader lagging by one message on a `RELIABLE` writer whose history holds one sample can
+lose the sample it had not yet acknowledged. The cost of depth 10 is that a late joiner
+replays up to ten frames rather than one, which a consumer folds in order — `seq` and `t`
+already tell a replayed frame from a live tick, and reading them in order lands on the
+same state either way. This is the profile [P5](packages/P5-supervisor.md#the-follow-up-p4-owes)
+specifies; the two documents must not disagree about a QoS setting.
 
 **The closing frame — open, and nothing depends on it yet.** "Exactly once per tick" holds
 for every verdict today, the episode's last one included: `terminal` rides the verdict of
@@ -270,7 +299,7 @@ the point it happens — *"the run's last message is the verdict that ended it a
 second frame for the same tick"*.
 
 The unresolved case is an episode ended from *outside*, between ticks — the `__done__` row
-above, one of the two that do not hold today. It would owe a verdict with no tick of its
+above, one of the three that do not hold today. It would owe a verdict with no tick of its
 own, and the two ways out are a closing frame repeating the previous `seq` and `t` (which
 a consumer would have to fold onto the tick it repeats rather than count as a new one), or
 holding `terminal` until the next tick's verdict, which costs up to one tick of latency on
