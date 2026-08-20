@@ -54,11 +54,25 @@ def own_origins(host: str, port: int) -> list[str]:
     A wildcard bind is reachable as any name the deployment has, and this file cannot
     enumerate them -- loopback is still named because it is still true, and anything
     else is the operator's ``--allow-origin``.
+
+    ``port`` must be the **bound** port, not the one asked for: with ``--port 0`` the
+    kernel picks it, and an origin list naming port 0 matches nothing the browser sends.
     """
     names = ["127.0.0.1", "localhost"]
-    if host not in ("0.0.0.0", "::", "*", "127.0.0.1", "localhost"):
+    if host in ("::", "::1"):
+        # An IPv6 bind is reached at ::1 too, and `::` names nothing of its own.
+        names.append("::1")
+    elif host not in ("0.0.0.0", "*", "127.0.0.1", "localhost"):
         names.append(host)
-    return [f"http://{name}:{port}" for name in names]
+    return [f"http://{_authority(name)}:{port}" for name in names]
+
+
+def _authority(name: str) -> str:
+    """An IPv6 literal in a URL is bracketed. A browser at ``[::1]:8080`` sends
+    ``Origin: http://[::1]:8080``, and ``http://::1:8080`` is not that string -- nor is
+    it something ``urlsplit`` can pull a hostname out of, so the Host allowlist derived
+    from these origins would be wrong in the same breath."""
+    return f"[{name}]" if ":" in name and not name.startswith("[") else name
 
 
 def main(argv=None) -> int:
@@ -75,19 +89,23 @@ def main(argv=None) -> int:
     else:
         bus = gw.build_bus(True)
 
-    origins = own_origins(args.host, args.port) + list(args.allow_origin)
+    # Bind first, then name the origin. With `--port 0` the port does not exist until
+    # the socket is bound, and a gateway that allowlists `http://127.0.0.1:0` refuses
+    # the websocket from the very page it just served. `server.gateway` is the real one;
+    # nothing is served in between because `serve_forever` has not been called yet.
+    server = gw.GatewayServer(gw.Gateway(), args.host, args.port)
+    origins = own_origins(args.host, server.port) + list(args.allow_origin)
     clock = gw.HttpClockBackend(args.clock_url) if args.clock_url \
         else gw.NullClockBackend()
-    gateway = gw.Gateway(
+    server.gateway = gw.Gateway(
         bus, clock,
         allowed_origins=origins,
         allowed_hosts=gw.host_allowlist(args.host, origins, args.allow_host),
         static_dir=HERE,
     )
-    server = gw.GatewayServer(gateway, args.host, args.port)
 
     log.info("console on http://%s:%d  (NO AUTHENTICATION -- trusted network only)",
-             args.host, server.port)
+             _authority(args.host), server.port)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         log.warning(
             "bound to %s: an unauthenticated control surface for the robot is now "

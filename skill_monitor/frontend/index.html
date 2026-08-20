@@ -146,10 +146,21 @@ const S = {
 const PLOT_N = 180;
 
 const $ = id => document.getElementById(id);
-const txt = (s) => (s === null || s === undefined) ? "—" : String(s);
+/* `'` is escaped as well as `"` so that a single-quoted attribute stays safe by
+   construction: today none of them take interpolated data, and nobody adding the first
+   one should have to know that. */
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+/* `raw` stringifies for a textContent sink; `txt` is the same thing for an innerHTML
+   one, and everything below writes innerHTML. A wire field is not markup: the gateway
+   keeps a cross-origin page from ever reaching these routes, but a publisher already on
+   the ROS graph is not the attacker that defends against, and a `skill_name` of
+   `<img onerror=...>` should render as those characters rather than run. */
+const raw = (s) => (s === null || s === undefined) ? "—" : String(s);
+const txt = (s) => esc(raw(s));
+/* Numbers pass through unescaped because they are numbers; anything else took the
+   `txt` path and is escaped. */
 const num = (v, d = 3) => (typeof v === "number" && isFinite(v)) ? +v.toFixed(d) : txt(v);
-const esc = s => String(s).replace(/[&<>"]/g, c =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 async function api(path, opts) {
   const r = await fetch(path, Object.assign({ headers: HDR }, opts || {}));
@@ -241,9 +252,9 @@ function renderHeader() {
   $("h-verdict").innerHTML = `<span class="${verdictClass(v.verdict)}">${esc(v.verdict)}</span>`;
   const a = (v.intervention || {}).action;
   $("h-action").innerHTML =
-    `<span class="${ACTION_CLASS[a] || "dim"}">${esc(txt(a))}</span>` +
+    `<span class="${ACTION_CLASS[a] || "dim"}">${txt(a)}</span>` +
     ` <span class="dim">conf ${num((v.intervention || {}).confidence, 2)}</span>`;
-  $("h-phase").textContent = `${txt(v.phase)}${v.phase_index === null ? "" : ` [${v.phase_index}]`}`;
+  $("h-phase").textContent = `${raw(v.phase)}${v.phase_index === null ? "" : ` [${raw(v.phase_index)}]`}`;
   const max = phaseMaxSteps(v.phase_index);
   const left = (v.risk || {}).steps_to_timeout;
   // `step` counts the episode; `max_steps` bounds the *phase*. Comparing them directly
@@ -293,12 +304,15 @@ function renderSpec() {
   }
 }
 
+/* `spec_status` carries ok, problems and skill_name and nothing else -- the field set
+   is closed. Which spec is loaded is the manifest's `source`, rendered in pane 2; a
+   `via` here would read `via —` against every real monitor on the wire. */
 function renderStatus() {
   const s = S.status;
   if (!s) { $("spec-status").innerHTML = `<span class="dim">no spec_status latched</span>`; return; }
   const problems = s.problems || [];
   $("spec-status").innerHTML = s.ok && !problems.length
-    ? `<span class="ok">accepted</span> <span class="dim">${esc(txt(s.skill_name))} · via ${esc(txt(s.source))}</span>`
+    ? `<span class="ok">accepted</span> <span class="dim">${txt(s.skill_name)}</span>`
     : `<span class="bad">rejected</span><ul style="margin:4px 0 0 16px;padding:0">` +
       problems.map(p => `<li class="bad">${esc(p)}</li>`).join("") + `</ul>`;
 }
@@ -331,7 +345,7 @@ function renderConfig() {
     ["adapter", esc(a.adapter)],
     ["describes", `<span class="dim wrap">${esc(a.doc || "—")}</span>`],
     ["tick_hz", `${num(a.tick_hz)} <span class="dim">Δ = ${num(1 / a.tick_hz)} s</span>`],
-    ["spec source", esc(txt((m || {}).source))],
+    ["spec source", txt((m || {}).source)],
     ["schema keys", `${Object.keys(a.schema || {}).length}`],
     ["ros", `${svc.ros && svc.ros.available ? '<span class="ok">available</span>' : '<span class="bad">absent</span>'}
              <span class="dim wrap">${esc((svc.ros || {}).detail || "")}</span>`],
@@ -454,11 +468,17 @@ function ruleOf(description) {
    answers server-side; here it is a word-boundary match against the keys the adapter
    declares, which is exact for the identifiers that matter and cannot invent a key the
    robot does not have. String literals are stripped first so a nav_state value spelled
-   like a key is not counted as one. */
+   like a key is not counted as one.
+
+   The key is regex-escaped first. It is wire data -- whatever the adapter declares --
+   and one metacharacter in it (`a(b`) makes `new RegExp` throw `Unterminated group`,
+   which is not a bad row in the AP pane, it is no AP pane at all. */
+const reEsc = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 function keysInRule(description) {
   const body = ruleOf(description).replace(/'[^']*'|"[^"]*"/g, " ");
   return Object.keys((S.adapter || {}).schema || {})
-    .filter(k => new RegExp(`\\b${k}\\b`).test(body));
+    .filter(k => new RegExp(`\\b${reEsc(k)}\\b`).test(body));
 }
 
 function renderAps() {
@@ -506,7 +526,7 @@ function formulaTable(v) {
   const rows = (v.formulas || []).concat(v.failure_modes || []).map(f =>
     `<tr><td>${esc(f.name)}</td>
      <td><span class="${cls[f.status] || "dim"}">${esc(f.status)}</span></td>
-     <td class="dim">${esc(txt(f.fault_category))}</td>
+     <td class="dim">${txt(f.fault_category)}</td>
      <td class="dim">${f.confidence === undefined ? "" : num(f.confidence, 2)}</td></tr>`).join("");
   return `<table style="margin-top:8px">
     <tr><th>formula</th><th>status</th><th>category</th><th>conf</th></tr>${rows}</table>`;

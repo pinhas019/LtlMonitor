@@ -437,14 +437,24 @@ No browser and no sockets. Two things here can rot silently, and they are what
 
 **The file route** — `test_the_root_is_the_console`,
 `test_a_gateway_told_of_no_directory_serves_no_files`,
-`test_nothing_outside_the_directory_is_reachable` (`..`, an encoded `..`, a subdirectory
-spelling, a dotfile), `test_only_the_extensions_the_console_is_built_from_are_served`
-(`web.py` and `mock_monitor.py` sit in the served directory and are not downloadable),
+`test_nothing_outside_the_directory_is_reachable` (`..`, an encoded `..`, a double-encoded
+`..`, a subdirectory spelling, a backslash spelling, an absolute path, a trailing slash, a
+dotfile, a mixed-case extension, and a NUL byte — which `Path.resolve` answers with
+`ValueError` rather than `OSError`, so uncaught it closes the connection instead of
+returning a 404), `test_only_the_extensions_the_console_is_built_from_are_served`
+(`web.py` and `mock_monitor.py` sit in the served directory and are not downloadable, and
+`.svg` is not in the allowlist — an SVG *navigated to* runs script in this origin, the one
+holding the CSRF grant and the websocket `Origin` grant),
 `test_a_symlink_out_of_the_directory_is_not_a_way_in`,
-`test_the_console_names_its_own_origin`, `test_the_stream_carries_the_tick`.
+`test_the_console_names_its_own_origin`,
+`test_an_ipv6_origin_is_spelled_the_way_a_browser_spells_it`,
+`test_the_stream_carries_the_tick`.
 
 **The mock** — `test_every_frame_the_mock_publishes_validates` is the one that fails when
-the wire moves; `test_an_ap_is_true_for_the_reason_its_rule_gives` (evaluated from the
+the wire moves, and it covers every topic the mock puts on the wire, streamed or latched;
+`test_the_answer_to_a_pushed_spec_validates_too` covers the `spec_status` the reload path
+rebuilds, both the accepted answer and the rejected one;
+`test_an_ap_is_true_for_the_reason_its_rule_gives` (evaluated from the
 spec's own rule, so an AP-pane review is not reviewing a coincidence);
 `test_a_stale_source_makes_its_aps_unknown_not_false`;
 `test_pushing_a_spec_restarts_the_episode_and_says_which_spec_is_loaded`;
@@ -467,6 +477,14 @@ unevaluable one, press step with no clock service) and reading back what the pag
 That is a manual check today. The pure parts of it — `ruleOf` and `keysInRule`, which are a
 second implementation of `spec_contract` — are the ones worth a runner first, because a
 second implementation is exactly where the decimal-point bug lived three times before.
+
+The same gap covers the page's escaping. Every wire field that reaches `innerHTML` goes
+through `esc` — `txt` and `num` escape on the way out rather than at each of the twenty
+call sites, so a field added later is safe without the author having to notice — and
+`keysInRule` regex-escapes the schema key before building a `RegExp` from it, because a
+key with a metacharacter in it throws and takes the whole AP pane with it. Neither is
+reachable by the cross-origin attacker the gateway defends against: both need a publisher
+already on the ROS graph, and this is defence in depth. Nothing in this repo asserts it.
 
 ## Done when
 

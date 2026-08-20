@@ -1173,11 +1173,18 @@ class Gateway:
     #: Extensions the console is built from. Anything else in the directory is not
     #: served: an allowlist is the whole defence here, because `static_dir` will one day
     #: be pointed at a directory somebody dropped a private key into.
+    #:
+    #: `.svg` is deliberately absent, and adding it back is a security change rather
+    #: than a convenience. An SVG *navigated to* is a document, not an image: its
+    #: `<script>` runs in this origin -- the one origin holding the `X-Skill-Monitor`
+    #: grant and the websocket `Origin` grant. Under the threat model above, an SVG
+    #: dropped in the served directory is stored XSS with the robot's controls behind
+    #: it. The console uses none, and `nosniff` on the response below is the other half
+    #: of the same argument: no served byte is ever re-typed by the browser.
     STATIC_TYPES = {
         ".html": "text/html; charset=utf-8",
         ".css": "text/css; charset=utf-8",
         ".js": "text/javascript; charset=utf-8",
-        ".svg": "image/svg+xml",
         ".png": "image/png",
         ".ico": "image/x-icon",
     }
@@ -1195,6 +1202,12 @@ class Gateway:
         all -- and the resolved path is then compared against the resolved directory,
         rather than the string being inspected for traversal, because a symlink inside
         the directory is traversal no amount of string checking sees.
+
+        Anything the filesystem refuses to answer for is a 404, and `ValueError` is one
+        of those refusals: `Path.resolve` raises it rather than `OSError` for a name
+        with an embedded NUL. Letting that escape would take the whole connection down
+        instead of returning a response, so this route -- alone among the gateway's --
+        could be turned into a non-HTTP one by any client that can send a byte.
         """
         if self.static_dir is None:
             return None
@@ -1212,7 +1225,7 @@ class Gateway:
             if candidate.parent != self.static_dir.resolve():
                 return None
             return candidate.read_bytes(), content_type
-        except OSError:
+        except (OSError, ValueError):
             return None
 
     def services(self) -> dict:
@@ -1481,12 +1494,17 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", f"Content-Type, {CLIENT_HEADER}")
         self.send_header("Access-Control-Max-Age", "600")
 
-    def _send(self, status: int, body, content_type: str = "application/json"):
+    def _send(self, status: int, body, content_type: str = "application/json",
+              *, headers=()):
         if isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        # Route-specific headers. Only the static route uses this, and only to say
+        # `nosniff` -- see _route.
+        for name, value in headers:
+            self.send_header(name, value)
         if self.close_connection:
             # Said on the wire, not merely done. `close_connection` drops the socket
             # after this response, but under HTTP/1.1 a client -- or an intermediary
@@ -1679,7 +1697,12 @@ class _Handler(BaseHTTPRequestHandler):
             served = self.gateway.static_file(parts.path)
             if served is not None:
                 body, content_type = served
-                self._send(200, body, content_type)
+                # The extension allowlist decides what a served byte *is*; `nosniff`
+                # stops the browser from deciding otherwise. Without it a `.png` whose
+                # first bytes look like markup can still be rendered as a document in
+                # this origin, which is the origin the console's grants hang off.
+                self._send(200, body, content_type,
+                           headers=(("X-Content-Type-Options", "nosniff"),))
                 return
 
         self._send(404, _error(f"no such resource {parts.path!r}"))

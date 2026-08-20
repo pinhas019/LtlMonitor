@@ -60,10 +60,11 @@ class MockBus(MonitorBus):
             api.ADAPTER: json.dumps(self.adapter),
             api.MANIFEST: json.dumps(
                 api.build_skill_manifest(spec=self.spec, source="mock")),
-            api.SPEC_STATUS: json.dumps({
-                "schema_version": api.SCHEMA_VERSION, "ok": True, "problems": [],
-                "skill_name": self.spec.get("skill_name", ""), "source": "mock",
-            }),
+            # The builder, not a dict shaped like one. `spec_status` has a closed field
+            # set, so a hand-rolled frame with a `source` on it is a frame the
+            # validators reject and no real monitor would ever send.
+            api.SPEC_STATUS: json.dumps(api.build_spec_status(
+                ok=True, skill_name=self.spec.get("skill_name", ""))),
         }
         self._subs: list[tuple[str, tuple, callable]] = []
         self._lock = threading.Lock()
@@ -132,16 +133,14 @@ class MockBus(MonitorBus):
 
         A spec swap mid-episode leaves the automaton stepping propositions from a
         document nobody is looking at any more, so the step counter restarts and the
-        answer says which spec is now loaded.
+        manifest is relatched with the spec that is now loaded.
         """
         problems = spec_contract.validate(spec, self.adapter["schema"].keys())
-        status = {
-            "schema_version": api.SCHEMA_VERSION,
-            "ok": not problems,
-            "problems": problems,
-            "skill_name": spec.get("skill_name", ""),
-            "source": "load_spec",
-        }
+        # `spec_status` says whether the spec was taken and why not; *which* spec is now
+        # loaded is the manifest's `source`, which is a field the manifest really has.
+        status = api.build_spec_status(
+            ok=not problems, problems=problems,
+            skill_name=spec.get("skill_name", ""))
         if not problems:
             self.spec = spec
             self._step = 0
