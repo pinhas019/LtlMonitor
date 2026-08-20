@@ -845,13 +845,28 @@ def _imminence_label(steps: int | None) -> str | None:
     return f"{steps} step" + ("" if steps == 1 else "s")
 
 
-def breached_mode(failure_modes) -> dict | None:
-    """The entry `decide_intervention` grades, or None when it falls through to the
+def breached_mode(
+    failure_modes,
+    *,
+    min_confidence: float = MIN_CONFIDENCE,
+    warn_steps: int = WARN_STEPS,
+) -> dict | None:
+    """The breach the token is graded from, or None when it falls through to the
     predictive risk block.
 
-    The precedence is `supervisor_logic`'s, reproduced rather than guessed at: a
-    VIOLATED safety mode first, then any VIOLATED mode, and no breach at all means the
-    risk branch fired.
+    Of the VIOLATED modes this is the one that grades **worst** on the ladder -- each
+    one at the already-breached imminence of 0 and on its *own* confidence, which is the
+    same call `decide_intervention` makes. Ties keep the older preference, safety first
+    and then authored order, so the choice stays deterministic and explainable.
+
+    Position in the list used to decide it, which was harmless only while every VIOLATED
+    mode graded at 1.0. Now that each mode carries the freshness of the sources feeding
+    *its* APs, first-match let an unbelievable fault mask a proven one: a dead depth
+    camera grades `collision_imminent` at 0.0 and de-escalates it to WARN, and because
+    it is authored first in `formulas_g1.json` it hid a `fell_over` the fresh IMU proved
+    at 1.0 -- ABORT reported as WARN, on the tick the robot was on the floor. The
+    de-escalation exists to hold back a fault whose own evidence is weak, not to let it
+    speak for a different fault whose evidence is perfect.
 
     The honest fix is for `decide_intervention` to *return* which branch it took --
     P5 owns `core/supervisor_logic.py`, so that is a note in this PR's report and not a
@@ -861,12 +876,25 @@ def breached_mode(failure_modes) -> dict | None:
     hijacked the evidence of a risk-branch decision and reported the wrong `imminence`
     and `confidence` beside the right rung.
     """
-    modes = list(failure_modes or ())
-    violated = [fm for fm in modes if fm.get("status") == "VIOLATED"]
-    for fm in violated:
-        if fm.get("fault_category") in SAFETY_CATEGORIES:
-            return fm
-    return violated[0] if violated else None
+    violated = [
+        fm for fm in (failure_modes or ()) if fm.get("status") == "VIOLATED"
+    ]
+    if not violated:
+        return None
+
+    def ranked(numbered):
+        position, fm = numbered
+        graded = grade_action(
+            fm.get("fault_category"),
+            imminence=0,
+            confidence=_unit(fm.get("confidence", 1.0)),
+            min_confidence=min_confidence,
+            warn_steps=warn_steps,
+        )
+        # -position, so `max` keeps the earliest entry of an otherwise equal pair.
+        return (int(graded), fm.get("fault_category") in SAFETY_CATEGORIES, -position)
+
+    return max(enumerate(violated), key=ranked)[1]
 
 
 def intervention_block(
@@ -886,16 +914,29 @@ def intervention_block(
     `decide_intervention` is called rather than reimplemented so the rung recorded here
     is provably the rung the supervisor used to compute for itself -- P5's node stops
     calling it, but it stays the one definition of the ladder's precedence.
+
+    It is handed the one breach `breached_mode` chose rather than the whole list, so the
+    entry it grades is by construction the entry reported beside the rung. Its own
+    first-match rule cannot be made to agree with worst-of by reordering alone: it scans
+    for a VIOLATED *safety* mode wherever it sits, so a de-escalated SAFETY entry would
+    still outrank a VIOLATED PROGRESS one that grades REPLAN above it. Selecting here
+    and grading there keeps `core/supervisor_logic.py` -- P5's file, untouched by this
+    PR -- the single definition of the ladder.
     """
-    decision = decide_intervention(
-        {"named_failure_modes": list(failure_modes), "risk": dict(risk)},
-        min_confidence=min_confidence,
-        warn_steps=warn_steps,
-    )
     # Which branch fired, decided by the same rule `decide_intervention` uses rather
     # than by matching its `reason` string against failure-mode names. See
     # `breached_mode`.
-    breached = breached_mode(failure_modes)
+    breached = breached_mode(
+        failure_modes, min_confidence=min_confidence, warn_steps=warn_steps
+    )
+    decision = decide_intervention(
+        # No breach, so no VIOLATED entry exists to hand over and the call falls through
+        # to the risk block -- the same branch `breached_mode` just reported.
+        {"named_failure_modes": [breached] if breached is not None else [],
+         "risk": dict(risk)},
+        min_confidence=min_confidence,
+        warn_steps=warn_steps,
+    )
     if breached is not None:
         confidence = _unit(breached.get("confidence", 1.0))
         imminence = _imminence_label(0)  # already violated

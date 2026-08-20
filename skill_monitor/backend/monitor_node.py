@@ -1653,7 +1653,8 @@ class LtlMonitorNode(Node):
 
         # ── Named failure mode triggered → halt if the token halts ─
         if triggered_failures:
-            mon, finfo = triggered_failures[0]  # first triggered is reported
+            worst = self._worst_triggered(triggered_failures)
+            mon, finfo = triggered_failures[worst]
             entry = {
                 "name": finfo.name,
                 "fault_category": finfo.fault_category,
@@ -1669,7 +1670,10 @@ class LtlMonitorNode(Node):
                     print(f"  Description    : {finfo.description}")
                 print(f"  Formula        : {mon.formula}")
                 if len(triggered_failures) > 1:
-                    extras = ", ".join(f.name for _, f in triggered_failures[1:])
+                    extras = ", ".join(
+                        f.name
+                        for i, (_, f) in enumerate(triggered_failures) if i != worst
+                    )
                     print(f"  Also triggered : {extras}")
                 print(f"{BOLD}{'─' * 64}{RESET}")
                 self.get_logger().error(
@@ -1734,6 +1738,29 @@ class LtlMonitorNode(Node):
             return
 
     # -- grading --------------------------------------------------------------
+
+    def _worst_triggered(self, triggered) -> int:
+        """Which of several breaches on one tick this process acts on.
+
+        The token is graded from the breach that grades worst on the ladder, so the halt
+        has to be decided from that same breach or the process and the frame it just
+        published disagree about the same tick -- and the frame is what the supervisor
+        obeys. Acting on whichever mode the spec authored first meant a `fell_over` the
+        odometry proved at 1.0 was answered for by a `collision_imminent` its own dead
+        camera graded at 0.0: verdict ABORT, robot still walking.
+        """
+        graded = manifest_mod.failure_mode_entries(
+            [
+                {"name": finfo.name, "fault_category": finfo.fault_category,
+                 "status": MonitorStatus.VIOLATED.name}
+                for _, finfo in triggered
+            ],
+            self._confidence,
+            mode_sources=self._mode_sources(),
+            stale_sources=self._stale_sources,
+        )
+        worst = manifest_mod.breached_mode(graded)
+        return next(i for i, entry in enumerate(graded) if entry is worst)
 
     def _fault_stops_the_run(self, entry: dict) -> bool:
         """Whether this fault, graded exactly as the verdict grades it, stops the run.

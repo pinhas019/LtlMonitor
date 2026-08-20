@@ -442,6 +442,45 @@ def test_a_collision_seen_by_a_dead_camera_is_still_de_escalated():
     assert v["intervention"]["action"] == "WARN"
 
 
+def test_a_breach_the_camera_cannot_support_does_not_grade_one_the_imu_proves():
+    """Two SAFETY modes breach on the same tick and the evidence for them is not the
+    same: the depth camera is dead, so `collision_imminent` grades 0.0, while the fresh
+    odometry proves `fell_over` at 1.0. The rung came from whichever mode the spec
+    authored first, so in `formulas_g1.json`'s order a robot on the floor was published
+    as WARN and this node did not halt -- a de-escalation meant to hold back one fault's
+    own weak evidence, spent on suppressing a different fault's perfect evidence."""
+    def a_pair(blind_first: bool) -> list:
+        crash = FakeMonitor(
+            "collision_imminent", "G(!collision_risk)",
+            failure_mode=FailureModeInfo(name="collision_imminent",
+                                         fault_category="SAFETY",
+                                         description="too close"),
+            violated_when=lambda obs: obs.get("collision_risk") is True,
+        )
+        fell = FakeMonitor(
+            "fell_over", "G(upright)",
+            failure_mode=FailureModeInfo(name="fell_over", fault_category="SAFETY",
+                                         description="on the floor"),
+            violated_when=lambda obs: obs.get("upright") is False,
+        )
+        return [crash, fell] if blind_first else [fell, crash]
+
+    for blind_first in (True, False):
+        node = a_node(monitors=a_pair(blind_first), adapter=an_adapter())
+        tick(node, 1)
+        observe(node, 1, aps={"collision_risk": True, "upright": False},
+                stale=["points"], confidence=0.5)
+
+        v = verdicts(node)[-1]
+        graded = {fm["name"]: fm["confidence"] for fm in v["failure_modes"]}
+        assert graded == {"collision_imminent": 0.0, "fell_over": 1.0}
+        assert v["intervention"]["action"] == "ABORT", "list position decided the rung"
+        assert v["intervention"]["confidence"] == 1.0
+        # The evidence names the entry the rung was graded from, in either order.
+        assert manifest.breached_mode(v["failure_modes"])["name"] == "fell_over"
+        assert node.halted is True
+
+
 def test_with_no_adapter_announced_the_global_scalar_is_all_there_is():
     """Nothing says which source feeds which AP, so the observation's own number is the
     honest answer -- and it is documented as the fallback, not as the design."""
