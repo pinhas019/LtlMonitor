@@ -148,6 +148,7 @@ import hashlib
 import json
 import logging
 import os
+import pathlib
 import posixpath
 import socket
 import struct
@@ -226,10 +227,15 @@ REQUEST_TIMEOUT_S = 20.0
 # --allow-host; '*' turns the check off for a deployment that has a proxy doing it.
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
-# What a stream carries. Exactly the two per-tick topics: the latched ones are REST,
-# because a client that reconnects wants their current value, not to wait for a change
-# that may never come.
-STREAM_TOPICS = (api.OBSERVATION, api.VERDICT)
+# What a stream carries: the per-tick topics. The latched ones are REST, because a
+# client that reconnects wants their current value, not to wait for a change that may
+# never come.
+#
+# `tick` is here as well as on the proxied `/api/clock/stream` because they are not the
+# same question. The clock's stream is what the clock *sent*; this is what arrived in
+# this namespace, which is the only place a console can see that a monitor is being
+# pulsed by a clock other than the one the gateway proxies -- or by none at all.
+STREAM_TOPICS = (api.TICK, api.OBSERVATION, api.VERDICT)
 
 # Endpoint name -> topic, for the routes where the client is the publisher. The names
 # are docs/api.md's ("spec", not "load_spec"); the topics come from the constants.
@@ -1012,7 +1018,17 @@ class Gateway:
         max_requests: int = DEFAULT_MAX_REQUESTS,
         allowed_origins=(),
         allowed_hosts=(),
+        static_dir=None,
     ):
+        # A directory served under `/`, or None for an API-only gateway, which is the
+        # default. This module does not know what is in it and does not import the
+        # frontend to find out -- P7 hands its own directory in.
+        #
+        # Serving the console from this process rather than beside it is not a
+        # convenience. A page on another origin cannot set `X-Skill-Monitor` without a
+        # preflight this gateway does not grant, so a separate static server would mean
+        # weakening the CSRF gate to make the console work at all.
+        self.static_dir = None if static_dir is None else pathlib.Path(static_dir)
         self.bus = bus or NullBus()
         self.clock = clock or NullClockBackend()
         self.stale_after = stale_after
@@ -1153,6 +1169,51 @@ class Gateway:
             "requests": {"open": self.open_requests, "max": self.max_requests},
             "services": self.services(),
         }
+
+    #: Extensions the console is built from. Anything else in the directory is not
+    #: served: an allowlist is the whole defence here, because `static_dir` will one day
+    #: be pointed at a directory somebody dropped a private key into.
+    STATIC_TYPES = {
+        ".html": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".js": "text/javascript; charset=utf-8",
+        ".svg": "image/svg+xml",
+        ".png": "image/png",
+        ".ico": "image/x-icon",
+    }
+
+    def static_file(self, url_path: str):
+        """``(bytes, content_type)`` for a served file, or None -- which the caller
+        turns into the same 404 as any other unknown resource.
+
+        `/` is `index.html`. Everything else must be a **direct child** of
+        ``static_dir``, named exactly: `/sub/index.html` is refused rather than
+        collapsed to `index.html`, because two URLs for one file is a cache key, a log
+        line and an audit trail that disagree with each other.
+
+        `..` never resolves to a parent because the name may not contain a separator at
+        all -- and the resolved path is then compared against the resolved directory,
+        rather than the string being inspected for traversal, because a symlink inside
+        the directory is traversal no amount of string checking sees.
+        """
+        if self.static_dir is None:
+            return None
+        if url_path in ("", "/"):
+            name = "index.html"
+        else:
+            name = url_path.lstrip("/")
+        if not name or name.startswith(".") or "/" in name or "\\" in name:
+            return None
+        content_type = self.STATIC_TYPES.get(pathlib.PurePosixPath(name).suffix)
+        if content_type is None:
+            return None
+        try:
+            candidate = (self.static_dir / name).resolve(strict=True)
+            if candidate.parent != self.static_dir.resolve():
+                return None
+            return candidate.read_bytes(), content_type
+        except OSError:
+            return None
 
     def services(self) -> dict:
         """What the gateway can and cannot see. Present even when everything is fine, so
@@ -1613,6 +1674,13 @@ class _Handler(BaseHTTPRequestHandler):
         if path.startswith(MONITORS_PREFIX + "/"):
             self._monitor(method, path)
             return
+
+        if method == "GET" and self.gateway.static_dir is not None:
+            served = self.gateway.static_file(parts.path)
+            if served is not None:
+                body, content_type = served
+                self._send(200, body, content_type)
+                return
 
         self._send(404, _error(f"no such resource {parts.path!r}"))
 
