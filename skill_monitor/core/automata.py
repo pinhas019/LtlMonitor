@@ -165,6 +165,60 @@ class LTLMonitor:
         """Return the Büchi automaton in DOT format for visualization."""
         return self.aut.to_str("dot")
 
+    def graph(self) -> dict:
+        """This monitor's Büchi automaton as plain JSON-able data.
+
+        The shape is fixed by the wire contract for ``manifest.automata``::
+
+            {"name":    "full_navigation_sequence",
+             "formula": "F(mission_started && F(path_active))",
+             "initial": 0,
+             "states":  [{"id": 0, "accepting": False, "sink": False}],
+             "edges":   [{"from": 0, "to": 1, "label": "mission_started"}]}
+
+        Structural only, and deliberately so. The graph does not change while a spec
+        is loaded, so it rides the **latched manifest** -- one message per spec load --
+        and each tick then carries only the small ``state`` integer that indexes into
+        it. Putting the graph on the verdict would re-send the whole automaton at the
+        tick rate to say nothing new.
+
+        A thin walk over ``self.aut``, using only the Spot idioms that
+        :meth:`format_automaton` already exercises against the real library:
+        ``num_states()``, ``get_init_state_number()``, ``state_is_accepting()``,
+        ``out()`` with ``.dst``/``.cond``, and ``spot.bdd_format_formula``. Nothing
+        new is asked of Spot, so nothing new can break at a Spot version boundary.
+
+        .. warning::
+           **Not exercised against a real Spot on this host** -- Spot is not installed
+           here, so this method cannot be run against a genuine ``twa_graph`` in this
+           tree. Its tests drive it with a fake ``aut``/``bdict``, the same way the
+           rest of ``tests/`` fakes the automaton outright. The idioms above are the
+           reason that is a defensible substitute: each one is already used, verbatim,
+           by code that has run against the real library.
+        """
+        return {
+            "name":    self.name,
+            "formula": self.formula,
+            "initial": self.aut.get_init_state_number(),
+            "states": [
+                {
+                    "id":        s,
+                    "accepting": bool(self.aut.state_is_accepting(s)),
+                    "sink":      s in self._sink_states,
+                }
+                for s in range(self.aut.num_states())
+            ],
+            "edges": [
+                {
+                    "from":  s,
+                    "to":    edge.dst,
+                    "label": spot.bdd_format_formula(self.bdict, edge.cond),
+                }
+                for s in range(self.aut.num_states())
+                for edge in self.aut.out(s)
+            ],
+        }
+
     def format_automaton(
         self,
         ap_descriptions: dict[str, str] | None = None,
@@ -403,6 +457,18 @@ class MultiMonitor:
     def statuses(self) -> dict[str, MonitorStatus]:
         """Return the current status of every monitor without stepping."""
         return {m.name: m.status for m in self.monitors}
+
+    def graphs(self) -> list[dict]:
+        """One :meth:`LTLMonitor.graph` per monitor, in the order they were built.
+
+        Every monitor: property formulas and named failure modes alike, because
+        ``verdict.formulas`` and ``verdict.failure_modes`` both carry a ``state`` and
+        a client needs a graph to read either against. The order matches
+        ``self.monitors``, but a consumer matches on ``name``, not on index.
+
+        This is the whole of ``manifest.automata``.
+        """
+        return [m.graph() for m in self.monitors]
 
     def reset(self) -> None:
         """Reset all monitors to their initial states."""
