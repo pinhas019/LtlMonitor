@@ -205,20 +205,50 @@ exactly this, because it is how a pushed spec is validated against the schema. P
 the map on the manifest rather than making every client re-parse the rules and drift from
 the validator.
 
-**6 — The automaton, with the current state lit and the path from the initial state.** Per
-formula: states, edges, the accepting and sink sets, the initial state, the current state,
-and the sequence of states this episode has actually passed through.
+**6 — The automaton, with the current state lit and the path this page has watched it
+take.** Per monitor — property formulas *and* named failure modes — `manifest.automata`
+carries states, edges, the accepting and sink flags and the initial state; each verdict row
+carries the one thing that changes, its `state`. The sequence is not on the wire and could
+not honestly be: it is accumulated here, from the frames this page received.
 
 **Structure is published as nodes and edges, not as a rendered image.** A PNG cannot be
-highlighted, and it dates the moment the spec is pushed. Spot can emit the graph once, on
-the latched manifest; the page lays it out. These automata have single-digit state counts,
-so a layered left-to-right layout in a few dozen lines of SVG beats taking a graphviz
-dependency into the browser — and the highlight is then just a class attribute.
+highlighted, and it dates the moment the spec is pushed. Spot emits the graph once, on the
+latched manifest, as `manifest.automata`; the page lays it out. These automata have
+single-digit state counts, so a layered left-to-right layout in a few dozen lines of SVG
+beats taking a graphviz dependency into the browser — and the highlight is then just a
+class attribute.
+
+**Built, and this is how.** The layout is a BFS from `initial`: depth is the column,
+arrival order within a depth is the row, and a state the initial one cannot reach still
+gets a column of its own rather than being dropped. Because the graphs are latched they
+change only when a spec is pushed, so the SVG is laid out once per manifest and a verdict
+costs two `classList.toggle` calls per node — no element is replaced, which is what keeps
+the pane off the critical path of the same pulse that drives panes 3 to 5.
+
+**Three kinds of state, told apart by shape.** Accepting is a double outline, an absorbing
+sink is a square, ordinary is a plain circle, and a state that is both accepting and
+absorbing is a double square — colour agrees with the shape but never carries the
+distinction alone. Edge labels are the producer's own guard text and are escaped like every
+other wire field; Spot spells an unconditional guard `1`, which the page renders as "any
+input" rather than putting a bare digit next to a state number.
 
 The traversed path is the honest part of this pane. It needs `state` on each entry of the
-verdict's `formulas[]`, and the path is accumulated by the page from the verdict stream,
-which means a page opened mid-episode shows the path **from when it connected**, and says
-so. It must not draw a line it did not witness.
+verdict's `formulas[]` and `failure_modes[]`, and the path is accumulated by the page from
+the verdict stream, which means a page opened mid-episode shows the path **from when it
+connected**, and says so in as many words under the graphs. It must not draw a line it did
+not witness — so the trace also resets when `step` goes backwards, because one episode's
+states are not the next one's path, and when the socket reconnects, because the verdicts in
+the gap were not seen either.
+
+**Degrading is per-reason, not one blanket.** No `automata` key at all is a build that
+cannot report them, and the pane says so with the field name and its owner; an `automata`
+that is present and empty is a build that can and found no graph in this spec, which is a
+different sentence. A row whose `state` is `null` or absent draws the graph with **nothing**
+lit — the initial state is where an automaton starts, not where it is, and lighting it would
+be the page inventing the one field it was just told nobody could supply. A graph with no
+verdict row of its name is the same case, and so is every `phase:<phase>:<kind>` row, which
+has no automaton to point at and says "no graph" in the state column rather than leaving a
+blank that reads like a missing value.
 
 **And the automaton is not the only fault detector, so this pane must not be read as the
 whole story.** `verdict.failure_modes[]` carries the spec's named modes *and* the phase
@@ -292,8 +322,6 @@ carry schemas.
 | ask | on | owner | why it cannot be derived client-side |
 |---|---|---|---|
 | `ap_dependencies` — AP name → the sensor keys its rule reads | manifest *(latched)* | **P4 alone** — the manifest is the one payload validated with `closed=False`, because it is passed through as authored | re-parsing rules in the browser forks the validator; one drift and the panel shows a dependency the engine does not agree with |
-| `automata` — per formula: nodes, edges, initial, accepting, sink | manifest *(latched)* | **P4 alone**, same reason — but see the note below on `core/automata.py` | only the monitor has Spot |
-| `formulas[].state` — current automaton state | verdict | **P0** (`_FORMULA_FIELDS` is closed too, and entries are checked by `_check_each`), then **P4** — `LTLMonitor.current_state` is already public, so P4 reads it without touching `automata.py` | the panel cannot infer state from a status |
 | `timing` — per-stage nanoseconds for the tick | observation (fold, AP eval) and verdict (step, publish) | **P0** (`_OBSERVATION_FIELDS`, `_VERDICT_FIELDS`), then P3 and P4 | wall-clock at the browser measures the link, not the computation |
 | `provenance` — declared `real ｜ sim ｜ replay`, descriptor path, publisher | adapter *(latched)* | **P0** (`_ADAPTER_FIELDS`), then P3 | it is a declaration, and declarations belong on the wire beside what they describe |
 | position, goal and next-waypoint keys — the X-Y track | the observation's `sensors`, via the schema | **P12** | they exist in no schema today, and they may only come from odometry and the commanded goals, never from the planner's self-report |
@@ -323,16 +351,16 @@ Both are described under [Files owned](#files-owned), with the note that P7's te
 cover them. `--mock` was also asked of the gateway and is not there either — it lives in
 `frontend/web.py`, for the layering reason in [Services](#services), and needed no route.
 
-**A gap in the ownership matrix, not an ask.** The `automata` row is the one that cannot be
-satisfied from a payload owner's own files. `skill_monitor/core/automata.py` is the only file
-in the repo that imports `spot`, and what it exposes today is `export_dot()` — DOT text — plus
-`num_states()`; the sink set is private and there is no nodes-and-edges accessor. Emitting
-the graph as JSON is therefore a new method on `LTLMonitor`, in that file. And that file
-appears in **no package's "Files owned" list** — not P4's, which owns
-`backend/monitor_node.py`, `core/manifest.py`, `tests/test_manifest.py` and
-`backend/ablation_runner.py`. Assigning it to P4 here would be this document quietly
-allocating a file, which is the thing the matrix exists to prevent. It needs an owner before
-that row can be built; naming the gap is P7's whole contribution to it.
+**Two more left it by being answered.** `manifest.automata` and `formulas[].state` were the
+two rows pane 6 was waiting on; both are now on the wire and the pane draws from them. The
+`automata` row was also the one that could not be satisfied from a payload owner's own
+files: `skill_monitor/core/automata.py` is the only file in the repo that imports `spot`,
+what it exposed was `export_dot()` — DOT text — plus `num_states()`, the sink set was
+private, and there was no nodes-and-edges accessor, so emitting the graph as JSON meant a
+new method on `LTLMonitor` in a file that appeared in **no package's "Files owned" list**.
+That ownership gap is settled by whoever landed the accessor; naming it was P7's whole
+contribution to it, and P7 still writes neither file. What P7 does own is the consuming
+half: the layout, the highlight and the mock that is held to the same validators.
 
 **None of the payload fields are blocking.** Every pane degrades to "not reported by this
 build" when its field is absent, and the surface is usable the day the WebSocket connects.
@@ -463,6 +491,24 @@ spec's own rule, so an AP-pane review is not reviewing a coincidence);
 `test_the_mock_says_on_the_wire_that_it_is_a_fiction`;
 `test_the_mock_splits_a_rule_with_the_shared_splitter`.
 
+**Pane 6's frames** — `test_the_manifest_carries_a_graph_for_every_monitor_it_can_compile`
+(well-formed, named the way the verdict names its rows, and deterministic — one edge per
+`(from, label)`, or the state the page lights would depend on edge order);
+`test_a_chained_eventuality_compiles_to_the_chain_the_formula_spells` and
+`test_a_safety_property_compiles_to_an_accepting_state_and_a_sink`, which pin the two
+shapes against the shipped `formulas_g1.json` rather than against a formula shaped like it;
+`test_a_formula_the_mock_cannot_compile_gets_no_graph_rather_than_a_guess` and
+`test_a_spec_whose_formulas_do_not_compile_still_latches_a_valid_manifest`, the degrade path
+from the producing end; `test_the_state_advances_with_the_aps_the_mock_is_already_fabricating`,
+which walks a whole episode so a lit node is lit for the reason its edge label gives;
+`test_a_guard_this_tick_cannot_answer_reports_no_state_rather_than_a_stale_one`, which is
+where `state: null` comes from; `test_a_verdict_row_carries_the_state_of_its_own_graph`;
+`test_a_status_follows_the_automaton_that_produced_it`; and
+`test_the_mock_sends_state_the_moment_the_contract_admits_it`, which pins that the mock
+gates `formulas[].state` on the validator's own answer rather than on a flag — it is P0's
+field to open, and a mock that emitted it early would be publishing frames the shipped
+validators reject.
+
 **Still asked for, and not written here yet** —
 `test_every_clock_request_sends_the_csrf_header`, *reads included*. The whole proxied clock
 surface is gated, not only its POSTs, so the rule the page has to obey is "every clock
@@ -477,6 +523,12 @@ unevaluable one, press step with no clock service) and reading back what the pag
 That is a manual check today. The pure parts of it — `ruleOf` and `keysInRule`, which are a
 second implementation of `spec_contract` — are the ones worth a runner first, because a
 second implementation is exactly where the decimal-point bug lived three times before.
+
+Pane 6's drawing is in the same bucket, and `tests/test_web_ui.py` says so at the top: the
+frames it renders from are asserted there, and the layout, the shape coding, the class-swap
+highlight and the witnessed-path caption were checked by hand against `--mock`. A runner
+would also catch the cheapest failure of all — the page is one `<script>`, so a syntax
+error anywhere in it leaves *every* pane blank, and nothing in this repo notices.
 
 The same gap covers the page's escaping. Every wire field that reaches `innerHTML` goes
 through `esc` — `txt` and `num` escape on the way out rather than at each of the twenty
@@ -494,10 +546,13 @@ witnessed; provenance reads as a declaration; a build missing every new backend 
 renders, naming what it cannot show; and the two panes whose routes do not exist say which
 route they are waiting for rather than failing.
 
-**Where this stands.** Six of the eight panes render from the wire as it is today. Two do
-not, and say why in place: the automaton has no `automata` to draw and shows the formula
-statuses instead, and timing has no `verdict.timing` and shows only the frame interval this
-browser measured, labelled as such. The AP map is a second implementation of
+**Where this stands.** Seven of the eight panes render from the wire as it is today. The
+automaton draws its graphs from `manifest.automata` and lights the state each verdict row
+reports, showing the path from the tick this page connected and saying so; where a build
+publishes no graph, or a row no state, it says which of those it is and lights nothing.
+Timing is the one pane still short of its field: it has no `verdict.timing` and shows only
+the frame interval this browser measured, labelled as such. The AP map is a second
+implementation of
 `sensor_keys_in_rule` in JavaScript rather than the validator's own answer off the wire;
 `ap_dependencies` replaces it and deletes that code. Raw payload echo has no gateway
 ingress route for `raw_echo_request`, so the pane says "no route" rather than offering a
