@@ -70,10 +70,16 @@ services:
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data:ro"
     depends_on: [monitor]
 
-  # The Skill Center console.
+  # The Skill Center console: a browser page, served by a gateway of its own.
   #
-  # NOTE: deploy/Dockerfile.skill_center is owned by P7 and lands with that package.
-  # Declared here now so the stack is complete; `up --build` fails on it until then.
+  # It does NOT proxy the `gateway` service above -- it holds its own Gateway on its own
+  # origin, because the page and the API it calls have to be same-origin for the CSRF
+  # and Origin gates to stay shut. `gateway` remains the API for everything that is not
+  # this page. Both read the same graph, so two subscribers is the only cost.
+  #
+  # This used to be the Tk panel and no longer is, which removed the X11 socket, DISPLAY
+  # and -- the one that mattered -- the /var/run/docker.sock mount that gave the
+  # container root-equivalent control of the host. See deploy/Dockerfile.skill_center.
   frontend:
     <<: *ros
     container_name: sm-frontend
@@ -81,27 +87,17 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.skill_center
     image: skill-monitor/skill-center:${TAG:-dev}
+    # Loopback, like the gateway: the console has no authentication and this is the only
+    # place that decision is visible. `--host 0.0.0.0` is the one explicit edit that
+    # publishes it, made by someone who read the header of the Dockerfile.
+    command: ["--port", "${CONSOLE_PORT:-8081}"]
     environment:
       <<: *ros-env
-      # Tk in a container draws on the HOST's X server, and fails obscurely without
-      # both of these -- typically "no display name and no $DISPLAY environment
-      # variable", or a silent hang on connect. The socket mount below is the other
-      # half; DISPLAY alone is not enough.
-      DISPLAY: "${DISPLAY:-:0}"
-      # Host must also allow the connection once per boot:  xhost +local:docker
-      QT_X11_NO_MITSHM: "1"
+      # Both halves of the port, together. The image's HEALTHCHECK reads this one; drop
+      # it and the check probes 8081 while the console listens wherever --port said, so
+      # a healthy console reports unhealthy -- or worse, finds the gateway on 8080.
+      CONSOLE_PORT: "${CONSOLE_PORT:-8081}"
     volumes:
-      # X11: see DISPLAY above. Read-only is sufficient -- the client only connects.
-      - /tmp/.X11-unix:/tmp/.X11-unix:ro
-      # SECURITY, deliberate and narrow: the Skill Center's container controls
-      # (start/stop/restart a service, tail its logs) drive the host's Docker daemon
-      # through this socket. Mounting it is ROOT-EQUIVALENT CONTROL OF THE HOST --
-      # anything inside this container can start a privileged container and own the
-      # machine. Right for a single-operator lab console on a machine you already
-      # trust; WRONG on any shared or multi-tenant host, and wrong anywhere the
-      # frontend is reachable from a network you do not control. Drop this line and
-      # the UI still runs -- only the container-control panel goes dark.
-      - /var/run/docker.sock:/var/run/docker.sock
       - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data:ro"
     depends_on: [gateway]

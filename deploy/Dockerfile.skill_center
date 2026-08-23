@@ -1,0 +1,78 @@
+# The Skill Center: the operator console, served by the gateway it talks to.
+#
+#   docker compose -f deploy/docker-compose.server.yml up frontend
+#
+# This image runs `skill_monitor.frontend.web`, which is one process holding a Gateway
+# with `static_dir` pointed at the page beside it. One origin is the whole point: the
+# gateway refuses a state-changing request without `X-Skill-Monitor` and refuses a
+# websocket from an `Origin` it was not told about. A page served from a second
+# container would need both of those relaxed to work at all, so "serve the page from
+# somewhere else" is not a deployment choice, it is a decision to weaken the CSRF gate.
+#
+# NOT the Tk panel. `frontend/skill_center.py` is still in the tree and still runs, but
+# it is the pre-split surface and it is not what this container starts. That is a
+# deliberate downgrade in blast radius, and it deletes two things this service used to
+# need:
+#
+#   * no DISPLAY and no /tmp/.X11-unix mount. A browser is the display.
+#   * no /var/run/docker.sock. The Tk panel's container controls drove the host's
+#     Docker daemon through it, which is ROOT-EQUIVALENT CONTROL OF THE HOST -- anything
+#     in the container could start a privileged one and own the machine. The console has
+#     no container-control pane, so the socket buys nothing and is not mounted. Do not
+#     add it back to "restore" a feature this surface does not have.
+#
+# SECURITY, stated rather than half-built: like the gateway, this service has NO
+# AUTHENTICATION, and for the same reason -- see the module docstring in
+# skill_monitor/backend/gateway.py for why a token check bolted on here would be worse
+# than none. It binds 127.0.0.1 unless told otherwise and no --host is baked in.
+# Publishing the console is one explicit edit by someone who read this paragraph:
+#
+#     command: ["--port", "8080", "--host", "0.0.0.0"]
+#
+# ros:humble, same as the gateway: without --mock the console builds a real rclpy bus to
+# read the graph. Not the monitor base -- it forwards JSON it never interprets, so it
+# needs no Spot and none of that ~10 min source build.
+FROM ros:humble
+
+WORKDIR /app
+
+# Nothing to pip install. The HTTP server, the WebSocket framing and the page itself are
+# stdlib and one static file -- pyproject.toml deliberately declares no install_requires,
+# and the console adds no dependency to that. There is no build step: the toolchain that
+# has to be installed first is the one that is broken on the day it matters.
+COPY skill_monitor/ ./skill_monitor/
+COPY pyproject.toml ./
+
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app:${PYTHONPATH}
+
+# Artifacts on a volume, code in the image -- the same split every other service uses.
+# The console only reads them; a spec it pushes goes to the monitor over HTTP, not to
+# disk. index.html is NOT here: it is served out of the package directory, because
+# `static_dir` is the frontend package itself and a page on a volume could be swapped
+# under a running origin that has already been granted the CSRF and Origin exemptions.
+ENV SKILL_MONITOR_CONFIG=/config
+VOLUME ["/config", "/data"]
+
+# The console cannot share the gateway's 8080: docker-compose.server.yml runs every
+# service with `network_mode: host`, so both bind the one loopback. 8081 is the default
+# here and `--port` is what actually decides -- CONSOLE_PORT exists so the healthcheck
+# below can follow it, and compose sets the two together.
+ENV CONSOLE_PORT=8081
+EXPOSE 8081
+
+# Its own liveness, never the gateway's. Both answer /api/health, both are on host
+# loopback, and they differ only by port -- so a hardcoded 8080 here would have this
+# container report the *gateway's* health as its own, which is exactly how a dead
+# service reports green. The port is read at runtime rather than baked in, because
+# `command: ["--port", ...]` can move it after the image is built.
+# urllib rather than curl, which is not in the base image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python3 -c "import os,urllib.request,sys; \
+p = os.environ.get('CONSOLE_PORT', '8081'); \
+sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{p}/api/health', timeout=4).status == 200 else 1)"
+
+# argv is appended, so `command: ["--port", "8080"]` in compose works and `--help` lists
+# the real flags (--host, --port, --mock, --mock-rate, --clock-url, --allow-origin,
+# --allow-host, --log-level). `--mock` runs the whole console with no ROS and no robot,
+# which is what makes this image demonstrable on a laptop.
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && export PYTHONPATH=/app:${PYTHONPATH} && exec python3 -m skill_monitor.frontend.web \"$@\"", "--"]
