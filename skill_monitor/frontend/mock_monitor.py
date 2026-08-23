@@ -33,6 +33,242 @@ NS = "/g1"
 _NOISY = ("linear_vel", "angular_vel", "base_roll", "base_pitch")
 
 
+# =============================================================================
+# The automata pane 6 draws
+#
+# ponytail: all of this belongs to P4. The real graph comes out of Spot, via a
+# nodes-and-edges accessor on `core.automata.LTLMonitor`, and reaches the wire as
+# `api.build_skill_manifest(..., automata=...)`. Delete this block and call that builder
+# the moment it lands. Until then the mock hand-compiles the two formula *shapes* the
+# shipped spec actually uses -- a chained eventuality and a `G(...)` safety property --
+# and returns nothing at all for any other shape, because a fabricated graph for a
+# formula nobody translated is exactly the approximation this module is not allowed to
+# be. The field names, types and nesting below are the contract's, not a resemblance of
+# it, so the swap is a deletion rather than a migration.
+# =============================================================================
+
+
+def _literal(text: str) -> str | None:
+    """`ap` or `!ap`, whitespace normalised away; None if it is not one literal."""
+    body = text.strip()
+    negated = body.startswith("!")
+    if negated:
+        body = body[1:].strip()
+    if not body or not (body[0].isalpha() or body[0] == "_"):
+        return None
+    if not all(c.isalnum() or c == "_" for c in body):
+        return None
+    return ("!" if negated else "") + body
+
+
+#: The unconditional guard, spelt the way the real producer spells it. Spot prints an
+#: edge condition with `bdd_format_formula`, and `bddtrue` comes out as `1` -- so every
+#: absorbing state's self-loop is labelled `1` on the wire. The mock says `1` too: a
+#: friendlier `true` here would be a label the console never has to render for a real
+#: monitor, and the console is what this module exists to hold up.
+_ANY = "1"
+
+
+def _negate(literal: str) -> str:
+    return literal[1:] if literal.startswith("!") else "!" + literal
+
+
+def _unwrap(text: str, operator: str) -> str | None:
+    """The body of `F(...)`/`G(...)` when that is the *whole* of `text`, else None.
+
+    The balance walk is the point: `G(a) && G(b)` starts with `G(` and ends with `)`
+    too, and slicing it would hand back `a) && G(b` as a guard.
+    """
+    text = text.strip()
+    if not text.startswith(operator + "("):
+        return None
+    depth = 0
+    for i, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[len(operator) + 1:i].strip() if i == len(text) - 1 else None
+    return None
+
+
+def _split_conjuncts(text: str) -> list[str]:
+    """`text` split on `&&` at bracket depth zero."""
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(text):
+        char = text[i]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0 and text.startswith("&&", i):
+            parts.append(text[start:i])
+            i += 2
+            start = i
+            continue
+        i += 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts]
+
+
+def _eventuality_chain(formula: str) -> list[str] | None:
+    """`F(a && F(b && F(c)))` -> `['a', 'b', 'c']`; None for any other shape."""
+    body = _unwrap(formula, "F")
+    if body is None:
+        return None
+    parts = _split_conjuncts(body)
+    if len(parts) == 1:
+        head = _literal(parts[0])
+        return None if head is None else [head]
+    if len(parts) != 2:
+        return None
+    head = _literal(parts[0])
+    rest = _eventuality_chain(parts[1])
+    return None if head is None or rest is None else [head] + rest
+
+
+def _chain_automaton(name: str, formula: str, chain: list[str]) -> dict:
+    """One state per eventuality still outstanding, plus the state where none are."""
+    states = [{"id": i, "accepting": False, "sink": False} for i in range(len(chain))]
+    # Accepting *and* absorbing: every eventuality has been discharged, so the verdict
+    # is ACCEPTED and no further input can take it back.
+    states.append({"id": len(chain), "accepting": True, "sink": True})
+    edges = []
+    for i, literal in enumerate(chain):
+        edges.append({"from": i, "to": i + 1, "label": literal})
+        edges.append({"from": i, "to": i, "label": _negate(literal)})
+    edges.append({"from": len(chain), "to": len(chain), "label": _ANY})
+    return {"name": name, "formula": formula, "initial": 0,
+            "states": states, "edges": edges}
+
+
+def _safety_automaton(name: str, formula: str, literal: str) -> dict:
+    """`G(p)`: hold in the accepting state while `p` holds, absorb the moment it does
+    not. Two states, and the second one is where a violated safety property stays."""
+    return {"name": name, "formula": formula, "initial": 0,
+            "states": [{"id": 0, "accepting": True, "sink": False},
+                       {"id": 1, "accepting": False, "sink": True}],
+            "edges": [{"from": 0, "to": 1, "label": _negate(literal)},
+                      {"from": 0, "to": 0, "label": literal},
+                      {"from": 1, "to": 1, "label": _ANY}]}
+
+
+def compile_automaton(name: str, formula) -> dict | None:
+    """The monitor graph for `formula`, or None when the mock cannot build a real one."""
+    text = str(formula or "")
+    guard = _unwrap(text, "G")
+    if guard is not None:
+        literal = _literal(guard)
+        return None if literal is None else _safety_automaton(name, text, literal)
+    chain = _eventuality_chain(text)
+    return None if chain is None else _chain_automaton(name, text, chain)
+
+
+def automata_for(spec: dict) -> list[dict]:
+    """A graph per monitor, in the order the verdict lists them: `ltl_formulas` first,
+    then `named_failure_modes`. A formula the mock cannot compile contributes no graph,
+    and its verdict row therefore has none to match -- which is the degrade path the
+    console has to survive anyway, because the phase machine's own faults never have
+    one either.
+    """
+    declared = list(spec.get("ltl_formulas") or []) + \
+        list(spec.get("named_failure_modes") or [])
+    graphs = []
+    for entry in declared:
+        if not isinstance(entry, dict):
+            continue
+        graph = compile_automaton(entry.get("name", ""), entry.get("formula", ""))
+        if graph is not None:
+            graphs.append(graph)
+    return graphs
+
+
+def label_holds(label: str, ap_values: dict) -> bool | None:
+    """Whether an edge's guard holds this tick -- or None when the tick cannot say.
+
+    None is not False. An AP whose sensor went stale is absent from `ap_values`, and
+    reading that as "the guard did not fire" would advance the mock's automaton on
+    evidence it does not have.
+    """
+    if label == _ANY:
+        return True
+    negated = label.startswith("!")
+    name = label[1:] if negated else label
+    if name not in ap_values:
+        return None
+    value = bool(ap_values[name])
+    return (not value) if negated else value
+
+
+def successor(graph: dict, state, ap_values: dict):
+    """The state after one tick, or None when a guard this tick cannot answer stands in
+    the way -- which is what `formulas[].state: null` on the wire means."""
+    for edge in graph["edges"]:
+        if edge["from"] != state:
+            continue
+        holds = label_holds(edge["label"], ap_values)
+        if holds is None:
+            return None
+        if holds:
+            return edge["to"]
+    return None
+
+
+def status_of(graph: dict | None, state) -> str:
+    """The formula status a state implies. Unknown state, unknown status -- and an
+    accepting state that is also absorbing is ACCEPTED, not VIOLATED."""
+    if graph is None or state is None:
+        return "INCONCLUSIVE"
+    for declared in graph["states"]:
+        if declared["id"] == state:
+            if declared["accepting"]:
+                return "ACCEPTED"
+            if declared["sink"]:
+                return "VIOLATED"
+    return "INCONCLUSIVE"
+
+
+def _initial_states(automata) -> dict:
+    return {graph["name"]: graph["initial"] for graph in automata}
+
+
+def _wire_admits_state() -> bool:
+    """Whether this build's verdict contract has room for `formulas[].state`.
+
+    `_FORMULA_FIELDS` is closed and its entries are checked by `_check_each`, so the
+    field is P0's to open before any producer may send it -- and a mock that emitted it
+    early would be publishing a frame the shipped validators reject, which is the one
+    thing this module exists not to do. Asking the validator itself, once, means the
+    mock starts carrying the field the moment it is admitted and needs no edit to do it.
+
+    ponytail: delete this and pass `state=` straight to `api.build_formula` /
+    `api.build_failure_mode` once those builders take it.
+    """
+    probe = api.build_verdict(
+        seq=1, t=0.0, step=0, skill_name="probe", phase=None, phase_index=None,
+        verdict="UNDECIDED",
+        formulas=[api.build_formula(name="probe", status="INCONCLUSIVE") | {"state": 0}],
+        failure_modes=[api.build_failure_mode(
+            name="probe", fault_category="SAFETY", status="INCONCLUSIVE",
+            confidence=1.0) | {"state": None}],
+        risk=api.build_risk(steps_to_timeout=None, seconds_to_timeout=None,
+                            violations_to_fault=None, warn=False,
+                            trigger_confidence=1.0),
+        intervention=api.build_intervention(action="CONTINUE", confidence=1.0),
+    )
+    return api.validate_verdict(probe) == []
+
+
+#: Asked once, at import: the answer cannot change while the process runs.
+WIRE_ADMITS_STATE = _wire_admits_state()
+
+
+def _with_state(row: dict, state) -> dict:
+    """A verdict row carrying its automaton state, where the contract has room."""
+    return row | {"state": state} if WIRE_ADMITS_STATE else row
+
+
 class MockBus(MonitorBus):
     """One namespace, one monitor, ticking at the adapter's own ``tick_hz``."""
 
@@ -56,10 +292,14 @@ class MockBus(MonitorBus):
         self.period = 1.0 / (self.tick_hz * rate_scale)
         self.t0 = time.time()
 
+        #: One graph per monitor the spec declares, and where each of them stands. The
+        #: graphs are latched with the manifest; the state is republished every verdict.
+        self._automata = automata_for(self.spec)
+        self._auto_state = _initial_states(self._automata)
+
         self._latched = {
             api.ADAPTER: json.dumps(self.adapter),
-            api.MANIFEST: json.dumps(
-                api.build_skill_manifest(spec=self.spec, source="mock")),
+            api.MANIFEST: json.dumps(self._manifest("mock")),
             # The builder, not a dict shaped like one. `spec_status` has a closed field
             # set, so a hand-rolled frame with a `source` on it is a frame the
             # validators reject and no real monitor would ever send.
@@ -122,9 +362,24 @@ class MockBus(MonitorBus):
 
     # -- the fiction -------------------------------------------------------
 
+    def _manifest(self, source):
+        """The spec as authored, plus the graphs pane 6 draws.
+
+        ponytail: the `|` is here because `api.build_skill_manifest` has no `automata`
+        keyword yet -- P4's producer half adds one, and this merge goes with it. The
+        field is legal on the wire today because the manifest is the one validator
+        opened with `closed=False`, which is also why it is the payload the graphs
+        belong on: they are derived from the spec, latched with it, and change only
+        when it does.
+        """
+        return api.build_skill_manifest(spec=self.spec, source=source) | {
+            "automata": self._automata,
+        }
+
     def _command(self, command):
         if command == "reset":
             self._step = 0
+            self._auto_state = _initial_states(self._automata)
         elif command in ("pause", "resume"):
             self._paused = command == "pause"
 
@@ -144,8 +399,11 @@ class MockBus(MonitorBus):
         if not problems:
             self.spec = spec
             self._step = 0
-            self._latched[api.MANIFEST] = json.dumps(
-                api.build_skill_manifest(spec=spec, source="load_spec"))
+            # A new spec is new automata, and the states of the old ones mean nothing
+            # against it -- the same reason `step` restarts.
+            self._automata = automata_for(spec)
+            self._auto_state = _initial_states(self._automata)
+            self._latched[api.MANIFEST] = json.dumps(self._manifest("load_spec"))
         self._latched[api.SPEC_STATUS] = json.dumps(status)
         self._emit(api.SPEC_STATUS, self._latched[api.SPEC_STATUS])
 
@@ -160,7 +418,9 @@ class MockBus(MonitorBus):
                 # The episode ends and the next one starts. `seq` does not restart with
                 # it -- it is the clock's axis, not the run's, and a console that saw
                 # both go back to 1 could not tell a new episode from a new clock.
+                # Every automaton does restart: a run's states belong to that run.
                 self._step = 0
+                self._auto_state = _initial_states(self._automata)
 
     def _pulse(self):
         seq, step = self._seq, self._step
@@ -283,21 +543,39 @@ class MockBus(MonitorBus):
         phase = phases[phase_index] if phases and phase_index is not None else None
         bound = _max_steps(self.spec, phase_index)
 
-        # Whichever failure mode the spec declares first, and only that one. Naming a
-        # mode here would tie the mock to this particular navigation spec, and tripping
-        # every SAFETY mode at once would have the page claim the robot fell over at the
-        # same instant it saw an obstacle.
+        # One tick of every automaton, over the AP values this tick already fabricated,
+        # so a lit node on the console is lit for the reason the edge label gives. A
+        # guard the tick cannot answer -- an AP blinded by a stale source -- leaves the
+        # state where it was and reports null rather than a state nobody stepped into.
+        states = {}
+        graphs = {graph["name"]: graph for graph in self._automata}
+        for name, graph in graphs.items():
+            nxt = successor(graph, self._auto_state.get(name, graph["initial"]),
+                            ap_values)
+            if nxt is not None:
+                self._auto_state[name] = nxt
+            states[name] = nxt
+
+        # A safety automaton enters its sink on the tick its guard fails and stays
+        # there, so a mode reads VIOLATED for the rest of the episode instead of
+        # flickering with the AP. `tripped` survives for a declared mode the mock could
+        # compile no graph for: whichever the spec declares first, and only that one,
+        # because tripping every SAFETY mode at once would have the page claim the robot
+        # fell over at the same instant it saw an obstacle.
         declared = self.spec.get("named_failure_modes", [])
         tripped = declared[0]["name"] if declared else None
-        violated = ap_values.get("collision_risk", False)
+        ap_violation = ap_values.get("collision_risk", False)
         modes = [
-            api.build_failure_mode(
+            _with_state(api.build_failure_mode(
                 name=m["name"], fault_category=m.get("fault_category", "SAFETY"),
-                status="VIOLATED" if violated and m["name"] == tripped
-                       else "INCONCLUSIVE",
-                confidence=confidence)
+                status=status_of(graphs.get(m["name"]), states.get(m["name"]))
+                       if m["name"] in graphs
+                       else ("VIOLATED" if ap_violation and m["name"] == tripped
+                             else "INCONCLUSIVE"),
+                confidence=confidence), states.get(m["name"]))
             for m in declared
         ]
+        violated = any(m["status"] == "VIOLATED" for m in modes)
         action = ("HALT" if violated and confidence > 0.75 else
                   "WARN" if violated or stale else "CONTINUE")
         return api.build_verdict(
@@ -305,8 +583,13 @@ class MockBus(MonitorBus):
             skill_name=self.spec.get("skill_name", ""),
             phase=phase, phase_index=phase_index,
             verdict="VIOLATED" if violated else "UNDECIDED",
-            formulas=[api.build_formula(name=f["name"], status="INCONCLUSIVE")
-                      for f in self.spec.get("ltl_formulas", [])],
+            formulas=[
+                _with_state(api.build_formula(
+                    name=f["name"],
+                    status=status_of(graphs.get(f["name"]), states.get(f["name"]))),
+                    states.get(f["name"]))
+                for f in self.spec.get("ltl_formulas", [])
+            ],
             failure_modes=modes,
             risk=api.build_risk(
                 steps_to_timeout=None if bound is None else max(0, bound - in_phase),

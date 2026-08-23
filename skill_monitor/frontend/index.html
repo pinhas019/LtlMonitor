@@ -70,6 +70,30 @@
   .key { color:var(--acc); }
   .mock { color:#12141a; background:var(--warn); font-weight:700; padding:2px 8px;
           border-radius:3px; letter-spacing:.08em; }
+
+  /* pane 6. The *shape* carries the kind -- a second outline for accepting, a square
+     for an absorbing sink -- so the three are told apart on a monochrome screen, by a
+     colour-blind operator, and in a printed screenshot. Colour only agrees with it.
+     Everything here is a class on a node that is already in the document: a verdict
+     arrives at the tick rate, and re-laying-out three graphs at that rate would fight
+     the same pulse that feeds panes 3 to 5. */
+  #automaton .aut { border-bottom:1px solid #232734; margin-bottom:8px; }
+  #automaton .aut .lbl { display:flex; gap:12px; justify-content:space-between;
+                         font-size:11px; padding:2px 0; }
+  #automaton .e { fill:none; stroke:var(--line); stroke-width:1.3; }
+  #automaton .head { fill:var(--line); stroke:none; }
+  #automaton .elab { fill:var(--dim); font-size:10px; }
+  #automaton .n .shape { fill:#0e1016; stroke:var(--dim); stroke-width:1.5; }
+  #automaton .n .inner { fill:none; stroke:var(--dim); stroke-width:1.2; }
+  #automaton .n text { fill:var(--ink); font-size:11px; }
+  /* Sink first so accepting wins when a state is both: an accepting absorbing state is
+     the good end of a run and must not be painted in the colour of the bad one. The
+     square already says "nothing after this changes it". */
+  #automaton .n.sink .shape, #automaton .n.sink .inner { stroke:var(--bad); }
+  #automaton .n.acpt .shape, #automaton .n.acpt .inner { stroke:var(--ok); }
+  #automaton .n.seen .shape { fill:#232a3c; }
+  #automaton .n.cur  .shape { fill:var(--acc); stroke:var(--ink); stroke-width:2.5; }
+  #automaton .n.cur  text   { fill:#12141a; font-weight:700; }
 </style>
 </head>
 <body>
@@ -142,6 +166,11 @@ const S = {
   hist: [],            // recent observations, for the plots
   arrivals: [],        // wall-clock ms between verdicts, measured here
   dropped: 0, connected: false,
+  // Pane 6. `key` is the manifest's graphs as drawn, so the SVG is rebuilt when the
+  // spec changes and never on a verdict; `trace` is the states this page has *seen*,
+  // one array per graph, and `from` is the step it started seeing them at. Neither is
+  // history: the page was not here before it connected and must not draw as if it was.
+  aut: { key: null, trace: [], from: null, last: null },
 };
 const PLOT_N = 180;
 
@@ -202,13 +231,19 @@ async function refreshLatched() {
     const r = await api(`/api/monitors/${S.seg}/${verb}`);
     S[slot] = r.status === 200 ? r.body : null;
   }
-  renderSpec(); renderConfig(); renderStatus();
+  renderSpec(); renderConfig(); renderStatus(); renderAutomaton();
 }
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${proto}//${location.host}/api/monitors/${S.seg}/stream`);
-  ws.onopen = () => { S.connected = true; renderBadges(); };
+  ws.onopen = () => {
+    S.connected = true;
+    // A reconnect is a gap: the verdicts in it were not witnessed, so the path pane 6
+    // claims restarts here rather than joining across the hole.
+    S.aut.key = null;
+    renderBadges();
+  };
   ws.onclose = () => { S.connected = false; renderBadges(); setTimeout(connect, 1500); };
   ws.onmessage = ev => {
     let frame;
@@ -297,8 +332,12 @@ function renderSpec() {
   $("spec-desc").textContent = m.description || "(the spec declares no description)";
   const spec = Object.assign({}, m);
   // The envelope the manifest is wrapped in is the wire's, not the spec's: pushing it
-  // back would be asking the monitor to load a document it never authored.
-  for (const k of ["schema_version", "seq", "t", "phases", "source"]) delete spec[k];
+  // back would be asking the monitor to load a document it never authored. `automata`
+  // goes with them -- it is compiled *from* the formulas below, not authored beside
+  // them, and echoing it back would have an operator editing a graph nobody reads.
+  for (const k of ["schema_version", "seq", "t", "phases", "source", "automata"]) {
+    delete spec[k];
+  }
   if (document.activeElement !== $("spec-text")) {
     $("spec-text").value = JSON.stringify(spec, null, 2);
   }
@@ -505,79 +544,265 @@ function renderAps() {
        membership by ${esc(o.tick_membership)}</p>`;
 }
 
-/* == 6 · automaton ========================================================== */
+/* == 6 · automaton ==========================================================
+
+   `manifest.automata` is the structure and it is latched: it changes only when a spec
+   is pushed. `formulas[].state` / `failure_modes[].state` is the position and it
+   changes every verdict. So the SVG is laid out once per manifest and every verdict
+   after that toggles two classes per node -- rebuilding three graphs at the tick rate
+   would fight the same pulse that drives panes 3 to 5, and would throw away the one
+   thing this pane accumulates.
+
+   A graph is matched to a row by `name`, and by nothing else. No row, or a row whose
+   `state` is null, means nothing is lit: the initial state is where the automaton
+   *starts*, not where it is, and lighting it on a null would be the page inventing the
+   one field it was told the producer could not supply. */
+
+const AUT = { R: 15, COL: 136, ROW: 66, PAD: 34, TOP: 70 };
 
 function renderAutomaton() {
-  const v = S.verdict; if (!v) return;
-  const auto = v.automata || (S.manifest || {}).automata;
-  if (!auto) {
-    $("automaton").innerHTML =
-      missing("verdict.automata / formulas[].state", "P4",
-        "the monitor publishes each formula's status but not the Büchi automaton it " +
+  const v = S.verdict || null;
+  const graphs = (S.manifest || {}).automata;
+  const box = $("automaton");
+  if (!Array.isArray(graphs)) {
+    // Absent, which is how a build that cannot report automata at all says so. Not the
+    // same as the empty list below, which is a build that can and has none to give.
+    S.aut.key = null;
+    box.innerHTML =
+      missing("manifest.automata / formulas[].state", "P4",
+        "the monitor publishes each formula's status but not the automaton it " +
         "stepped, so there is no graph to draw and no current state to light.") +
-      formulaTable(v);
+      `<div id="aut-rows">${formulaTable(v)}</div>`;
     return;
   }
-  $("automaton").innerHTML = auto.map(drawAutomaton).join("") + formulaTable(v);
+  if (!graphs.length) {
+    S.aut.key = null;
+    box.innerHTML =
+      `<div class="missing">the manifest reports <code>automata</code> and declares
+        none: no formula in this spec compiled to a graph. The statuses below are the
+        whole of what the monitor has to say about it.</div>
+       <div id="aut-rows">${formulaTable(v)}</div>`;
+    return;
+  }
+  const key = JSON.stringify(graphs);
+  if (key !== S.aut.key) {
+    S.aut = { key: key, trace: graphs.map(() => []), from: null, last: null };
+    box.innerHTML = graphs.map(drawGraph).join("") +
+      `<p class="dim" id="aut-witness" style="margin:2px 0 0"></p>
+       <p class="dim" style="margin:4px 0 0">◯ ordinary · ◎ accepting · ▢ absorbing
+         sink · ▣ accepting and absorbing. The filled node is the state the last verdict
+         reported; shaded nodes are the ones this page has seen it in.</p>
+       <div id="aut-rows"></div>`;
+  }
+  lightAutomata(graphs, v);
+  $("aut-rows").innerHTML = formulaTable(v);
 }
 
+/* The only thing that runs per verdict: a class swap per node, and two captions written
+   as text. Nothing here touches the geometry. */
+function lightAutomata(graphs, v) {
+  const rows = ((v || {}).formulas || []).concat((v || {}).failure_modes || []);
+  const step = typeof (v || {}).step === "number" ? v.step : null;
+  // A step that went backwards is a new episode, and one episode's states are not the
+  // next one's path. Measured against the *last* step seen and not against `from`: a
+  // page that connected at step 1 would otherwise never see a restart at all, and the
+  // trace would run `... → 4 → 1 → 2 ...` straight through the end of the run.
+  if (step !== null && S.aut.last !== null && step < S.aut.last) {
+    S.aut.trace = graphs.map(() => []); S.aut.from = null;
+  }
+  if (step !== null) S.aut.last = step;
+  graphs.forEach((g, gi) => {
+    const row = rows.find(r => r && r.name === g.name);
+    // `typeof === "number"` and not a truthiness test: state 0 is a state, and both a
+    // null and an absent field mean the producer could not report one.
+    const at = row && typeof row.state === "number" ? row.state : null;
+    const trace = S.aut.trace[gi] || (S.aut.trace[gi] = []);
+    if (at !== null) {
+      if (trace[trace.length - 1] !== at) trace.push(at);
+      if (trace.length > 40) trace.shift();
+      if (S.aut.from === null) S.aut.from = step;
+    }
+    (g.states || []).forEach((s, si) => {
+      const el = $(`aut${gi}n${si}`); if (!el) return;
+      el.classList.toggle("cur", at !== null && Number(s.id) === at);
+      el.classList.toggle("seen", trace.indexOf(Number(s.id)) >= 0);
+    });
+    const cap = $(`aut${gi}c`);
+    if (!cap) return;
+    // Three different silences, and the pane says which one it is. The graphs are
+    // latched and arrive before the first verdict does, so "nothing lit yet" is a
+    // state this pane really passes through and not a hypothetical.
+    cap.textContent = at !== null
+      ? `state ${at} · seen ${trace.join(" → ")}`
+      : !v ? "no verdict seen yet — nothing is lit"
+      : row ? "the last verdict reported no state for this monitor — nothing is lit"
+            : "no verdict row carries this monitor's name — nothing is lit";
+  });
+  const w = $("aut-witness");
+  if (w) {
+    w.textContent = S.aut.from === null
+      ? "nothing lit: no state witnessed on this connection yet."
+      : `The shaded path is only what this page witnessed. It begins at step ` +
+        `${S.aut.from}, where this page connected — not at the start of the episode, ` +
+        `which happened before there was anyone here to see it.`;
+  }
+}
+
+/* Layered left to right: BFS depth from the initial state is the column, arrival order
+   within a depth is the row. Deterministic, a few dozen lines, and enough for the
+   single-digit state counts these automata have -- a layout library would be a build
+   step, and this page has none. */
+function drawGraph(g, gi) {
+  const states = Array.isArray(g.states) ? g.states : [];
+  const edges = Array.isArray(g.edges) ? g.edges : [];
+  const at = {};
+  states.forEach((s, i) => { at[String(s.id)] = i; });
+
+  const col = states.map(() => null), queue = [];
+  const start = at[String(g.initial)];
+  if (start !== undefined) { col[start] = 0; queue.push(start); }
+  for (let k = 0; k < queue.length; k++) {
+    for (const e of edges) {
+      if (at[String(e.from)] !== queue[k]) continue;
+      const to = at[String(e.to)];
+      if (to === undefined || col[to] !== null) continue;
+      col[to] = col[queue[k]] + 1; queue.push(to);
+    }
+  }
+  // A state the initial one cannot reach is drawn in a column past the rest, not
+  // dropped: a graph the page cannot lay out is still a graph it must not hide.
+  let deepest = 0;
+  col.forEach(c => { if (c !== null && c > deepest) deepest = c; });
+  col.forEach((c, i) => { if (c === null) col[i] = deepest + 1; });
+
+  const filled = {};
+  const row = col.map(c => { const r = filled[c] || 0; filled[c] = r + 1; return r; });
+  let maxCol = 0, maxRow = 0;
+  col.forEach((c, i) => {
+    if (c > maxCol) maxCol = c;
+    if (row[i] > maxRow) maxRow = row[i];
+  });
+  const X = i => AUT.PAD + col[i] * AUT.COL, Y = i => AUT.TOP + row[i] * AUT.ROW;
+  // Drawn at its own size and allowed to shrink, never to stretch: a full-width
+  // two-state safety automaton would be the size of a four-state chain, and size on a
+  // dashboard reads as importance.
+  const w = AUT.PAD * 2 + maxCol * AUT.COL + 70;
+  const h = AUT.TOP + maxRow * AUT.ROW + AUT.PAD;
+
+  const wire = edges.map(e => {
+    const f = at[String(e.from)], t = at[String(e.to)];
+    if (f === undefined || t === undefined) return "";      // an edge to nowhere
+    return f === t ? selfLoop(X(f), Y(f), e.label, w)
+                   : link(X(f), Y(f), X(t), Y(t), col[t] <= col[f], e.label, w);
+  }).join("");
+
+  const node = states.map((s, si) => {
+    const acc = s.accepting === true, sink = s.sink === true;
+    const kind = acc && sink ? "accepting and absorbing"
+               : acc ? "accepting" : sink ? "absorbing sink" : "ordinary";
+    const shape = sink
+      ? `<rect class="shape" x="-14" y="-14" width="28" height="28" rx="3"/>` +
+        (acc ? `<rect class="inner" x="-10" y="-10" width="20" height="20" rx="2"/>` : "")
+      : `<circle class="shape" r="${AUT.R}"/>` +
+        (acc ? `<circle class="inner" r="${AUT.R - 4}"/>` : "");
+    // The initial state gets the stub arrow it always gets, so "where this starts" is
+    // on the drawing rather than only in the caption.
+    const stub = si === start
+      ? `<path class="e" d="M${X(si) - 40} ${Y(si)} L${X(si) - AUT.R - 9} ${Y(si)}"/>` +
+        arrowHead(X(si) - AUT.R - 4, Y(si), 1, 0)
+      : "";
+    return stub + `<g id="aut${gi}n${si}" class="n${acc ? " acpt" : ""}${sink ? " sink" : ""}"
+      transform="translate(${X(si)},${Y(si)})"><title>state ${esc(s.id)} — ${kind}</title>
+      ${shape}<text text-anchor="middle" y="4">${esc(s.id)}</text></g>`;
+  }).join("");
+
+  return `<div class="aut">
+    <div class="lbl"><span class="key">${esc(g.name)}</span>
+      <span class="dim wrap" style="text-align:right">${esc(g.formula || "")}</span></div>
+    <svg viewBox="0 0 ${w} ${h}" style="width:${w}px;max-width:100%;height:auto"
+      role="img">${wire}${node}</svg>
+    <p class="dim" id="aut${gi}c" style="margin:0 0 8px"></p></div>`;
+}
+
+/* A label is wire data -- an operator-supplied spec's own text -- so it is escaped
+   before it reaches innerHTML, and the untruncated form goes in the tooltip rather than
+   being lost.
+
+   `1` and `0` are not truncations and not sensor names: they are how Spot's
+   `bdd_format_formula` spells the unconditional and the impossible guard, and every
+   absorbing state's self-loop carries the first of them. Left as written they put a
+   bare `1` on the drawing, which reads as a state number. Spelt out here, and only
+   here, because it is a convention of the producer's formula printer rather than
+   anything this page can generalise. */
+const AUT_GUARD = { "1": "any input", "0": "never" };
+
+function edgeLabel(x, y, label, w) {
+  const raw_ = raw(label === undefined || label === null ? "" : label);
+  if (!raw_) return "";
+  const full = AUT_GUARD[raw_] || raw_;
+  const shown = full.length > 20 ? full.slice(0, 19) + "…" : full;
+  // Nudged inside the box. The first state's self-loop label is centred on the first
+  // column and is wider than the margin, so centred-and-clipped loses the `!` that
+  // inverts it -- `!mission_started` reading as `ission_started` is worse than a label
+  // slightly off its own loop. Half-width is estimated from the character count: the
+  // page's font is monospace, and nothing here needs it to the pixel.
+  const half = shown.length * 3.1 + 2;
+  const at = Math.min(Math.max(x, half), Math.max(half, w - half));
+  return `<g><title>${esc(full)}</title><text class="elab" text-anchor="middle"
+    x="${at.toFixed(1)}" y="${y.toFixed(1)}">${esc(shown)}</text></g>`;
+}
+
+function arrowHead(x, y, dx, dy) {
+  const l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l;
+  const bx = x - ux * 8, by = y - uy * 8, px = -uy * 3.6, py = ux * 3.6;
+  return `<path class="head" d="M${x.toFixed(1)} ${y.toFixed(1)}
+    L${(bx + px).toFixed(1)} ${(by + py).toFixed(1)}
+    L${(bx - px).toFixed(1)} ${(by - py).toFixed(1)} Z"/>`;
+}
+
+/* A self-loop is a real transition and is drawn as one: "the automaton stays here while
+   this holds" is most of what a monitor automaton does. */
+function selfLoop(x, y, label, w) {
+  const end = y - AUT.R + 2;
+  return `<path class="e" d="M${x - 8} ${end} C${x - 36} ${y - 52} ${x + 36} ${y - 52}
+    ${x + 8} ${end}"/>` + arrowHead(x + 8, end, -28, 50 - AUT.R) +
+    edgeLabel(x, y - 51, label, w);
+}
+
+/* One quadratic per edge, bowed below when it runs backwards or sideways so it does not
+   lie on top of the forward chain. Both ends are pushed out to the node's rim along the
+   direction of the control point, which is also the direction the arrowhead points. */
+function link(x1, y1, x2, y2, back, label, w) {
+  const bow = back ? 46 : 0;
+  const dx = x2 - x1, dy = y2 - y1, l = Math.hypot(dx, dy) || 1;
+  const cx = (x1 + x2) / 2 + (dy / l) * bow, cy = (y1 + y2) / 2 - (dx / l) * bow;
+  const out = Math.hypot(cx - x1, cy - y1) || 1, into = Math.hypot(x2 - cx, y2 - cy) || 1;
+  const sx = x1 + ((cx - x1) / out) * AUT.R, sy = y1 + ((cy - y1) / out) * AUT.R;
+  const ex = x2 - ((x2 - cx) / into) * (AUT.R + 5);
+  const ey = y2 - ((y2 - cy) / into) * (AUT.R + 5);
+  const mx = (sx + 2 * cx + ex) / 4, my = (sy + 2 * cy + ey) / 4;
+  return `<path class="e" d="M${sx.toFixed(1)} ${sy.toFixed(1)}
+    Q${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}"/>` +
+    arrowHead(ex, ey, x2 - cx, y2 - cy) +
+    edgeLabel(mx, my + (back ? 15 : -7), label, w);
+}
+
+/* The statuses, and which of them has a graph above. `phase:<phase>:<kind>` faults come
+   from the phase machine rather than from an automaton and never have one -- the
+   column says so rather than leaving a blank that reads like a missing value. */
 function formulaTable(v) {
   const cls = { ACCEPTED: "ok", VIOLATED: "bad", INCONCLUSIVE: "dim" };
-  const rows = (v.formulas || []).concat(v.failure_modes || []).map(f =>
+  const drawn = new Set(((S.manifest || {}).automata || []).map(a => (a || {}).name));
+  const rows = ((v || {}).formulas || []).concat((v || {}).failure_modes || []).map(f =>
     `<tr><td>${esc(f.name)}</td>
      <td><span class="${cls[f.status] || "dim"}">${esc(f.status)}</span></td>
      <td class="dim">${txt(f.fault_category)}</td>
-     <td class="dim">${f.confidence === undefined ? "" : num(f.confidence, 2)}</td></tr>`).join("");
+     <td class="dim">${f.confidence === undefined ? "" : num(f.confidence, 2)}</td>
+     <td class="${drawn.has(f.name) ? "acc" : "dim"}">${drawn.has(f.name)
+        ? txt(f.state) : "no graph"}</td></tr>`).join("");
   return `<table style="margin-top:8px">
-    <tr><th>formula</th><th>status</th><th>category</th><th>conf</th></tr>${rows}</table>`;
-}
-
-/* One column per BFS depth, current state lit, and only the edges this run actually
-   took drawn solid -- a path the page did not witness is a path it must not claim. */
-function drawAutomaton(a) {
-  const states = a.states || [], edges = a.edges || [];
-  const path = new Set((a.path || []).map(String));
-  const depth = {}, order = [];
-  states.filter(s => s.initial).map(s => s.id).forEach(id => {
-    depth[id] = 0; order.push(id);
-  });
-  for (let i = 0; i < order.length; i++) {
-    for (const e of edges) {
-      if (String(e.from) === String(order[i]) && depth[e.to] === undefined) {
-        depth[e.to] = depth[order[i]] + 1; order.push(e.to);
-      }
-    }
-  }
-  const cols = {};
-  states.forEach(s => {
-    const d = depth[s.id] === undefined ? 0 : depth[s.id];
-    (cols[d] = cols[d] || []).push(s);
-  });
-  const W = 120, H = 46, pad = 22;
-  const pos = {};
-  Object.keys(cols).forEach(d => cols[d].forEach((s, i) => {
-    pos[s.id] = { x: pad + d * W, y: pad + i * H };
-  }));
-  const w = pad * 2 + Math.max(1, Object.keys(cols).length) * W;
-  const h = pad * 2 + Math.max(...Object.values(cols).map(c => c.length), 1) * H;
-  const line = edges.map(e => {
-    const f = pos[e.from], t = pos[e.to]; if (!f || !t) return "";
-    const on = path.has(String(e.from)) && path.has(String(e.to));
-    return `<path d="M${f.x + 16} ${f.y} C${f.x + 60} ${f.y} ${t.x - 60} ${t.y} ${t.x - 16} ${t.y}"
-      fill="none" stroke="${on ? "#6aa9ff" : "#2b3040"}" stroke-width="${on ? 2 : 1}"
-      ${on ? "" : 'stroke-dasharray="3 3"'}/>`;
-  }).join("");
-  const node = states.map(s => {
-    const p = pos[s.id]; if (!p) return "";
-    const cur = String(s.id) === String(a.current);
-    const fill = cur ? "#6aa9ff" : (path.has(String(s.id)) ? "#2b3a55" : "#1a1d26");
-    return `<g><circle cx="${p.x}" cy="${p.y}" r="15" fill="${fill}"
-      stroke="${s.accepting ? "#4ec9a0" : "#2b3040"}" stroke-width="${s.accepting ? 2.5 : 1.5}"/>
-      <text x="${p.x}" y="${p.y + 4}" text-anchor="middle" font-size="11"
-        fill="${cur ? "#12141a" : "#dfe3ee"}">${esc(s.label || s.id)}</text></g>`;
-  }).join("");
-  return `<p class="dim" style="margin:4px 0">${esc(a.formula || a.name || "")}</p>
-    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto">${line}${node}</svg>`;
+    <tr><th>formula</th><th>status</th><th>category</th><th>conf</th><th>state</th></tr>
+    ${rows}</table>`;
 }
 
 /* == 7 · clock ============================================================== */

@@ -4,6 +4,22 @@ No browser and no sockets. The page itself is one static file, so what is testab
 here is the two things that can silently rot: the gateway's file route, and the mock
 monitor -- which is the fixture every other reviewer will judge the console by, and is
 therefore held to the same validators as a real producer.
+
+**What is asserted here and what is not.** This repo has no JavaScript test runner --
+a documented gap in `docs/packages/P7-frontend.md`, not an oversight of this file -- so
+for pane 6 (the automaton) the split is:
+
+* asserted, below: the frames the pane renders from. That the manifest carries a
+  well-formed `automata` block, that every graph is genuinely the formula's own, that
+  each verdict row's state is a state of its own graph or an honest null, that a formula
+  the mock cannot compile gets no graph rather than a guessed one, and that every frame
+  still validates. Also, by reading the page's source, that the degrade path still names
+  the missing field and its owner.
+* checked by hand in a browser against `--mock`, not asserted: the SVG layout itself,
+  that the highlight is a class swap rather than a redraw, that accepting / sink /
+  ordinary states are told apart by shape as well as by colour, and that the witnessed
+  path caption appears. A DOM harness would assert these; there is nowhere to put one
+  yet.
 """
 
 from __future__ import annotations
@@ -263,6 +279,222 @@ def test_the_mock_says_on_the_wire_that_it_is_a_fiction(bus):
     status = bus.status()
     assert status["mock"] is True
     assert "MOCK" in status["detail"]
+
+
+# ============================================================== pane 6's automata
+
+
+def _graphs(bus):
+    """The latched manifest's graphs, by name."""
+    manifest = json.loads(bus.latched(mock_monitor.NS, api.MANIFEST))
+    return {graph["name"]: graph for graph in manifest["automata"]}
+
+
+def test_the_manifest_carries_a_graph_for_every_monitor_it_can_compile(bus):
+    """Pane 6 draws from the latched manifest, so the graphs have to be there, be
+    well-formed, and be named the way the verdict names its rows -- matching a graph to
+    a row is by `name` and nothing else."""
+    manifest = json.loads(bus.latched(mock_monitor.NS, api.MANIFEST))
+    assert api.validate_skill_manifest(manifest) == []
+
+    graphs = manifest["automata"]
+    declared = [f["name"] for f in bus.spec["ltl_formulas"]] + \
+               [m["name"] for m in bus.spec["named_failure_modes"]]
+    assert [g["name"] for g in graphs] == declared        # order and all of them
+    for graph in graphs:
+        ids = [s["id"] for s in graph["states"]]
+        assert len(ids) == len(set(ids))
+        assert all(isinstance(i, int) for i in ids)
+        assert graph["initial"] in ids
+        assert isinstance(graph["formula"], str) and graph["formula"]
+        for state in graph["states"]:
+            assert isinstance(state["accepting"], bool)
+            assert isinstance(state["sink"], bool)
+        for edge in graph["edges"]:
+            assert edge["from"] in ids and edge["to"] in ids
+            assert isinstance(edge["label"], str) and edge["label"]
+        # Deterministic, or the state the page lights depends on edge order.
+        assert len({(e["from"], e["label"]) for e in graph["edges"]}) == \
+            len(graph["edges"])
+
+
+def test_a_chained_eventuality_compiles_to_the_chain_the_formula_spells(bus):
+    """The shipped formula, not a formula shaped like it: one state per eventuality
+    still outstanding, in the order the nesting gives them, and the last state both
+    accepting and absorbing because nothing after it can take the verdict back."""
+    graph = _graphs(bus)["full_navigation_sequence"]
+    advances = [e["label"] for e in graph["edges"]
+                if e["from"] != e["to"]]
+    assert advances == ["mission_started", "path_active",
+                        "moving_towards_target", "mission_finished"]
+    assert [s["id"] for s in graph["states"]] == [0, 1, 2, 3, 4]
+    assert [s["accepting"] for s in graph["states"]] == [False] * 4 + [True]
+    assert [s["sink"] for s in graph["states"]] == [False] * 4 + [True]
+    # Every non-final state waits where it is while its own eventuality has not held.
+    for i in range(4):
+        assert {"from": i, "to": i, "label": f"!{advances[i]}"} in graph["edges"]
+
+
+@pytest.mark.parametrize("name,hold,fail", [
+    ("collision_imminent", "!collision_risk", "collision_risk"),
+    ("fell_over", "upright", "!upright"),
+])
+def test_a_safety_property_compiles_to_an_accepting_state_and_a_sink(bus, name, hold,
+                                                                     fail):
+    """`G(p)` is two states: hold in the accepting one while `p` holds, absorb the tick
+    it does not. The sink is what makes a violated safety mode stay violated instead of
+    flickering back the moment the sensor reading recovers."""
+    graph = _graphs(bus)[name]
+    assert graph["states"] == [{"id": 0, "accepting": True, "sink": False},
+                               {"id": 1, "accepting": False, "sink": True}]
+    assert graph["initial"] == 0
+    assert {"from": 0, "to": 0, "label": hold} in graph["edges"]
+    assert {"from": 0, "to": 1, "label": fail} in graph["edges"]
+    # `1`, not `true`: Spot's `bdd_format_formula` prints an unconditional guard that
+    # way, so that is the string the console has to be able to render, and the mock's
+    # job is to hand it the strings a real monitor will.
+    assert {"from": 1, "to": 1, "label": "1"} in graph["edges"]
+    assert mock_monitor.label_holds("1", {}) is True
+
+
+@pytest.mark.parametrize("formula", [
+    "G(upright) && G(!collision_risk)",   # `G(` at the front and `)` at the back is not
+    "F(mission_finished) || G(upright)",  # the same thing as one G over the whole text
+    "X(mission_started)",
+    "mission_finished U nav_stuck",
+    "",
+])
+def test_a_formula_the_mock_cannot_compile_gets_no_graph_rather_than_a_guess(formula):
+    """The mock hand-compiles two shapes. For anything else it publishes nothing, and
+    the row simply has no graph to match -- which the page has to survive regardless,
+    because the phase machine's own faults never have one either."""
+    assert mock_monitor.compile_automaton("whatever", formula) is None
+
+
+def test_a_spec_whose_formulas_do_not_compile_still_latches_a_valid_manifest(bus):
+    """The pane's degrade path from the producing end: `automata` is an empty list, not
+    a missing key filled with invented graphs, and the manifest still validates."""
+    spec = json.loads(json.dumps(bus.spec))
+    spec["ltl_formulas"] = [{"name": "compound",
+                             "formula": "G(upright) && G(!collision_risk)"}]
+    spec["named_failure_modes"] = []
+    bus.publish(mock_monitor.NS, api.LOAD_SPEC,
+                json.dumps(api.build_load_spec(spec=spec)))
+
+    manifest = json.loads(bus.latched(mock_monitor.NS, api.MANIFEST))
+    assert json.loads(bus.latched(mock_monitor.NS, api.SPEC_STATUS))["ok"] is True
+    assert manifest["automata"] == []
+    assert api.validate_skill_manifest(manifest) == []
+
+
+def test_the_state_advances_with_the_aps_the_mock_is_already_fabricating(bus):
+    """A lit node has to be lit for the reason the edge label gives. Stepped here over
+    the mock's own sensors and its own AP evaluation, for a whole episode -- so this
+    fails if the fabricated sensors and the reported state ever come apart.
+
+    Driven through the module's pure stepper rather than through `bus._auto_state`,
+    which the running thread is mutating at the same time.
+    """
+    graph = _graphs(bus)["full_navigation_sequence"]
+    ids = {s["id"] for s in graph["states"]}
+    state, reached = graph["initial"], []
+    for step in range(bus._episode_steps()):
+        values, _unknown = bus._aps(bus._sensors(step), bus._stale_sources(step))
+        nxt = mock_monitor.successor(graph, state, values)
+        assert nxt is not None            # this formula's guards are never blinded
+        assert nxt in ids
+        assert nxt >= state               # a chain of eventualities never un-discharges
+        assert nxt - state <= 1           # and discharges at most one per tick
+        # Whether it moved is exactly whether the outstanding eventuality held.
+        outstanding = [e for e in graph["edges"]
+                       if e["from"] == state and e["to"] != state]
+        if outstanding:
+            assert (nxt != state) == bool(values[outstanding[0]["label"]])
+        state = nxt
+        reached.append(state)
+    assert reached[-1] == 4 and 4 in ids
+    assert [s for s in graph["states"] if s["id"] == 4][0]["accepting"] is True
+
+
+def test_a_guard_this_tick_cannot_answer_reports_no_state_rather_than_a_stale_one(bus):
+    """`state: null` is a real value on the wire and the mock has to produce it: while
+    the depth camera is out, `collision_risk` is UNKNOWN, and stepping the safety
+    automaton on a guard nobody evaluated would advance it on evidence it does not
+    have. The page draws nothing lit for that tick."""
+    stale_step = 22
+    assert bus._stale_sources(stale_step) == ["points"]
+    values, unknown = bus._aps(bus._sensors(stale_step), bus._stale_sources(stale_step))
+    assert "collision_risk" in unknown and "collision_risk" not in values
+
+    graph = _graphs(bus)["collision_imminent"]
+    assert mock_monitor.successor(graph, 0, values) is None
+    # And a tick that *can* answer still steps, from the state the blind tick left.
+    healthy, _unknown = bus._aps(bus._sensors(0), [])
+    assert mock_monitor.successor(graph, 0, healthy) == 0
+
+
+def test_a_verdict_row_carries_the_state_of_its_own_graph(bus):
+    """Matching is by `name`: every graph has a row, and a row that has a graph reports
+    a state of that graph or an honest null."""
+    verdict = frames(bus)[api.VERDICT]
+    graphs = _graphs(bus)
+    assert graphs
+    rows = verdict["formulas"] + verdict["failure_modes"]
+    assert {r["name"] for r in rows} >= set(graphs)
+    for row in rows:
+        if row["name"] not in graphs:
+            continue
+        if mock_monitor.WIRE_ADMITS_STATE:
+            assert "state" in row
+            ids = {s["id"] for s in graphs[row["name"]]["states"]}
+            assert row["state"] is None or row["state"] in ids
+        else:
+            assert "state" not in row
+    assert api.validate_verdict(verdict) == []
+
+
+def test_the_mock_sends_state_the_moment_the_contract_admits_it(bus):
+    """`formulas[].state` is P0's field to open: `_FORMULA_FIELDS` is closed and its
+    entries are checked by `_check_each`, so a producer sending it early publishes a
+    frame the shipped validators reject. The mock therefore asks the validator itself
+    rather than carrying a flag someone has to remember to flip -- and this asserts that
+    the gate really is the validator's answer, in both directions."""
+    verdict = frames(bus)[api.VERDICT]
+    probe = dict(verdict, formulas=[dict(verdict["formulas"][0], state=0)])
+    assert (api.validate_verdict(probe) == []) is mock_monitor.WIRE_ADMITS_STATE
+
+
+def test_a_status_follows_the_automaton_that_produced_it(bus):
+    """The status column and the lit node are two readings of one thing. An accepting
+    state is ACCEPTED even when it is also absorbing; a non-accepting sink is VIOLATED;
+    an unknown state claims nothing."""
+    chain = _graphs(bus)["full_navigation_sequence"]
+    safety = _graphs(bus)["collision_imminent"]
+    assert mock_monitor.status_of(chain, 4) == "ACCEPTED"
+    assert mock_monitor.status_of(chain, 0) == "INCONCLUSIVE"
+    assert mock_monitor.status_of(safety, 0) == "ACCEPTED"
+    assert mock_monitor.status_of(safety, 1) == "VIOLATED"
+    assert mock_monitor.status_of(safety, None) == "INCONCLUSIVE"
+    assert mock_monitor.status_of(None, 1) == "INCONCLUSIVE"
+
+
+def test_the_page_still_names_the_field_and_its_owner_when_there_are_no_automata():
+    """The build without the producer half is the one the pane has to degrade for. The
+    page's JS has no test runner here, so this asserts the source rather than the DOM:
+    the `missing()` call naming `manifest.automata` and P4 must survive any rewrite of
+    the pane, because it is what the operator reads instead of a blank box.
+
+    An *absent* `automata` is that build; an empty one is a build that can report them
+    and has none for this spec. The page keys the placeholder on the first, which is
+    why the test looks for the `Array.isArray` guard and not a falsiness test.
+    """
+    page = (web.HERE / "index.html").read_text(encoding="utf-8")
+    assert 'missing("manifest.automata' in page
+    assert "S.manifest || {}).automata" in page
+    assert "if (!Array.isArray(graphs)) {" in page
+    # And the unconditional guard is spelt out rather than left as a bare `1` beside a
+    # state numbered 1.
+    assert '{ "1": "any input", "0": "never" }' in page
 
 
 def test_the_mock_splits_a_rule_with_the_shared_splitter(bus):
