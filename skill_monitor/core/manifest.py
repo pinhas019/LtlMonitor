@@ -70,14 +70,22 @@ PHASE_VIOLATION_LIMIT = 3
 phase_names = api.phase_names
 
 
-def skill_manifest(raw_spec: dict, source: str = "inline") -> dict:
+def skill_manifest(raw_spec: dict, source: str = "inline", automata=None) -> dict:
     """The api.MANIFEST payload for a spec.
 
     The spec is passed through as authored rather than reassembled from parsed pieces --
     a client should see exactly the document the engine was given, including any field
     this engine version does not itself understand.
+
+    `automata` is the Büchi graph of every monitor, from `MultiMonitor.graphs()`. It
+    belongs on this latched payload and not on the verdict because it is structural: it
+    changes only when a spec loads, so it costs one message per spec load rather than a
+    whole automaton re-sent at the tick rate to say nothing new. None omits the key
+    entirely -- see `api.build_skill_manifest` for why that is not an empty list.
     """
-    return api.build_skill_manifest(spec=raw_spec or {}, source=source)
+    return api.build_skill_manifest(
+        spec=raw_spec or {}, source=source, automata=automata
+    )
 
 
 def ap_rows(manifest: dict, state: dict) -> list:
@@ -598,12 +606,36 @@ def _status_name(status) -> str:
     return name if name in api.FORMULA_STATUSES else "INCONCLUSIVE"
 
 
+def _automaton_state(value) -> int | None:
+    """An automaton state number, or None for anything that is not one.
+
+    The same reason `_status_name` exists. What reaches here is whatever a monitor
+    object had on it: a real `LTLMonitor.current_state`, a fake's stand-in, a Mock, a
+    bool, or nothing at all. Only an honest int indexes `manifest.automata[].states[]`,
+    and the contract's word for the rest is `null` -- never a guessed 0, which a
+    consumer would faithfully highlight as the initial state of a run it knows nothing
+    about.
+    """
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def formula_entries(statuses) -> list[dict]:
-    """`verdict.formulas` from (name, status) pairs."""
-    return [
-        api.build_formula(name=str(name), status=_status_name(status))
-        for name, status in statuses
-    ]
+    """`verdict.formulas` from (name, status) pairs, or (name, status, state) triples.
+
+    The third element is the monitor's current Büchi state, to be read against the
+    graph of the same name on `manifest.automata`. Pairs stay legal and mean `state`
+    is null: a caller that has no automaton to report a state from -- a test, a
+    replayed trace -- should not have to invent one.
+    """
+    entries = []
+    for row in statuses or ():
+        name, status, *rest = row
+        entries.append(api.build_formula(
+            name=str(name),
+            status=_status_name(status),
+            state=_automaton_state(rest[0] if rest else None),
+        ))
+    return entries
 
 
 # =============================================================================
@@ -779,6 +811,10 @@ def failure_mode_entries(
     mode, which is the old behaviour and the best available with no map. A mode absent
     from a map that does exist falls back the same way, because "its expression named no
     AP I know" is ignorance, not freshness.
+
+    A mode row may carry a `state`: the current Büchi state of the monitor that mode
+    was built from, read against `manifest.automata`. A row without one -- the phase
+    machine's own fault, which is no automaton at all -- gets `null`.
     """
     out = []
     for mode in modes or []:
@@ -795,6 +831,7 @@ def failure_mode_entries(
             ),
             status=_status_name(mode.get("status")),
             confidence=_unit(graded),
+            state=_automaton_state(mode.get("state")),
         ))
     return out
 

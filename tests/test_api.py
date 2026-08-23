@@ -435,6 +435,169 @@ def test_the_adapter_example_in_the_wire_doc_still_validates():
     assert api.validate_adapter(json.loads(block.group(1))) == []
 
 
+# =============================================================================
+# The automaton graph: `manifest.automata` + `state` on both verdict row types
+#
+# The split is the whole design. The graph is structural and changes only when a spec
+# loads, so it rides the latched manifest at one message per spec; the tick then
+# carries a single small integer that indexes into it. These tests pin both halves and,
+# just as importantly, pin what a producer that has neither is still allowed to send.
+# =============================================================================
+
+def an_automaton() -> dict:
+    """One entry of `manifest.automata` -- the shape `LTLMonitor.graph()` emits."""
+    return {
+        "name": "full_navigation_sequence",
+        "formula": "F(mission_started && F(path_active))",
+        "initial": 0,
+        "states": [
+            {"id": 0, "accepting": False, "sink": False},
+            {"id": 1, "accepting": False, "sink": False},
+            {"id": 2, "accepting": True, "sink": False},
+        ],
+        "edges": [
+            {"from": 0, "to": 1, "label": "mission_started"},
+            {"from": 1, "to": 2, "label": "path_active"},
+            {"from": 2, "to": 2, "label": "1"},
+        ],
+    }
+
+
+def test_a_manifest_carrying_an_automaton_graph_validates():
+    payload = api.build_skill_manifest(spec=A_SPEC, source="pushed",
+                                       automata=[an_automaton()])
+    assert api.validate_skill_manifest(payload) == []
+    assert payload["automata"] == [an_automaton()]
+    # And it survives the wire, which is the only form the frontend ever sees it in.
+    assert api.validate_skill_manifest(json.loads(json.dumps(payload))) == []
+
+
+def test_a_manifest_with_no_graph_omits_automata_rather_than_emptying_it():
+    """The degrade path, and the reason it is an absence and not `[]`.
+
+    A producer that cannot introspect its monitors and a spec that declares none are
+    different facts. An empty list asserts the second, so a console would draw an empty
+    automaton pane and call it the truth. Absent says "I cannot tell you", which is what
+    a consumer needs to leave the pane alone.
+    """
+    payload = api.build_skill_manifest(spec=A_SPEC, source="pushed", automata=None)
+    assert "automata" not in payload
+    assert api.validate_skill_manifest(payload) == []
+
+
+def test_a_mistyped_automata_block_is_named():
+    payload = api.build_skill_manifest(spec=A_SPEC, source="pushed")
+    payload["automata"] = "a graph, honest"
+    assert any("automata" in p for p in api.validate_skill_manifest(payload))
+
+
+def test_an_automaton_missing_a_structural_field_is_named():
+    graph = an_automaton()
+    del graph["initial"]
+    problems = api.validate_automata([graph])
+    assert any("automata[0]" in p and "initial" in p for p in problems), problems
+
+
+def test_a_duplicate_state_id_is_named():
+    """`verdict.formulas[].state` is nothing but a state id. Two states answering to
+    the same number makes "the monitor is in state 1" ambiguous on the wire."""
+    graph = an_automaton()
+    graph["states"].append({"id": 1, "accepting": True, "sink": False})
+    problems = api.validate_automata([graph])
+    assert any("duplicate state id 1" in p for p in problems), problems
+
+
+def test_an_initial_state_that_was_never_declared_is_named():
+    """Well-typed nonsense: every field passes its own check and the graph still has
+    no node to start at. Caught here rather than as a pane that renders blank."""
+    graph = an_automaton()
+    graph["initial"] = 7
+    problems = api.validate_automata([graph])
+    assert any("initial state 7 is not a declared state" in p for p in problems), problems
+
+
+def test_an_edge_endpoint_that_was_never_declared_is_named():
+    graph = an_automaton()
+    graph["edges"].append({"from": 2, "to": 9, "label": "ghost"})
+    problems = api.validate_automata([graph])
+    assert any("edges[3]" in p and "'to' state 9" in p for p in problems), problems
+
+    graph = an_automaton()
+    graph["edges"][0]["from"] = 42
+    problems = api.validate_automata([graph])
+    assert any("edges[0]" in p and "'from' state 42" in p for p in problems), problems
+
+
+def test_a_malformed_graph_fails_the_manifest_it_rides_on():
+    """The validator is only worth having if the payload's own validator runs it."""
+    graph = an_automaton()
+    graph["initial"] = 7
+    payload = api.build_skill_manifest(spec=A_SPEC, automata=[graph])
+    assert any("initial state 7" in p for p in api.validate_skill_manifest(payload))
+
+
+@pytest.mark.parametrize(
+    "garbage", [None, "nonsense", 7, [None], ["nonsense"], [{}], [[]], {}],
+)
+def test_validate_automata_never_raises(garbage):
+    """Same rule as every other validator here: a consumer handed a malformed frame
+    must be able to report it, not die on it."""
+    assert isinstance(api.validate_automata(garbage), list)
+
+
+def test_a_formula_row_carries_the_state_it_is_in():
+    payload = a_verdict()
+    payload["formulas"] = [api.build_formula(
+        name="full_navigation_sequence", status="INCONCLUSIVE", state=1)]
+    assert api.validate_verdict(payload) == []
+    assert payload["formulas"][0]["state"] == 1
+
+
+def test_a_failure_mode_row_carries_the_state_it_is_in():
+    payload = a_verdict()
+    payload["failure_modes"] = [api.build_failure_mode(
+        name="collision_imminent", fault_category="SAFETY", status="VIOLATED",
+        confidence=0.67, state=3)]
+    assert api.validate_verdict(payload) == []
+    assert payload["failure_modes"][0]["state"] == 3
+
+
+@pytest.mark.parametrize("rows", ["formulas", "failure_modes"])
+def test_a_state_that_is_not_an_int_is_rejected(rows):
+    """A string state indexes nothing. `null` is the contract's word for "I cannot
+    report one" -- a stringly-typed 1 is a producer bug, not a degraded producer."""
+    payload = a_verdict()
+    payload[rows][0]["state"] = "1"
+    problems = api.validate_verdict(payload)
+    assert any(rows in p and "state" in p for p in problems), problems
+
+    payload[rows][0]["state"] = None
+    assert api.validate_verdict(payload) == []
+
+
+@pytest.mark.parametrize("rows", ["formulas", "failure_modes"])
+def test_a_row_may_omit_state_entirely(rows):
+    """`state` landed after SCHEMA_VERSION 1. Required would invalidate every producer
+    that predates it -- with no version bump to make the mismatch detectable -- which
+    is the same rule `threshold` follows on an adapter step."""
+    payload = a_verdict()
+    del payload[rows][0]["state"]
+    assert api.validate_verdict(payload) == []
+
+
+@pytest.mark.parametrize("rows", ["formulas", "failure_modes"])
+def test_the_row_field_sets_stay_closed_around_state(rows):
+    """`state` had to be *declared* precisely because these two are closed: an
+    undeclared field is rejected outright, so a verdict carrying it would have been
+    thrown out entirely rather than merely ignored."""
+    payload = a_verdict()
+    assert payload[rows][0]["state"] is None
+    assert api.validate_verdict(payload) == [], "a declared field is not an unknown one"
+
+    payload[rows][0]["stat"] = 1        # a typo, not a new field
+    assert any("unknown field 'stat'" in p for p in api.validate_verdict(payload))
+
+
 def test_an_unknown_command_is_rejected():
     assert api.validate_command(a_command() | {"command": "launch"}) != []
     for command in api.COMMANDS:

@@ -30,7 +30,7 @@ ros_stub.install()
 
 import skill_monitor                                            # noqa: E402
 from skill_monitor.backend import monitor_node                  # noqa: E402
-from skill_monitor.core import api, manifest                    # noqa: E402
+from skill_monitor.core import api, automata, manifest          # noqa: E402
 from skill_monitor.core.automata import (                       # noqa: E402
     FailureModeInfo,
     MonitorStatus,
@@ -47,16 +47,87 @@ class FakeAut:
         return False
 
 
+class FakeEdge:
+    """One outgoing transition, with the two attributes `LTLMonitor.graph()` reads."""
+
+    def __init__(self, dst, cond) -> None:
+        self.dst = dst
+        self.cond = cond
+
+
+class WalkableAut:
+    """Enough of a spot `twa_graph` for `LTLMonitor.graph()` to walk end to end.
+
+    Spot is not installed on this host, so a fake is the only way `graph()` can be
+    driven at all -- and it is the same substitution this file already makes for the
+    automaton as a whole (see the module docstring). It answers exactly the five calls
+    `graph()` makes and nothing else, which is the check that `graph()` really is a
+    thin walk and asks nothing new of the library.
+
+    The default is a three-state chain: 0 --mission_started--> 1 --path_active--> 2,
+    with 2 accepting and self-looping.
+    """
+
+    def __init__(self, edges=None, accepting=(2,), initial=0) -> None:
+        self._edges = edges if edges is not None else {
+            0: [(0, "!mission_started"), (1, "mission_started")],
+            1: [(1, "!path_active"), (2, "path_active")],
+            2: [(2, "1")],
+        }
+        self._accepting = set(accepting)
+        self._initial = initial
+
+    def num_states(self) -> int:
+        return len(self._edges)
+
+    def get_init_state_number(self) -> int:
+        return self._initial
+
+    def state_is_accepting(self, state) -> bool:
+        return state in self._accepting
+
+    def out(self, state):
+        return [FakeEdge(dst, cond) for dst, cond in self._edges.get(state, ())]
+
+
+def a_real_monitor(monkeypatch, name="full_navigation_sequence", *,
+                   formula="F(mission_started && F(path_active))",
+                   aut=None, sinks=()):
+    """A genuine `LTLMonitor` wrapped around a fake automaton.
+
+    Built with `object.__new__` because `__init__` calls `spot.translate`, which this
+    host cannot do. `graph()` needs nothing else: `name`, `formula`, `aut`, `bdict` and
+    `_sink_states` are the whole of its input, which is exactly why it could be written
+    with no new Spot calls. `bdict` is opaque -- it is only ever handed straight back
+    to `bdd_format_formula`, which here returns the label the fake edge carries.
+    """
+    monkeypatch.setattr(
+        automata.spot, "bdd_format_formula",
+        lambda bdict, cond: str(cond), raising=False,
+    )
+    m = object.__new__(automata.LTLMonitor)
+    m.name, m.formula = name, formula
+    m.aut, m.bdict = (aut or WalkableAut()), object()
+    m._sink_states = set(sinks)
+    m._initial_state = m.aut.get_init_state_number()
+    m.current_state = m._initial_state
+    return m
+
+
 class FakeMonitor:
     """One LTL monitor. `violated_when` decides its status from the observation, which
     is how a test says "this is the tick the collision formula breaks" without spot."""
 
-    def __init__(self, name, formula, failure_mode=None, violated_when=None) -> None:
+    def __init__(self, name, formula, failure_mode=None, violated_when=None,
+                 current_state=0) -> None:
         self.name = name
         self.formula = formula
         self.failure_mode = failure_mode
         self.status = MonitorStatus.INCONCLUSIVE
-        self.current_state = 0
+        #: What the verdict reports as this monitor's automaton state. Settable, and
+        #: allowed to be None: a monitor that cannot say which state it is in is the
+        #: degrade path the contract's nullable `state` exists for.
+        self.current_state = current_state
         self._violated_when = violated_when or (lambda obs: False)
         self._initial_state = 0
         self._sink_states: set[int] = set()
@@ -73,12 +144,24 @@ class FakeMonitor:
     def get_required_aps(self) -> set:
         return set()
 
+    def format_automaton(self, **_kwargs) -> str:
+        """The console dump `reload_specs` prints on a spec load. Nothing in this file
+        reads stdout; it exists so a reload can be driven at all."""
+        return f"  [fake automaton for {self.name}]"
+
 
 class FakeMulti:
-    def __init__(self, monitors) -> None:
+    def __init__(self, monitors, graphs=None) -> None:
         self.monitors = list(monitors)
         #: One entry per `step()`. The whole point of the fake.
         self.steps: list[dict] = []
+        #: What `graphs()` hands back. None -- the default -- is the degrade path: a
+        #: monitor this build cannot describe, which must still publish a valid
+        #: manifest, simply without an `automata` key.
+        self._graphs = graphs
+
+    def graphs(self):
+        return self._graphs
 
     def step(self, observation) -> dict:
         self.steps.append(dict(observation))
@@ -183,7 +266,7 @@ def an_adapter() -> dict:
     )
 
 
-def a_node(spec_dict=None, *, monitors=None, adapter=None):
+def a_node(spec_dict=None, *, monitors=None, adapter=None, graphs=None, multi=None):
     spec = monitor_node.spec_from_dict(spec_dict or a_spec())
     if monitors is None:
         monitors = [
@@ -197,7 +280,9 @@ def a_node(spec_dict=None, *, monitors=None, adapter=None):
                 violated_when=lambda obs: obs.get("collision_risk") is True,
             ),
         ]
-    node = monitor_node.LtlMonitorNode(spec, FakeMulti(monitors), Args())
+    node = monitor_node.LtlMonitorNode(
+        spec, multi if multi is not None else FakeMulti(monitors, graphs), Args()
+    )
     if adapter is not None:
         node.adapter_callback(ros_stub.Message(json.dumps(adapter)))
     return node
@@ -675,7 +760,9 @@ def test_the_verdict_maps_every_piece_of_node_state_onto_the_payload():
     assert v["risk"]["trigger_confidence"] == 0.5
     assert v["missed_ticks"] == 0
     assert [fm["name"] for fm in v["failure_modes"]] == ["collision_imminent"]
-    assert v["formulas"] == [{"name": "nav", "status": "INCONCLUSIVE"}]
+    # `state` rides every formula row: the automaton graph is latched on the manifest,
+    # so all a tick has to carry is which node of it this monitor is in.
+    assert v["formulas"] == [{"name": "nav", "status": "INCONCLUSIVE", "state": 0}]
 
 
 def test_a_gap_in_the_tick_stream_is_reported_not_interpolated():
@@ -917,3 +1004,181 @@ def test_a_returning_envelope_demotes_the_legacy_wire_again():
     before = len(verdicts(node))
     legacy_observe(node)
     assert len(verdicts(node)) == before, "the legacy copy must not step again"
+
+
+# =============================================================================
+# The automaton graph: latched once per spec, one integer per tick
+#
+# The console's automaton pane rendered nothing because the node published each
+# formula's *status* and never the automaton behind it. Both halves land here: the
+# graph on the latched manifest, where it costs one message per spec load, and the
+# state integer on every verdict row. The third case these pin is the one that has to
+# keep working when neither is available.
+# =============================================================================
+
+def a_graph(name="nav") -> dict:
+    return {
+        "name": name,
+        "formula": "F(path_active)",
+        "initial": 0,
+        "states": [{"id": 0, "accepting": False, "sink": False},
+                   {"id": 1, "accepting": True, "sink": False}],
+        "edges": [{"from": 0, "to": 0, "label": "!path_active"},
+                  {"from": 0, "to": 1, "label": "path_active"},
+                  {"from": 1, "to": 1, "label": "1"}],
+    }
+
+
+def manifests(node) -> list[dict]:
+    return [json.loads(m) for m in node.publishers[api.MANIFEST].sent]
+
+
+def test_graph_walks_the_automaton_into_the_shape_the_contract_declares(monkeypatch):
+    """`LTLMonitor.graph()` against a fake `aut`/`bdict`, which is the only way it can
+    be run on a host with no spot. The assertion is the literal contract example."""
+    m = a_real_monitor(monkeypatch)
+    assert m.graph() == {
+        "name": "full_navigation_sequence",
+        "formula": "F(mission_started && F(path_active))",
+        "initial": 0,
+        "states": [{"id": 0, "accepting": False, "sink": False},
+                   {"id": 1, "accepting": False, "sink": False},
+                   {"id": 2, "accepting": True,  "sink": False}],
+        "edges": [{"from": 0, "to": 0, "label": "!mission_started"},
+                  {"from": 0, "to": 1, "label": "mission_started"},
+                  {"from": 1, "to": 1, "label": "!path_active"},
+                  {"from": 1, "to": 2, "label": "path_active"},
+                  {"from": 2, "to": 2, "label": "1"}],
+    }
+    assert api.validate_automata([m.graph()]) == []
+
+
+def test_a_sink_state_is_flagged_from_the_monitors_own_precomputed_set(monkeypatch):
+    """`sink` is not derivable from `accepting` -- it is `_find_sink_states`' answer,
+    and it is what tells a console the run is irrecoverable rather than merely not
+    accepting yet."""
+    m = a_real_monitor(monkeypatch, sinks=[1])
+    states = {s["id"]: s for s in m.graph()["states"]}
+    assert states[1] == {"id": 1, "accepting": False, "sink": True}
+    assert states[0]["sink"] is False
+
+
+def test_graphs_covers_every_monitor_including_the_failure_modes(monkeypatch):
+    """A named failure mode is an LTL monitor too, and `verdict.failure_modes[].state`
+    is worthless without a graph to read it against."""
+    multi = object.__new__(automata.MultiMonitor)
+    multi.monitors = [
+        a_real_monitor(monkeypatch, name="full_navigation_sequence"),
+        a_real_monitor(monkeypatch, name="collision_imminent",
+                       formula="G(!collision_risk)"),
+    ]
+    graphs = multi.graphs()
+    assert [g["name"] for g in graphs] == \
+        ["full_navigation_sequence", "collision_imminent"]
+    assert api.validate_automata(graphs) == []
+
+
+def test_the_node_publishes_the_automaton_graph_on_the_latched_manifest():
+    node = a_node(graphs=[a_graph("nav"), a_graph("collision_imminent")])
+    payload = manifests(node)[-1]
+    assert api.validate_skill_manifest(payload) == []
+    assert [g["name"] for g in payload["automata"]] == ["nav", "collision_imminent"]
+
+
+def test_the_graph_is_rebuilt_when_a_spec_is_loaded(monkeypatch):
+    """It is latched and derived once per spec load, which is the whole reason it can
+    afford to be the full automaton. So the load is the one moment it has to be rebuilt
+    -- otherwise the pane keeps drawing the previous skill's automaton for the rest of
+    the run, with the new skill's state integers pointing into it."""
+    node = a_node(graphs=[a_graph("nav")])
+    monkeypatch.setattr(
+        monitor_node, "MultiMonitor",
+        lambda *a, **k: FakeMulti([FakeMonitor("wandered", "G(!wandered)")],
+                                  graphs=[a_graph("wandered")]),
+    )
+    node.load_spec_callback(ros_stub.Message(json.dumps(a_spec())))
+    assert [g["name"] for g in manifests(node)[-1]["automata"]] == ["wandered"]
+
+
+def test_a_node_that_cannot_describe_its_automata_still_publishes_a_valid_manifest():
+    """The degrade path, and the default here: a faked monitor has no graph. Absent,
+    not an empty list -- an empty list would tell the console this skill has no
+    monitors, which is a different and untrue thing."""
+    node = a_node()
+    assert node._automata() is None
+    payload = manifests(node)[-1]
+    assert "automata" not in payload
+    assert api.validate_skill_manifest(payload) == []
+
+
+def test_a_monitor_that_raises_while_describing_itself_does_not_take_the_manifest_down():
+    """A spot call that throws must cost the pane, not the manifest -- every other
+    thing a client reads about this monitor is on that payload."""
+    class Exploding(FakeMulti):
+        def graphs(self):
+            raise RuntimeError("spot said no")
+
+    node = a_node(multi=Exploding([FakeMonitor("nav", "F(path_active)")]))
+    assert node._automata() is None
+    payload = manifests(node)[-1]
+    assert "automata" not in payload
+    assert api.validate_skill_manifest(payload) == []
+
+
+def test_every_verdict_row_reports_the_state_of_its_own_automaton():
+    node = a_node(monitors=[
+        FakeMonitor("nav", "F(path_active)", current_state=2),
+        FakeMonitor(
+            "collision_imminent", "G(!collision_risk)", current_state=5,
+            failure_mode=FailureModeInfo(name="collision_imminent",
+                                         fault_category="SAFETY", description=""),
+        ),
+    ])
+    tick(node, 1)
+    observe(node, 1)
+
+    v = verdicts(node)[-1]
+    assert api.validate_verdict(v) == []
+    assert v["formulas"][0]["state"] == 2
+    assert v["failure_modes"][0]["state"] == 5
+
+
+def test_a_monitor_with_no_state_to_report_publishes_null_and_a_valid_verdict():
+    """The verdict half of the degrade path. `state` is nullable precisely so a
+    producer that cannot report one is not forced to invent a state number the console
+    would then highlight as fact."""
+    node = a_node(monitors=[
+        FakeMonitor("nav", "F(path_active)", current_state=None),
+        FakeMonitor(
+            "collision_imminent", "G(!collision_risk)", current_state=None,
+            failure_mode=FailureModeInfo(name="collision_imminent",
+                                         fault_category="SAFETY", description=""),
+        ),
+    ])
+    tick(node, 1)
+    observe(node, 1)
+
+    v = verdicts(node)[-1]
+    assert api.validate_verdict(v) == []
+    assert v["formulas"][0]["state"] is None
+    assert v["failure_modes"][0]["state"] is None
+
+
+def test_the_phase_machines_own_fault_reports_no_state():
+    """It is a violation counter, not a Büchi automaton. There is no node to point at
+    and `null` says so, rather than a 0 that indexes some other monitor's graph."""
+    spec = a_spec(execution_phases=[{
+        "phase": "Approach",
+        "enter_condition": "True",
+        "progress_condition": "path_active",
+        "progress_violation_limit": 1,
+        "exit_condition": "False",
+    }])
+    node = a_node(spec)
+    for seq in (1, 2):
+        tick(node, seq)
+        observe(node, seq, aps={"path_active": False})
+
+    rows = {e["name"]: e for e in verdicts(node)[-1]["failure_modes"]}
+    phase_row = next(e for name, e in rows.items() if name != "collision_imminent")
+    assert phase_row["state"] is None

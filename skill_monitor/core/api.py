@@ -453,6 +453,12 @@ def validate_observation(payload: Any) -> list[str]:
 _FORMULA_FIELDS: dict[str, _Check] = {
     "name": STRING,
     "status": _one_of(FORMULA_STATUSES),
+    # Which state of this formula's Büchi automaton the monitor is in right now, read
+    # against the graph of the same `name` on the latched `manifest.automata`.
+    # Nullable, and the null is load-bearing: a producer that cannot report a state --
+    # a faked monitor, or a build whose graph is unavailable -- says so, and the
+    # consumer highlights nothing rather than guessing state 0.
+    "state": INT_OR_NULL,
 }
 
 _FAILURE_MODE_FIELDS: dict[str, _Check] = {
@@ -462,7 +468,17 @@ _FAILURE_MODE_FIELDS: dict[str, _Check] = {
     # Required, not optional. Without it a VIOLATED derived from a dead sensor grades
     # at 1.0 and the intervention ladder goes straight to ABORT.
     "confidence": UNIT_INTERVAL,
+    # Same field, same meaning as on a formula row: a named failure mode is an LTL
+    # monitor too and has its own graph on `manifest.automata`, under its own name.
+    "state": INT_OR_NULL,
 }
+
+#: `state` arrived on both row types after SCHEMA_VERSION 1 shipped. Required would be a
+#: wire break needing a version bump -- every producer that predates it becomes invalid
+#: for carrying nothing new. Optional means an older producer still validates while one
+#: that sends `state` is type-checked. Both row field sets stay CLOSED, so `state` still
+#: has to be *declared* here or a verdict carrying it is rejected as an unknown field.
+_ROW_OPTIONAL = ("state",)
 
 _RISK_FIELDS: dict[str, _Check] = {
     "steps_to_timeout": INT_OR_NULL,
@@ -536,13 +552,24 @@ def build_verdict(
     }
 
 
-def build_formula(*, name: str, status: str) -> dict:
-    """One entry of `verdict.formulas`."""
-    return {"name": name, "status": status}
+def build_formula(*, name: str, status: str, state: int | None = None) -> dict:
+    """One entry of `verdict.formulas`.
+
+    `state` defaults to None -- unlike `confidence` below -- because "I do not know
+    which automaton state this is" is a legitimate and common answer (no graph, or a
+    monitor this build cannot introspect), whereas "I do not know how much to believe
+    this fault" never is.
+    """
+    return {"name": name, "status": status, "state": state}
 
 
 def build_failure_mode(
-    *, name: str, fault_category: str, status: str, confidence: float
+    *,
+    name: str,
+    fault_category: str,
+    status: str,
+    confidence: float,
+    state: int | None = None,
 ) -> dict:
     """One entry of `verdict.failure_modes`. `confidence` has no default on purpose."""
     return {
@@ -550,6 +577,7 @@ def build_failure_mode(
         "fault_category": fault_category,
         "status": status,
         "confidence": confidence,
+        "state": state,
     }
 
 
@@ -597,8 +625,10 @@ def validate_verdict(payload: Any) -> list[str]:
     problems: list[str] = []
     _check_fields(payload, "verdict", _VERDICT_FIELDS, problems)
     _check_version(payload, "verdict", problems)
-    _check_each(payload, "formulas", "verdict", _FORMULA_FIELDS, problems)
-    _check_each(payload, "failure_modes", "verdict", _FAILURE_MODE_FIELDS, problems)
+    _check_each(payload, "formulas", "verdict", _FORMULA_FIELDS, problems,
+                optional=_ROW_OPTIONAL)
+    _check_each(payload, "failure_modes", "verdict", _FAILURE_MODE_FIELDS, problems,
+                optional=_ROW_OPTIONAL)
     _check_nested(payload, "risk", "verdict", _RISK_FIELDS, problems)
     _check_nested(payload, "intervention", "verdict", _INTERVENTION_FIELDS, problems)
     return problems
@@ -712,12 +742,52 @@ def validate_adapter(payload: Any) -> list[str]:
 # /monitor/manifest (latched) -- monitor -> everyone
 # =============================================================================
 
+#: One node of a Büchi automaton. `accepting` and `sink` are the two facts a client
+#: needs to colour it; everything else about a state is derivable from the edges.
+_AUTOMATON_STATE_FIELDS: dict[str, _Check] = {
+    "id": INT,
+    "accepting": BOOL,
+    "sink": BOOL,
+}
+
+#: One transition. `label` is the edge's guard already rendered to a string by the
+#: producer -- a BDD is not a wire type, and a consumer must never have to parse one.
+_AUTOMATON_EDGE_FIELDS: dict[str, _Check] = {
+    "from": INT,
+    "to": INT,
+    "label": STRING,
+}
+
+#: One entry of `manifest.automata` -- the graph the monitor of this `name` is stepping.
+#: `name` is the join key: it matches `verdict.formulas[].name` or
+#: `verdict.failure_modes[].name`, and `state` on that row indexes `states[].id` here.
+_AUTOMATON_FIELDS: dict[str, _Check] = {
+    "name": STRING,
+    "formula": STRING,
+    "initial": INT,
+    "states": OBJECT_ARRAY,
+    "edges": OBJECT_ARRAY,
+}
+
 _MANIFEST_FIELDS: dict[str, _Check] = {
     **_PLAIN,
     "skill_name": STRING,
     "phases": STRING_ARRAY,
     "source": STRING,
+    # The Büchi automaton of every monitor this spec built. Structural, so it lives
+    # here on the latched manifest -- one message per spec load -- and each tick then
+    # carries only the `state` integer that indexes into it.
+    "automata": OBJECT_ARRAY,
 }
+
+#: `automata` is optional, not required: a producer that cannot introspect its monitors
+#: omits the field entirely rather than sending an empty list, because "no graph
+#: available" and "this spec has no monitors" are different facts and a consumer that
+#: draws an empty pane for the first one is reporting something untrue. Declared in
+#: `_MANIFEST_FIELDS` all the same, so it is type-checked whenever it IS present --
+#: the manifest validator is open (`closed=False`), so an undeclared field would
+#: otherwise go through entirely unexamined.
+_MANIFEST_OPTIONAL = ("automata",)
 
 
 def phase_names(execution_phases) -> list:
@@ -730,8 +800,82 @@ def phase_names(execution_phases) -> list:
     ]
 
 
+def validate_automata(payload: Any, label: str = "manifest") -> list[str]:
+    """Problems with a `manifest.automata` block. Returns a list, never raises.
+
+    Types are only half of it. A graph whose `initial` names a state that was never
+    declared, or an edge that runs to one, is *well-typed nonsense*: it validates
+    field by field and then draws as an empty or disconnected pane. The consumer has
+    no way to tell that from a spec that genuinely has one state, so the mismatch has
+    to be caught here, at the contract, and named -- not discovered as a blank panel.
+
+    Three structural rules, and they are exactly the ones a renderer assumes:
+
+      * every `states[].id` is unique -- a duplicate makes "the state numbered 3"
+        ambiguous, and `verdict.formulas[].state` is nothing but that number;
+      * `initial` is one of the declared ids -- otherwise there is no node to start at;
+      * both endpoints of every edge are declared ids -- otherwise there is no node to
+        draw the edge to.
+    """
+    if payload is None:
+        return []
+    if not isinstance(payload, list):
+        return [f"{label}.automata: must be an array of objects, got {_kind(payload)}"]
+
+    problems: list[str] = []
+    for i, entry in enumerate(payload):
+        where = f"{label}.automata[{i}]"
+        if not isinstance(entry, dict):
+            problems.append(f"{where}: must be an object, got {_kind(entry)}")
+            continue
+
+        _check_fields(entry, where, _AUTOMATON_FIELDS, problems)
+        _check_each(entry, "states", where, _AUTOMATON_STATE_FIELDS, problems)
+        _check_each(entry, "edges", where, _AUTOMATON_EDGE_FIELDS, problems)
+
+        # Ids first: everything below is a question about membership in this set. An
+        # id that failed its own type check is skipped rather than reported twice.
+        ids: set[int] = set()
+        states = entry.get("states")
+        if isinstance(states, list):
+            for j, state in enumerate(states):
+                if not isinstance(state, dict):
+                    continue
+                sid = state.get("id")
+                if not _is_int(sid):
+                    continue
+                if sid in ids:
+                    problems.append(f"{where}.states[{j}]: duplicate state id {sid}")
+                ids.add(sid)
+
+        initial = entry.get("initial")
+        if _is_int(initial) and initial not in ids:
+            problems.append(
+                f"{where}: initial state {initial} is not a declared state"
+            )
+
+        edges = entry.get("edges")
+        if isinstance(edges, list):
+            for j, edge in enumerate(edges):
+                if not isinstance(edge, dict):
+                    continue
+                for end in ("from", "to"):
+                    node = edge.get(end)
+                    if _is_int(node) and node not in ids:
+                        problems.append(
+                            f"{where}.edges[{j}]: '{end}' state {node} is not a "
+                            f"declared state"
+                        )
+    return problems
+
+
 def build_skill_manifest(
-    *, spec: dict, source: str = "inline", seq: int | None = None, t: float | None = None
+    *,
+    spec: dict,
+    source: str = "inline",
+    automata=None,
+    seq: int | None = None,
+    t: float | None = None,
 ) -> dict:
     """The skill spec exactly as authored, plus `phases` and where it came from.
 
@@ -739,22 +883,38 @@ def build_skill_manifest(
     document the engine was actually given, including fields this engine version does
     not itself understand. That is also why `validate_skill_manifest` is the one
     open validator here -- an unknown field is the point, not a problem.
+
+    `automata` is the Büchi graph of every monitor the spec built (see
+    `MultiMonitor.graphs`). None -- the default -- leaves the key OUT of the payload
+    entirely rather than sending an empty list, because a producer that cannot
+    introspect its monitors and a spec that declares no formulas are different facts,
+    and a consumer must be able to tell them apart in order to degrade honestly.
     """
     # Spec first: the envelope must win, so a spec that happens to carry its own
     # `schema_version` cannot overwrite the wire version and misroute every consumer.
-    return dict(spec or {}) | _plain_envelope(seq, t) | {
+    payload = dict(spec or {}) | _plain_envelope(seq, t) | {
         "skill_name": (spec or {}).get("skill_name", ""),
         "phases": phase_names((spec or {}).get("execution_phases")),
         "source": source,
     }
+    if automata is not None:
+        payload["automata"] = list(automata)
+    return payload
 
 
 def validate_skill_manifest(payload: Any) -> list[str]:
     if (bad := _not_an_object(payload, "manifest")) is not None:
         return bad
     problems: list[str] = []
-    _check_fields(payload, "manifest", _MANIFEST_FIELDS, problems, closed=False)
+    _check_fields(
+        payload, "manifest", _MANIFEST_FIELDS, problems,
+        optional=_MANIFEST_OPTIONAL, closed=False,
+    )
     _check_version(payload, "manifest", problems)
+    # Only when it is a list: a non-list `automata` was just named by the type check
+    # above, and saying it twice helps nobody.
+    if isinstance(payload.get("automata"), list):
+        problems += validate_automata(payload["automata"])
     return problems
 
 

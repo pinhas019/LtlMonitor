@@ -861,7 +861,32 @@ class LtlMonitorNode(Node):
         return manifest_mod.skill_manifest(
             self.spec.raw,
             source or (str(self.formulas_file) if self.formulas_file else "inline"),
+            automata=self._automata(),
         )
+
+    def _automata(self) -> list | None:
+        """The Büchi graph of every monitor, for the latched manifest.
+
+        Built here and only here, which is to say once per spec load. The graph is
+        structural and does not change while a spec is loaded, so re-deriving it per
+        tick would re-send an unchanged automaton at the tick rate; the verdict carries
+        only the state integer that indexes into it.
+
+        None whenever the graph is not available -- a `MultiMonitor` this build cannot
+        introspect (the tests inject a fake outright), or a Spot call that raised. The
+        `automata` key is then absent from the manifest entirely rather than an empty
+        list, because "no graph" and "no monitors" are different facts and a consumer
+        must degrade on the first, never guess.
+        """
+        graphs = getattr(self.multi, "graphs", None)
+        if not callable(graphs):
+            return None
+        try:
+            built = graphs()
+        except Exception as exc:
+            self.get_logger().warn(f"Could not describe the automata: {exc}")
+            return None
+        return built if isinstance(built, list) else None
 
     def adapter_callback(self, msg: String) -> None:
         try:
@@ -1843,12 +1868,19 @@ class LtlMonitorNode(Node):
     def _failure_mode_rows(self) -> list[dict]:
         """The spec's named failure modes, and the phase machine's own fault after
         them. Order matters: `publish_legacy_state` pairs the first N with the monitors
-        they came from."""
+        they came from.
+
+        Each mode's row carries the current state of its own automaton, so the pane can
+        highlight the node it is sitting in against that mode's graph on
+        `manifest.automata`. The phase machine's fault is appended without one -- it is
+        a counter, not a Büchi automaton, and there is no state to point at.
+        """
         rows = [
             {
                 "name": m.failure_mode.name,
                 "fault_category": m.failure_mode.fault_category,
                 "status": m.status.name,
+                "state": getattr(m, "current_state", None),
             }
             for m in self.multi.get_failure_mode_monitors()
         ]
@@ -1899,8 +1931,12 @@ class LtlMonitorNode(Node):
             # null, not -1: "no phase is active" is an absence, and a consumer indexing
             # a phase list with -1 would silently get the last one.
             phase_index=self.phase_idx if in_phase else None,
+            # (name, status, state). The state is the small integer half of the
+            # automaton pane: the graph itself is latched on the manifest, so all a
+            # tick has to say is which node of it this monitor is in now.
             formula_statuses=[
-                (m.name, m.status) for m in self.multi.get_property_monitors()
+                (m.name, m.status, getattr(m, "current_state", None))
+                for m in self.multi.get_property_monitors()
             ],
             failure_modes=self._failure_mode_rows(),
             confidence=self._confidence,

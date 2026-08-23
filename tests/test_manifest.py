@@ -111,6 +111,83 @@ def test_manifest_delegates_to_the_contract_module():
 
 
 # =============================================================================
+# The automaton graph rides the latched manifest; the tick carries one integer
+# =============================================================================
+
+def _graph(name="full_navigation_sequence") -> dict:
+    """The shape `LTLMonitor.graph()` emits, without needing spot to emit it."""
+    return {
+        "name": name,
+        "formula": "F(mission_started && F(path_active))",
+        "initial": 0,
+        "states": [
+            {"id": 0, "accepting": False, "sink": False},
+            {"id": 1, "accepting": False, "sink": False},
+            {"id": 2, "accepting": True, "sink": False},
+        ],
+        "edges": [
+            {"from": 0, "to": 1, "label": "mission_started"},
+            {"from": 1, "to": 2, "label": "path_active"},
+            {"from": 2, "to": 2, "label": "1"},
+        ],
+    }
+
+
+def test_the_manifest_carries_the_automaton_graph():
+    m = manifest.skill_manifest(_spec(), "x", automata=[_graph()])
+    assert api.validate_skill_manifest(m) == []
+    assert m["automata"] == [_graph()]
+
+
+def test_a_manifest_built_with_no_graph_is_still_a_valid_manifest():
+    """The degrade path. Nothing about the automaton pane may make a monitor that
+    cannot describe its automata publish an invalid manifest -- or one that claims,
+    with an empty list, that this skill has no monitors at all."""
+    m = manifest.skill_manifest(_spec(), "x", automata=None)
+    assert "automata" not in m
+    assert api.validate_skill_manifest(m) == []
+    # …and it is byte-identical to the manifest of a build that never heard of graphs.
+    assert m == manifest.skill_manifest(_spec(), "x")
+
+
+def test_a_formula_row_reports_the_state_its_automaton_is_in():
+    v = _verdict(formula_statuses=[("full_navigation_sequence", "INCONCLUSIVE", 2)])
+    assert api.validate_verdict(v) == []
+    assert v["formulas"][0]["state"] == 2
+
+
+def test_a_formula_row_with_no_state_to_report_says_null():
+    """A (name, status) pair stays legal and means null. A replayed trace or a faked
+    monitor has no automaton behind it, and must not have to invent a state number
+    that a console would then faithfully highlight."""
+    v = _verdict(formula_statuses=[("full_navigation_sequence", "INCONCLUSIVE")])
+    assert api.validate_verdict(v) == []
+    assert v["formulas"][0]["state"] is None
+
+
+@pytest.mark.parametrize("nonsense", ["2", 2.0, True, None, object()])
+def test_a_state_that_is_not_an_int_becomes_null_rather_than_reaching_the_wire(nonsense):
+    """`True` is the interesting one: it is an `int` in Python, and state 1 is a state
+    a console would highlight quite happily. Whatever a monitor object happens to be
+    carrying, only an honest int indexes the graph."""
+    v = _verdict(formula_statuses=[("f", "INCONCLUSIVE", nonsense)])
+    assert api.validate_verdict(v) == []
+    assert v["formulas"][0]["state"] is None
+
+
+def test_a_failure_mode_row_reports_the_state_its_automaton_is_in():
+    v = _verdict(failure_modes=[
+        {"name": "collision_imminent", "fault_category": "SAFETY",
+         "status": "VIOLATED", "state": 4},
+        # The phase machine's own fault: a counter, not a Büchi automaton.
+        {"name": "phase_progress_failure", "fault_category": "TIMEOUT",
+         "status": "VIOLATED"},
+    ])
+    assert api.validate_verdict(v) == []
+    assert [e["state"] for e in v["failure_modes"]] == [4, None]
+
+
+# =============================================================================
 # Where the spec comes from  (P8: compose passes a bare name, not a path)
 # =============================================================================
 
