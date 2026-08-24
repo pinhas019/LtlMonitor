@@ -94,6 +94,25 @@
   #automaton .n.seen .shape { fill:#232a3c; }
   #automaton .n.cur  .shape { fill:var(--acc); stroke:var(--ink); stroke-width:2.5; }
   #automaton .n.cur  text   { fill:#12141a; font-weight:700; }
+
+  /* pane 7. Same discipline as pane 6 and for the same reasons: the geometry is laid
+     out once per manifest and a verdict only toggles a class, and *where we are* is
+     carried by shape -- a second outline and a caret pointing at the box -- so it
+     survives a monochrome screen and a colour-blind reader. Both extra marks are in
+     the document from the start and hidden with `display`, so lighting a phase stays a
+     class swap rather than a redraw. */
+  #phase .e { fill:none; stroke:var(--line); stroke-width:1.3; }
+  #phase .head { fill:var(--line); stroke:none; }
+  #phase .elab { fill:var(--dim); font-size:10px; }
+  #phase .n .shape { fill:#0e1016; stroke:var(--dim); stroke-width:1.5; }
+  #phase .n .inner, #phase .n .mark { display:none; }
+  #phase .n .name { fill:var(--ink); font-size:11px; }
+  #phase .n .sub  { fill:var(--dim); font-size:9px; }
+  #phase .n.cur .inner, #phase .n.cur .mark { display:inline; }
+  #phase .n.cur .shape { fill:#232a3c; stroke:var(--acc); stroke-width:2.5; }
+  #phase .n.cur .inner { fill:none; stroke:var(--acc); stroke-width:1.2; }
+  #phase .n.cur .mark  { fill:var(--acc); stroke:none; }
+  #phase .n.cur .name  { font-weight:700; }
 </style>
 </head>
 <body>
@@ -145,12 +164,17 @@
   </section>
 
   <section>
-    <h2>7 · clock <span><button id="step">step</button></span></h2>
+    <h2>7 · phase machine <span class="dim">state · timing · guards</span></h2>
+    <div class="body" id="phase"></div>
+  </section>
+
+  <section>
+    <h2>8 · clock <span><button id="step">step</button></span></h2>
     <div class="body"><div id="clock"></div><div id="step-note"></div></div>
   </section>
 
   <section>
-    <h2>8 · timing</h2>
+    <h2>9 · timing</h2>
     <div class="body" id="timing"></div>
   </section>
 
@@ -171,6 +195,9 @@ const S = {
   // one array per graph, and `from` is the step it started seeing them at. Neither is
   // history: the page was not here before it connected and must not draw as if it was.
   aut: { key: null, trace: [], from: null, last: null },
+  // Pane 7. Same idea, one field: the phases as drawn, so the machine is laid out once
+  // per manifest and a verdict only moves the highlight.
+  ph: { key: null },
 };
 const PLOT_N = 180;
 
@@ -231,7 +258,7 @@ async function refreshLatched() {
     const r = await api(`/api/monitors/${S.seg}/${verb}`);
     S[slot] = r.status === 200 ? r.body : null;
   }
-  renderSpec(); renderConfig(); renderStatus(); renderAutomaton();
+  renderSpec(); renderConfig(); renderStatus(); renderAutomaton(); renderPhases();
 }
 
 function connect() {
@@ -269,7 +296,10 @@ function onVerdict(v) {
   if (S.lastAt) S.arrivals.push(now - S.lastAt);
   if (S.arrivals.length > 60) S.arrivals.shift();
   S.lastAt = now;
-  renderHeader(); renderAutomaton(); renderTiming();
+  // Pane 7 renders here and not on the observation, so the guard truth it shows and the
+  // proposition values it shows beside it are read off the same pulse. They are two
+  // payloads and could be one tick apart; the pane says so when they are.
+  renderHeader(); renderAutomaton(); renderPhases(); renderTiming();
 }
 
 /* == header ================================================================= */
@@ -805,7 +835,285 @@ function formulaTable(v) {
     ${rows}</table>`;
 }
 
-/* == 7 · clock ============================================================== */
+/* == 7 · phase machine ======================================================
+
+   The timing layer above pane 6's Büchi automata. Same three sources and the same
+   division of labour: `manifest.execution_phases` is the structure and is latched, so
+   the SVG is laid out once per spec; the verdict carries where we are, how close the
+   phase is to its bounds, and -- when the build reports it -- the live truth of the
+   guards this phase declares.
+
+   **Nothing here evaluates a guard.** `phase_guards[].value` is what the monitor
+   actually acted on, and a second evaluator in this page is exactly where this
+   project's `min_range < 0.25` decimal-point bug lived three times. The page does
+   *name-match* the propositions an expression reads against `observation.ap_values`,
+   which is string matching and not evaluation: it says what the monitor's answer was a
+   function of, and shows each one's own reported value beside it.
+
+   `value: null` renders as its own thing and never as false. "We did not check" and
+   "it does not hold" are different facts about a phase, and one of them is a fault. */
+
+/* Top to bottom, one phase per row. Pane 6's automata are wide and shallow and are laid
+   out left to right; a phase machine is a chain, and in a dashboard column a chain has
+   room downwards and none across. Vertical also leaves the whole right-hand side for
+   the transition labels, which are an `exit_condition` in the spec's own words and are
+   the one thing here that must not be truncated to fit. */
+const PH = { W: 268, H: 46, GAPY: 46, PAD: 12, TOP: 26, LBL: 34 };
+
+function renderPhases() {
+  const v = S.verdict || null;
+  const phases = (S.manifest || {}).execution_phases;
+  const box = $("phase");
+  if (!Array.isArray(phases)) {
+    // Absent: a spec with no phase machine at all, or a build that cannot report one.
+    S.ph.key = null;
+    box.innerHTML = missing("manifest.execution_phases", "P4",
+      "the manifest carries no phase machine, so there are no states to draw, no " +
+      "per-phase bounds to measure a step against, and no guards to report.");
+    return;
+  }
+  if (!phases.length) {
+    S.ph.key = null;
+    box.innerHTML = `<div class="missing">the manifest reports
+      <code>execution_phases</code> and declares none: this spec runs as one
+      unphased episode, so there is no phase machine above the automata.</div>`;
+    return;
+  }
+  const key = JSON.stringify(phases);
+  if (key !== S.ph.key) {
+    S.ph.key = key;
+    box.innerHTML = drawPhases(phases) +
+      `<p class="dim" id="ph-cap" style="margin:2px 0 0"></p>
+       <p class="dim" style="margin:4px 0 0">▶ and the double outline mark the phase
+         the last verdict reported. An edge is labelled with the
+         <code>exit_condition</code> of the phase it leaves.</p>
+       <div id="ph-timing"></div><div id="ph-guards"></div>`;
+  }
+  const here = currentPhase(phases, v);
+  phases.forEach((_p, i) => {
+    const el = $(`ph${i}n`);
+    if (el) el.classList.toggle("cur", i === here.i);
+  });
+  $("ph-cap").innerHTML = here.i === null
+    ? esc(here.why)
+    : `in <span class="acc">${esc(phaseName(phases, here.i))}</span>
+       <span class="dim">[${here.i}]${here.why ? " — " + esc(here.why) : ""}</span>`;
+  $("ph-timing").innerHTML = phaseTiming(phases, here.i, v);
+  $("ph-guards").innerHTML = phaseGuards(phases, here.i, v);
+}
+
+function phaseName(phases, i) {
+  const p = phases[i];
+  return (p && typeof p.phase === "string") ? p.phase : `phase${i}`;
+}
+
+/* Which phase to light, and -- when it is none -- which silence this is.
+
+   `phase_index` is the position and `phase` is the name; they should agree, and when
+   they do not the page believes the *name*, because that is the string the guard block
+   and the fault names are keyed on. It says which it used rather than picking quietly.
+   Nothing is lit when the verdict reports no phase: a phase machine between phases is
+   a real state, and lighting the first one would be the page inventing it. */
+function currentPhase(phases, v) {
+  if (!v) return { i: null, why: "no verdict seen yet — nothing is highlighted." };
+  const named = phases.findIndex((p, i) => phaseName(phases, i) === v.phase);
+  const i = typeof v.phase_index === "number" ? v.phase_index : null;
+  if (i !== null && i >= 0 && i < phases.length) {
+    if (v.phase === null || v.phase === undefined || phaseName(phases, i) === v.phase) {
+      return { i: i, why: null };
+    }
+    return named >= 0
+      ? { i: named, why: `matched by name: verdict.phase_index ${i} is ` +
+                         `${phaseName(phases, i)}, which is not verdict.phase` }
+      : { i: null, why: `the verdict's phase_index ${i} and phase ` +
+                        `'${v.phase}' disagree and neither is this machine's — ` +
+                        `nothing is highlighted.` };
+  }
+  if (named >= 0) return { i: named, why: "matched by name: the verdict reports no phase_index" };
+  return { i: null, why: v.phase === null || v.phase === undefined
+    ? "the last verdict reports no active phase — nothing is highlighted."
+    : `the last verdict names a phase this manifest does not declare — nothing is highlighted.` };
+}
+
+function drawPhases(phases) {
+  const cx = PH.PAD + PH.W / 2;
+  const Y = i => PH.TOP + i * (PH.H + PH.GAPY) + PH.H / 2;
+  const w = PH.PAD * 2 + PH.W + PH.LBL * 6.2 + 12;
+  const h = PH.TOP + phases.length * PH.H + (phases.length - 1) * PH.GAPY + PH.PAD;
+
+  // The stub the first phase gets for the same reason pane 6's initial state gets one:
+  // "this is where the machine starts" belongs on the drawing.
+  let wire = `<path class="e" d="M${cx} ${PH.TOP - 22} L${cx} ${PH.TOP - 5}"/>` +
+    arrowHead(cx, PH.TOP, 0, 1);
+  for (let i = 0; i + 1 < phases.length; i++) {
+    const y1 = Y(i) + PH.H / 2, y2 = Y(i + 1) - PH.H / 2;
+    wire += `<path class="e" d="M${cx} ${y1} L${cx} ${y2 - 4}"/>` +
+      arrowHead(cx, y2, 0, 1) +
+      // The label is the leaving phase's own `exit_condition`: it is the guard that
+      // makes this transition, in the spec's words and not in words derived here.
+      phaseLabel(cx + 10, (y1 + y2) / 2 + 3, (phases[i] || {}).exit_condition);
+  }
+
+  const node = phases.map((p, i) => {
+    const name = phaseName(phases, i);
+    const max = (((p || {}).timing_bounds) || {}).max_steps;
+    const bound = typeof max === "number" ? `≤ ${max} steps` : "no max_steps";
+    const shown = name.length > 32 ? name.slice(0, 31) + "…" : name;
+    const half = PH.W / 2, top = -PH.H / 2;
+    return `<g id="ph${i}n" class="n" transform="translate(${cx},${Y(i)})">
+      <title>${esc(name)} [${i}] — ${esc(bound)}
+${esc((p || {}).description || "")}</title>
+      <rect class="shape" x="${-half}" y="${top}" width="${PH.W}" height="${PH.H}" rx="4"/>
+      <rect class="inner" x="${-half + 4}" y="${top + 4}" width="${PH.W - 8}"
+            height="${PH.H - 8}" rx="3"/>
+      <path class="mark" d="M${-half - 15} -7 L${-half - 15} 7 L${-half - 4} 0 Z"/>
+      <text class="name" text-anchor="middle" y="-2">${esc(shown)}</text>
+      <text class="sub" text-anchor="middle" y="13">${i} · ${esc(bound)}</text></g>`;
+  }).join("");
+
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:${w}px;max-width:100%;height:auto"
+    role="img">${wire}${node}</svg>`;
+}
+
+/* A transition label, left-anchored beside the arrow it belongs to. Wire data -- an
+   operator-supplied spec's own text -- so it is escaped, and the untruncated form goes
+   in the tooltip rather than being lost. */
+function phaseLabel(x, y, label) {
+  const full = raw(label === undefined || label === null ? "" : label);
+  if (!full || full === "—") return "";
+  const shown = full.length > PH.LBL ? full.slice(0, PH.LBL - 1) + "…" : full;
+  return `<g><title>${esc(full)}</title><text class="elab" x="${x}" y="${y}"
+    >${esc(shown)}</text></g>`;
+}
+
+/* The timing, which is the whole reason this is a second pane and not a second Büchi
+   drawing. `step` counts the episode and `max_steps` bounds the phase, so the in-phase
+   count is derived from the bound the monitor is measuring against -- and when the
+   verdict does not report `steps_to_timeout` there is nothing to derive it from, which
+   the pane says rather than showing the episode's step against a phase's bound. */
+function phaseTiming(phases, i, v) {
+  if (!v) return `<p class="dim" style="margin:8px 0 0">no verdict seen yet — no step,
+    no budget and no risk to report.</p>`;
+  const p = (i === null) ? null : (phases[i] || null);
+  const max = p ? (((p.timing_bounds) || {}).max_steps) : null;
+  const bound = typeof max === "number" ? max : null;
+  const risk = v.risk || {};
+  const left = risk.steps_to_timeout;
+  const inPhase = (bound === null || typeof left !== "number") ? null : bound - left;
+  const limit = p && typeof p.progress_violation_limit === "number"
+    ? p.progress_violation_limit : null;
+  const rows = [
+    ["step", `${txt(v.step)} <span class="dim">this episode</span>`],
+    ["in this phase", bound === null
+      ? `<span class="dim">${p ? "this phase declares no timing_bounds.max_steps — unbounded"
+                              : "no phase is active, so no bound applies"}</span>`
+      : (inPhase === null
+        ? `<span class="dim">? / ${bound} — the in-phase count is
+           <code>max_steps</code> minus <code>risk.steps_to_timeout</code>, and this
+           verdict reports no <code>steps_to_timeout</code></span>`
+        : `${inPhase} <span class="dim">/ ${bound}</span>
+           <div class="bar" style="margin-top:3px"><i style="width:${
+             Math.max(0, Math.min(100, 100 * inPhase / Math.max(bound, 1)))}%"></i></div>`)],
+    ["steps to timeout", typeof left === "number"
+      ? `<span class="${bound !== null && left <= 0 ? "bad" : "ok"}">${left}</span>`
+      : `<span class="dim">not reported</span>`],
+    ["violations to fault", `${typeof risk.violations_to_fault === "number"
+      ? `<span class="${risk.violations_to_fault <= 0 ? "bad" : "warn"}">${risk.violations_to_fault}</span>`
+      : `<span class="dim">not reported</span>`} <span class="dim">of ${limit === null
+        ? "no declared progress_violation_limit" : `${limit} allowed by this phase`}</span>`],
+    ["severity", risk.severity === null || risk.severity === undefined
+      ? `<span class="dim">none reported this tick</span>`
+      : `<span class="bad">${esc(risk.severity)}</span>
+         <span class="dim">the monitor graded this tick's risk</span>`],
+  ];
+  return `<table class="fixed" style="margin-top:8px"><colgroup><col style="width:32%">
+    <col></colgroup>${rows.map(([k, cell]) =>
+      `<tr><th class="wrap">${esc(k)}</th><td class="wrap">${cell}</td></tr>`).join("")}
+    </table>`;
+}
+
+/* The guards of the phase we are in, with the truth the monitor reported for each and
+   the propositions each one reads. `expr` and the phase name are an operator-supplied
+   spec's own text and are escaped like every other wire field. */
+function phaseGuards(phases, i, v) {
+  const head = `<p class="dim" style="margin:10px 0 2px">guards of this phase — the
+    expression as the spec authored it, the truth the monitor reported, and the
+    propositions it reads with their live values</p>`;
+  if (!v) return "";
+  if (!("phase_guards" in v)) {
+    return head + missing("verdict.phase_guards", "P0, then P4",
+      "no producer reports which guard it acted on, so this build can show the phase " +
+      "machine and its timing but no guard truth. This page will not evaluate the " +
+      "expressions itself — a second evaluator here is where the same fault would be " +
+      "invented rather than observed.");
+  }
+  const g = v.phase_guards;
+  if (g === null || g === undefined) {
+    return head + `<div class="missing">the verdict reports
+      <code>phase_guards: null</code> — no phase is active this tick, so there are no
+      guards to report.</div>`;
+  }
+  const guards = Array.isArray(g.guards) ? g.guards : [];
+  const rows = guards.map(entry => {
+    const value = (entry || {}).value;
+    const cell = value === true ? `<span class="ok">true</span>`
+      : value === false ? `<span class="dim">false</span>`
+      // Neither true nor false: the tick did not answer this guard. Never rendered as
+      // false -- "we did not check" and "it does not hold" are different facts.
+      : `<span class="unk">not evaluated</span>`;
+    const reads = apsInExpr((entry || {}).expr)
+      .map(n => `<span class="key">${esc(n)}</span>=${apValue(n)}`).join(" ");
+    return `<tr><td class="wrap">${txt((entry || {}).name)}</td><td class="wrap">${cell}</td>
+      <td class="wrap"><span class="rule">${txt((entry || {}).expr)}</span><br>${reads ||
+        '<span class="dim">reads no declared proposition</span>'}</td></tr>`;
+  }).join("");
+  const notes = [];
+  if (g.phase !== undefined && g.phase !== (i === null ? null : phaseName(phases, i))) {
+    notes.push(`these guards are reported for <span class="warn">${txt(g.phase)}</span>,
+      which is not the phase highlighted above`);
+  }
+  // Two payloads, and they can be a tick apart: the guard truth is the verdict's and
+  // the proposition values beside it are the observation's.
+  if (S.obs && typeof S.obs.seq === "number" && S.obs.seq !== v.seq) {
+    notes.push(`the values are observation seq ${txt(S.obs.seq)}, the guards verdict
+      seq ${txt(v.seq)}`);
+  }
+  if (!guards.length) {
+    notes.push("this phase declares no guards at all");
+  }
+  return head +
+    `<table class="fixed"><colgroup><col style="width:27%"><col style="width:21%">
+      <col></colgroup><tr><th class="wrap">guard</th><th class="wrap">this tick</th>
+      <th class="wrap">expression → propositions it reads → live values</th></tr>
+      ${rows}</table>` +
+    (notes.length ? `<p class="warn" style="margin:6px 0 0">${notes.join(" · ")}</p>` : "");
+}
+
+/* Which declared propositions an expression reads. A word-boundary name match against
+   the manifest's own AP names -- string matching, not evaluation, and it cannot invent
+   a proposition the spec does not declare. The name is regex-escaped for the same
+   reason `keysInRule` escapes a schema key: one metacharacter in wire data makes
+   `new RegExp` throw, and an exception here is not a bad row, it is no pane. */
+function apsInExpr(expr) {
+  const body = String(expr === null || expr === undefined ? "" : expr)
+    .replace(/'[^']*'|"[^"]*"/g, " ");
+  return Object.keys((S.manifest || {}).atomic_propositions || {})
+    .filter(n => new RegExp(`\\b${reEsc(n)}\\b`).test(body)).sort();
+}
+
+/* One proposition's live value, from the observation and from nowhere else. Absent from
+   `ap_values`, listed in `unknown_aps`, or no observation at all: all three are UNKNOWN
+   rather than false, which is the same rule pane 5 renders by. */
+function apValue(name) {
+  const o = S.obs;
+  const known = o && o.ap_values && Object.prototype.hasOwnProperty.call(o.ap_values, name)
+    && (o.unknown_aps || []).indexOf(name) < 0;
+  return known
+    ? (o.ap_values[name] ? `<span class="ok">true</span>` : `<span class="dim">false</span>`)
+    : `<span class="unk">UNKNOWN</span>`;
+}
+
+/* == 8 · clock ============================================================== */
 
 function renderClock() {
   const t = S.tick, o = S.obs, a = S.adapter;
@@ -845,7 +1153,7 @@ $("step").onclick = async () => {
     : `<p class="bad">step refused (${r.status}): ${esc(r.text.slice(0, 300))}</p>`;
 };
 
-/* == 8 · timing ============================================================= */
+/* == 9 · timing ============================================================= */
 
 function renderTiming() {
   const v = S.verdict, o = S.obs;

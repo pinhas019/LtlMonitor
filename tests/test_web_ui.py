@@ -20,6 +20,22 @@ for pane 6 (the automaton) the split is:
   ordinary states are told apart by shape as well as by colour, and that the witnessed
   path caption appears. A DOM harness would assert these; there is nowhere to put one
   yet.
+
+Pane 7 (the phase machine) splits the same way, and the same gap is the reason:
+
+* asserted, below: that the guards the mock reports are exactly the ones the phase
+  declares, in the spec's own words; that each guard's truth is true of the propositions
+  on the same frame; that a guard reading a proposition the tick could not evaluate is
+  `null` and never `False`; that no active phase reports `null` rather than an empty
+  guard list; and that the mock gates the field on the validator's own answer. Also, by
+  reading the page's source, that both degrade paths name their field and its owner,
+  that `null` is rendered as a third thing, and that the page contains no evaluator.
+* checked by hand in a browser against `--mock` (and against a throwaway launcher that
+  patched `_VERDICT_FIELDS` to answer as P0 will, since this build's contract does not
+  admit `phase_guards` yet), not asserted: the vertical SVG chain and its transition
+  labels, that the current phase is marked by a caret and a second outline and not by
+  colour alone, the in-phase progress bar, and the guard table with each expression's
+  propositions and their live values beside it.
 """
 
 from __future__ import annotations
@@ -510,6 +526,220 @@ def test_the_mock_splits_a_rule_with_the_shared_splitter(bus):
     assert values["collision_risk"] is True          # 0.1 < 0.25, not 0.1 < 0
     values, _unknown = bus._aps(sensors | {"min_range": 3.0}, [])
     assert values["collision_risk"] is False
+
+
+# ========================================================= pane 7's phase machine
+
+
+def _guards_at(bus, step):
+    """The guard block one pulse would carry, built the way `_pulse` builds it -- from
+    the sensors, the staleness and the AP values of that one step."""
+    values, _unknown = bus._aps(bus._sensors(step), bus._stale_sources(step))
+    index, _in_phase = bus._phase_at(step)
+    return values, mock_monitor.phase_guards(bus.spec, index, values)
+
+
+def test_the_guards_reported_are_the_ones_the_phase_declares(bus):
+    """The pane lists a phase's guards and nothing else. A padded-out set would have it
+    show an invariant for a phase that declares none, which is a claim about the spec
+    rather than a reading of it -- and the expression must be the spec's own text,
+    because that is what the operator is being asked to compare against."""
+    for i, phase in enumerate(bus.spec["execution_phases"]):
+        block = mock_monitor.phase_guards(bus.spec, i, {})
+        assert block["phase"] == phase["phase"] == api.phase_names(
+            bus.spec["execution_phases"])[i]
+        declared = [k for k in mock_monitor.GUARD_KEYS
+                    if isinstance(phase.get(k), str) and phase[k].strip()]
+        assert [g["name"] for g in block["guards"]] == declared
+        assert [g["expr"] for g in block["guards"]] == [phase[k] for k in declared]
+
+    # A phase declaring only one of them reports only that one.
+    spec = json.loads(json.dumps(bus.spec))
+    spec["execution_phases"] = [{"phase": "Only", "invariant": "upright"}]
+    assert [g["name"] for g in mock_monitor.phase_guards(spec, 0, {})["guards"]] == \
+        ["invariant"]
+
+
+def test_a_guard_is_true_of_the_propositions_on_its_own_frame(bus):
+    """The console shows a guard's truth beside the propositions it reads, off the same
+    pulse. If the mock's booleans came from anywhere but those propositions, every
+    review of that pane would be reviewing a coincidence -- the same reason
+    `test_an_ap_is_true_for_the_reason_its_rule_gives` exists one pane down."""
+    names = list(bus.spec["atomic_propositions"])
+    saw_true = saw_false = saw_null = False
+    for step in range(bus._episode_steps()):
+        values, block = _guards_at(bus, step)
+        assert block is not None
+        for guard in block["guards"]:
+            reads = mock_monitor.guard_aps(guard["expr"], names)
+            if any(name not in values for name in reads):
+                assert guard["value"] is None, guard
+                saw_null = True
+                continue
+            assert guard["value"] is bool(
+                eval(guard["expr"], {"__builtins__": {}}, dict(values))), guard
+            saw_true |= guard["value"] is True
+            saw_false |= guard["value"] is False
+    # All three truths really occur over an episode, so the pane has all three to draw.
+    assert saw_true and saw_false and saw_null
+
+
+def test_a_guard_whose_proposition_is_unknown_is_null_and_never_false(bus):
+    """`null` is the value the whole pane turns on: a depth camera that dropped out
+    makes `collision_risk` UNKNOWN, and reporting the invariant that reads it as False
+    is how a dead sensor comes to look like a broken invariant. `not evaluated` and
+    `does not hold` are different facts, and one of them is a fault."""
+    stale_step = 22
+    assert bus._stale_sources(stale_step) == ["points"]
+    values, block = _guards_at(bus, stale_step)
+    assert "collision_risk" not in values
+    guards = {g["name"]: g for g in block["guards"]}
+    assert guards["invariant"]["expr"] == "upright and not collision_risk"
+    assert guards["invariant"]["value"] is None
+    assert guards["invariant"]["value"] is not False
+    # The guards on the same frame that read only propositions the tick *could* answer
+    # are answered: one blind sensor does not blank the phase.
+    assert guards["progress_condition"]["value"] is True
+    # And the same guard is answered on a tick that can see.
+    healthy, _unknown = bus._aps(bus._sensors(0), [])
+    answered = {g["name"]: g for g in mock_monitor.phase_guards(
+        bus.spec, 0, healthy)["guards"]}
+    assert answered["invariant"]["value"] is True
+
+
+def test_a_guard_reads_the_propositions_it_names_and_no_others(bus):
+    """Name matching, not evaluation -- the same question the page asks of the same
+    string, so that what it shows beside a guard is what the monitor's answer was a
+    function of. A proposition named inside a string literal is not read by the guard."""
+    names = list(bus.spec["atomic_propositions"])
+    assert set(mock_monitor.guard_aps("upright and not collision_risk", names)) == \
+        {"upright", "collision_risk"}
+    assert mock_monitor.guard_aps("True", names) == []
+    assert mock_monitor.guard_aps("nav_state == 'upright'", names) == []
+    # A prefix is not a match: `upright` must not be found inside `uprightish`.
+    assert mock_monitor.guard_aps("uprightish", names) == []
+
+
+def test_no_active_phase_reports_null_rather_than_an_empty_guard_list(bus):
+    """`null` and `{"guards": []}` are different sentences: the first is "no phase is
+    active", the second is "this phase declares no guards". The console draws them
+    differently and the producer must not blur them."""
+    assert mock_monitor.phase_guards(bus.spec, None, {}) is None
+    assert mock_monitor.phase_guards(bus.spec, 99, {}) is None
+    assert mock_monitor.phase_guards(bus.spec, -1, {}) is None
+    unphased = json.loads(json.dumps(bus.spec))
+    unphased.pop("execution_phases")
+    assert mock_monitor.phase_guards(unphased, 0, {}) is None
+    assert mock_monitor.phase_guards({"execution_phases": [{"phase": "P"}]},
+                                     0, {})["guards"] == []
+
+
+def test_the_mock_sends_phase_guards_the_moment_the_contract_admits_it(bus):
+    """`verdict.phase_guards` is P0's field to open: `_VERDICT_FIELDS` is closed, so a
+    producer sending it early publishes frames the shipped validators reject. The mock
+    asks the validator itself rather than carrying a flag someone has to remember to
+    flip, exactly as it does for `formulas[].state` -- and this asserts the gate really
+    is the validator's answer, in both directions."""
+    verdict = frames(bus)[api.VERDICT]
+    probe = dict(verdict, phase_guards={"phase": "x", "guards": []})
+    assert (api.validate_verdict(probe) == []) is \
+        mock_monitor.WIRE_ADMITS_PHASE_GUARDS
+    assert ("phase_guards" in verdict) is mock_monitor.WIRE_ADMITS_PHASE_GUARDS
+    assert api.validate_verdict(verdict) == []
+
+
+def test_the_verdicts_phase_and_its_guards_name_the_same_phase(bus):
+    """The console matches the guard block to the highlighted phase by name, so the two
+    have to be one string. Asserted on the wire where the contract admits the field, and
+    on the builder where it does not -- the join is what matters either way."""
+    verdict = frames(bus)[api.VERDICT]
+    if mock_monitor.WIRE_ADMITS_PHASE_GUARDS:
+        assert verdict["phase_guards"]["phase"] == verdict["phase"]
+    else:
+        assert "phase_guards" not in verdict
+    for step in (0, 35, 155):
+        _values, block = _guards_at(bus, step)
+        index, _in_phase = bus._phase_at(step)
+        assert block["phase"] == api.phase_names(bus.spec["execution_phases"])[index]
+
+
+def test_the_bound_the_pane_measures_against_belongs_to_the_phase_it_reports(bus):
+    """The pane's whole reason to exist beside pane 6: `step` counts the episode and
+    `max_steps` bounds the *phase*, so the in-phase count it draws is `max_steps` minus
+    `risk.steps_to_timeout`. That subtraction is only meaningful if the bound, the risk
+    and the guards on screen are all the same phase's -- one frame naming a phase whose
+    guards are another's would render as a bar measuring nothing."""
+    names = api.phase_names(bus.spec["execution_phases"])
+    for step in range(bus._episode_steps()):
+        index, in_phase = bus._phase_at(step)
+        _values, block = _guards_at(bus, step)
+        assert block["phase"] == names[index]        # guards, and the bound below
+        bound = mock_monitor._max_steps(bus.spec, index)
+        assert bound == bus.spec["execution_phases"][index]["timing_bounds"]["max_steps"]
+        left = max(0, bound - in_phase)              # what the mock puts on `risk`
+        assert bound - left == in_phase              # what the pane derives back
+        assert 0 <= left <= bound
+
+
+# =========================================== pane 7's degrade paths, read off the page
+
+
+def _page():
+    return (web.HERE / "index.html").read_text(encoding="utf-8")
+
+
+def test_the_page_names_the_field_and_its_owner_when_there_is_no_phase_machine():
+    """A build with no phase machine on the manifest gets the placeholder, naming the
+    field and who publishes it -- not a blank box, and not a machine inferred from
+    `manifest.phases`, which carries names and neither bounds nor guards."""
+    page = _page()
+    assert 'missing("manifest.execution_phases", "P4"' in page
+    # Absent is a spec with no phase machine; present-and-empty is a spec that has one
+    # and declares nothing in it. Keyed on `Array.isArray`, not on falsiness, so the two
+    # keep their own sentences.
+    assert "if (!Array.isArray(phases)) {" in page
+    assert "if (!phases.length) {" in page
+
+
+def test_the_page_says_no_guard_truth_is_reported_rather_than_evaluating_the_guards():
+    """The build without the producer half draws the machine and the timing and says
+    plainly that no guard truth is on the wire. What it must never do is fall back to
+    evaluating the expressions here: a second evaluator in the page is where this
+    project's `min_range < 0.25` decimal-point bug lived three times, and a guard the
+    page decided for itself is a fault it invented rather than observed."""
+    page = _page()
+    assert 'missing("verdict.phase_guards"' in page
+    assert '!("phase_guards" in v)' in page
+    assert "eval(" not in page
+    assert "new Function" not in page
+
+
+def test_the_page_renders_an_unevaluated_guard_as_its_own_thing():
+    """`null` is neither true nor false and must not be rendered as either. Strict
+    comparisons, so anything that is not exactly `true` or `false` falls through to the
+    third rendering rather than to the false one."""
+    page = _page()
+    assert "value === true" in page
+    assert "value === false" in page
+    assert "not evaluated" in page
+    # A proposition the observation could not answer renders UNKNOWN, the same rule
+    # pane 5 renders by -- absent from `ap_values` or named in `unknown_aps`.
+    assert "unknown_aps" in page and "hasOwnProperty.call(o.ap_values, name)" in page
+
+
+def test_the_panes_are_numbered_the_way_the_page_lays_them_out():
+    """The two automaton views belong together, so the phase machine is pane 7 and the
+    clock and timing moved down. A heading here and a heading on screen are the same
+    heading, and `docs/packages/P7-frontend.md` numbers them the same way."""
+    page = _page()
+    for heading in ("6 · automaton", "7 · phase machine", "8 · clock", "9 · timing"):
+        assert heading in page, heading
+    assert "8 · timing" not in page
+    assert "7 · clock" not in page
+    doc = (web.HERE.parents[1] / "docs" / "packages" / "P7-frontend.md").read_text(
+        encoding="utf-8")
+    assert "**7 — The phase machine" in doc
+    assert "**8 — Clock.**" in doc
 
 
 # =============================================================================
