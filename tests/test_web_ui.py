@@ -37,6 +37,42 @@ Pane 7 (the phase machine) splits the same way, and the same gap is the reason:
   colour alone, the in-phase progress bar, and the guard table with each expression's
   propositions and their live values beside it.
 
+Pane 3's echo half splits the same way, with one extra reason for the split: what it
+renders is a picture, and no assertion in Python can say a picture looked right.
+
+The summaries the mock publishes are **the producer's own**:
+`backend/adapters/raw_echo.py` is stdlib-only, so `--mock` calls it and the console is
+reviewed against the code the robot runs -- PNG encoder, downscale, byte cap, rate stride
+and all -- rather than against a second implementation written to resemble it. What the
+mock fabricates is the message, which is what it fabricates everywhere else.
+
+* asserted, below: that nothing is echoed until a console asks; that a request is one
+  source at a time, that a null `source_id` stops it, and that a source the adapter does
+  not declare is refused *without* stopping an echo somebody is watching; that a paused
+  monitor echoes nothing while its clock goes on; that a tick the source missed produces
+  no frame rather than a repeat of the last one; that every frame validates and reports
+  the same `samples_this_tick` the row table above it reports, plus the echo's own
+  `rate_hz` and `every_n_ticks`; that the mock demonstrates all four of the page's cases
+  -- image, fields, `image_unavailable` with the producer's reason, and an unrecognised
+  `kind`; that its camera frame costs what a real one costs rather than compressing to
+  nothing; and that its image is a real PNG whose data URI passes *the page's own*
+  allowlist regular expression, lifted out of the page rather than copied into this file.
+  Also, by reading the page's source: that it posts to the verb `INGRESS_TOPICS` actually
+  serves, with `api.build_raw_echo_request`'s payload; that the picker offers an explicit
+  off and is built from the adapter's own sources; that a refused request moves nothing;
+  that a missing ingress route disables the picker and says why; that the only
+  interpolated URL sink on the page is the `img` src and that what goes in it is what
+  `imageSrc` returned; that a shrunk frame says so; that the frame is dropped on a stop,
+  on a switch and across a reconnect; and that it is aged in ticks and marked stale in
+  words and in a class, never in colour alone.
+* checked by hand in a browser against `--mock`, not asserted: that the synthetic frame
+  renders at 160x120 and is not stretched across the pane; that switching source swaps the
+  rendering, that switching to off empties it, and that the picture visibly greys and the
+  tick count climbs when the monitor is paused; that the `fields` table, the reason
+  sentence for `image_unavailable`, and the JSON dump for the unrecognised `kind` are
+  legible; and -- against a build with the producer's `gateway.py` edit reverted -- that
+  the picker is greyed out with its reason printed beside it.
+
 The monitor controls and the state banner split the same way again, and here the split
 matters more than anywhere else on the page, because the thing being controlled can stop
 watching a moving robot:
@@ -67,15 +103,18 @@ watching a moving robot:
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import shutil
+import struct
 import time
 import urllib.parse
 
 import pytest
 
 from skill_monitor.backend import gateway
+from skill_monitor.backend.adapters import raw_echo
 from skill_monitor.core import api, spec_contract
 from skill_monitor.frontend import mock_monitor, web
 
@@ -189,7 +228,19 @@ def bus():
 
 
 def frames(bus, timeout=3.0):
-    """The latest payload seen on each streamed topic, once all three have arrived."""
+    """The latest payload seen on each streamed topic, once all of them have arrived.
+
+    `/monitor/raw_echo` is the one member of `STREAM_TOPICS` that a monitor publishes
+    nothing on until a console asks it to -- the echo is opt-in and one source at a
+    time, because a point cloud per frame is not free -- so it is asked for here rather
+    than waited for. A helper that only waited would hang the moment P6 puts the topic
+    on the stream, and hang for the correct reason, which is the worst kind.
+
+    That the default really is off is not weakened by this: it is asserted on its own in
+    `test_nothing_is_echoed_until_a_console_asks_for_it`, on a bus this has not touched.
+    """
+    if api.RAW_ECHO in gateway.STREAM_TOPICS:
+        _ask_echo(bus, bus.adapter["sources"][0]["id"])
     seen = {}
     bus.subscribe(mock_monitor.NS, gateway.STREAM_TOPICS,
                   lambda topic, text: seen.__setitem__(topic, json.loads(text)))
@@ -777,6 +828,621 @@ def test_the_panes_are_numbered_the_way_the_page_lays_them_out():
     assert "**8 — Clock.**" in doc
 
 
+# ================================================= pane 3's raw echo, from the mock's end
+#
+# The row table in pane 3 is `data_health` off the observation and costs nothing. This is
+# the other half: one source's actual frames, asked for on `/monitor/raw_echo_request`
+# and arriving on `/monitor/raw_echo`. Opt-in, one at a time, and a paused monitor echoes
+# nothing -- the same rule its automata and its phase machine obey, for the same reason.
+
+
+def _ask_echo(bus, source_id):
+    """One echo request in, by the path the gateway's ingress route takes: the payload
+    is `api.build_raw_echo_request`'s, it is validated, and then it is published
+    verbatim. `source_id=None` is the contract's own stop."""
+    payload = api.build_raw_echo_request(source_id=source_id)
+    assert api.validate_raw_echo_request(payload) == []
+    bus.publish(mock_monitor.NS, api.RAW_ECHO_REQUEST, json.dumps(payload))
+
+
+def _echoes(bus, seconds=0.4):
+    """Every `/monitor/raw_echo` frame the mock publishes over `seconds`, starting now.
+
+    Subscribed by topic rather than through `STREAM_TOPICS`, so these tests say the same
+    thing on this build and on the one where P6 puts the topic on the stream: what is
+    under test is the producer, and the route is not its business.
+    """
+    got = []
+    unsubscribe = bus.subscribe(mock_monitor.NS, (api.RAW_ECHO,),
+                                lambda _topic, text: got.append(json.loads(text)))
+    try:
+        time.sleep(seconds)
+    finally:
+        unsubscribe()
+    return got
+
+
+def _summary_at(bus, source_id, step):
+    """The summary the mock's echo produces for one source on one tick, or None.
+
+    Built through the producer's own buffer -- the path `_pulse` takes -- so what is
+    asserted below is the summary a real console would be handed, not a shape assembled
+    for a test. The thread is not involved: waiting for step 46 to come round is not a
+    test, it is a delay.
+    """
+    bus._echo.select(source_id)
+    frame = bus._raw_echo(9, 9.0, step, bus._health(step, bus._stale_sources(step)),
+                          bus._sensors(step))
+    return None if frame is None else frame["summary"]
+
+
+def test_nothing_is_echoed_until_a_console_asks_for_it(bus):
+    """Off by default, and the default is the whole discipline. A point cloud per frame
+    is not free and this console is usually across a link, so an echo nobody asked for
+    is bandwidth spent on a pane nobody is looking at."""
+    assert bus._echo is None or bus._echo.selected is None
+    assert _echoes(bus) == []
+
+
+def test_every_echo_frame_the_mock_publishes_validates(bus):
+    """The same rule the rest of this fixture is held to: the envelope is the contract's,
+    built by the shipped builder and passed by the shipped validator. `summary` is not --
+    `api.build_raw_echo` says its shape is the adapter's business -- and that is exactly
+    why the envelope around it has to be exact."""
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    _ask_echo(bus, "odom")
+    got = _echoes(bus)
+    assert got, "an echo was requested and nothing arrived"
+    for frame in got:
+        assert api.validate_for_topic(api.RAW_ECHO, frame) == []
+        assert frame["source_id"] == "odom"
+        assert isinstance(frame["summary"], dict)
+
+
+def test_the_echo_is_one_source_at_a_time_and_a_null_stops_it(bus):
+    """`{"source_id": null}` is the contract's stop, and a second request replaces the
+    first rather than adding to it. That is why the console offers a picker and not a
+    row of checkboxes: two sources at once is not a thing the wire can express."""
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    _ask_echo(bus, "odom")
+    assert {f["source_id"] for f in _echoes(bus)} == {"odom"}
+
+    _ask_echo(bus, "vision")
+    assert {f["source_id"] for f in _echoes(bus)} == {"vision"}
+
+    _ask_echo(bus, None)
+    assert _echoes(bus) == []
+
+
+def test_a_request_naming_no_declared_source_leaves_the_echo_alone(bus):
+    """A source this adapter does not declare is refused, and refused means *nothing
+    changes* -- not "the echo stops". An operator watching a camera must not lose it to
+    somebody else's typo, and the console cannot send this request anyway: its picker is
+    built out of the adapter's own `sources`.
+
+    The rule is the producer's `RawEcho.select`, which the mock calls rather than
+    reimplements. Asserted here because it is the console's pane that would go blank.
+    """
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    _ask_echo(bus, "no_such_source")
+    assert bus._echo.selected is None
+    assert _echoes(bus) == []
+
+    _ask_echo(bus, "odom")
+    _ask_echo(bus, "no_such_source")
+    assert bus._echo.selected == "odom"
+
+
+def test_a_malformed_request_changes_nothing(bus):
+    """The gateway's ingress route validates before it publishes, so a payload that got
+    this far malformed did not come through the console. A fixture that acted on it
+    would be more permissive than the system it stands in for."""
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    _ask_echo(bus, "odom")
+    bus.publish(mock_monitor.NS, api.RAW_ECHO_REQUEST,
+                json.dumps({"source_id": "vision"}))       # no schema_version
+    assert api.validate_raw_echo_request({"source_id": "vision"}) != []
+    assert bus._echo.selected == "odom"
+
+
+def test_a_paused_monitor_echoes_nothing(bus):
+    """A pause stops the watching, and the echo is part of the watching. A monitor that
+    published no verdict and went on shipping camera frames would be a pane contradicting
+    the banner above it -- and would be spending the link on a robot nobody is judging.
+
+    The clock keeps going, which is what makes the silence measurable: the console ages
+    the frame it is showing in ticks, so a paused echo is visibly a frozen one.
+    """
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    _ask_echo(bus, "odom")
+    assert _echoes(bus), "the echo did not start"
+    _command(bus, "pause")
+    assert _wait_until(lambda: bus._paused)
+
+    assert _echoes(bus) == []
+    assert api.TICK in _seen_after(bus)                 # and the clock did not stop
+
+    _command(bus, "resume")
+    assert _echoes(bus), "the echo did not come back with the monitor"
+
+
+def test_no_frame_is_published_for_a_tick_the_source_missed(bus):
+    """The depth camera drops out for six ticks in every sixty, and the echo goes quiet
+    with it rather than re-sending the last frame. The console ages what it is showing
+    and dims it once it stops being this tick's; a producer that filled the gap would be
+    hiding the one thing that pane exists to show."""
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    step = 22                                            # inside the mock's dropout
+    assert "points" in bus._stale_sources(step)
+    assert bus._health(step, ["points"])["points"]["samples_this_tick"] == 0
+    assert _summary_at(bus, "points", step) is None
+    assert _summary_at(bus, "points", 0) is not None     # and the tick before it does
+
+
+def test_the_echo_reports_the_cost_the_row_table_above_it_reports(bus):
+    """`samples_this_tick` in the summary is the same number `data_health` gives for the
+    same source on the same tick. Two fictions that disagreed would have an operator
+    reading the zoom against the table and finding them inconsistent, which is the one
+    thing a fixture must never teach somebody about the real system.
+
+    And every summary carries the echo's own rate, whatever its kind: the echo is
+    rate-limited to a stride of whole ticks, and "the camera is on" and "the camera is on
+    and costing this much" are different things to know.
+    """
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    step = 5
+    health = bus._health(step, bus._stale_sources(step))
+    for source in bus.adapter["sources"]:
+        summary = _summary_at(bus, source["id"], step)
+        if summary is None:
+            continue
+        assert summary["samples_this_tick"] == health[source["id"]]["samples_this_tick"]
+        assert summary["topic"] == source["topic"]
+        assert summary["every_n_ticks"] == bus._echo.every_n_ticks
+        assert summary["rate_hz"] == bus._echo.rate_hz
+        assert summary["rate_hz"] <= bus.tick_hz
+
+
+def test_the_mock_demonstrates_every_rendering_the_page_has(bus):
+    """`--mock` has to light up all four of the console's paths, because there is no
+    other way to review them: an `image`, a `fields` value table, an `image_unavailable`
+    with the producer's own reason sentence, and -- as a first-class case and not a
+    fallback nobody exercises -- a `kind` this page has never heard of, which must render
+    as a readable JSON dump rather than as an error.
+
+    That last one is the extension point the opaque `summary` exists for. A depth or
+    lidar summary written next month is a new `kind`, and the page must already show an
+    operator something useful for it.
+    """
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    step = 5
+    kinds = {source["id"]: (_summary_at(bus, source["id"], step) or {}).get("kind")
+             for source in bus.adapter["sources"]}
+    assert "image" in kinds.values()
+    assert "fields" in kinds.values()
+    assert set(kinds.values()) - {"image", "fields", None}, (
+        "no source demonstrates a kind the page has no renderer for", kinds)
+    # And the unrenderable frame, on the tick the mock publishes one.
+    unrenderable = _summary_at(bus, "points", mock_monitor._UNRENDERABLE[0])
+    assert unrenderable["kind"] == "image_unavailable"
+    assert "16UC1" in unrenderable["reason"]
+    assert unrenderable["source_encoding"] == "16UC1"
+
+
+def test_a_fields_summary_is_the_frame_the_observation_was_folded_from(bus):
+    """The value table shows the keys that source feeds, read off the same fabricated
+    frame as the row above it. A number in the echo and the same number in pane 3's
+    `values this tick` column are one number, so a reviewer comparing them is comparing
+    the thing the real system would show."""
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    step = 5
+    sensors = bus._sensors(step)
+    source = next(s for s in bus.adapter["sources"] if s["id"] == "odom")
+    summary = _summary_at(bus, "odom", step)
+    assert summary["kind"] == "fields"
+    assert summary["values"] == {k: sensors[k] for k in source["keys"] if k in sensors}
+
+
+def test_the_image_summary_carries_a_png_the_page_will_actually_load(bus):
+    """A real `data:image/png;base64,...` and not a string shaped like one.
+
+    The page checks the URI against an allowlist before it ever reaches an `img` src, so
+    a mock that faked it would demonstrate the *rejection* path and never the rendering
+    one -- and every review of this pane would be a review of the error message. The
+    bytes are decoded here and their PNG header read, and the URI is then held against
+    the page's own regular expression rather than against a second one written to agree
+    with it.
+    """
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    summary = _summary_at(bus, "points", 1)
+    assert summary["kind"] == "image"
+    assert _page_regex("DATA_IMAGE").fullmatch(summary["data_uri"])
+
+    head, encoded = summary["data_uri"].split(",", 1)
+    assert head == "data:image/png;base64"
+    png = base64.b64decode(encoded, validate=True)
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert summary["bytes"] == len(png)
+    # IHDR is the first chunk, and its width and height are what the summary declares.
+    width, height = struct.unpack(">II", png[16:24])
+    assert (width, height) == (summary["width"], summary["height"])
+    # The producer's box, and the frame the mock fabricated is bigger than it -- so the
+    # downscale a real 320x240 bgr8 camera frame goes through is on this path too.
+    assert (width, height) == (raw_echo.MAX_WIDTH, raw_echo.MAX_HEIGHT)
+    assert (summary["source_width"], summary["source_height"]) == \
+        (mock_monitor.ECHO_SOURCE_W, mock_monitor.ECHO_SOURCE_H)
+    assert summary["source_encoding"] == "bgr8"
+
+
+def test_the_mocks_camera_frame_costs_what_a_real_one_costs(bus):
+    """A synthetic gradient compresses to nothing, and a pane that renders a 700-byte
+    "camera frame" teaches a reviewer that the echo is free. Measured on the real G1, a
+    160x120 photographic PNG is about 48 KB; the mock's frame is noisy on purpose so
+    that the bytes-per-second line beside it is a number worth reading.
+
+    Also within the producer's cap, which is the property that matters: a fixture that
+    tripped the halving fallback every frame would review the fallback and never the
+    normal path.
+    """
+    if not mock_monitor.WIRE_ADMITS_RAW_ECHO:
+        pytest.skip("this build has no raw-echo topic, or no producer to summarise with")
+    summary = _summary_at(bus, "points", 1)
+    assert 20_000 < summary["bytes"] < raw_echo.MAX_DATA_URI_BYTES
+    assert len(summary["data_uri"]) <= raw_echo.MAX_DATA_URI_BYTES
+    assert "downscaled_to_fit" not in summary
+
+
+def test_the_synthetic_frame_moves_and_could_not_be_a_camera(bus):
+    """It has to be obviously fabricated, and it has to change: a still image would make
+    a dead echo and a live one look identical, which is precisely the confusion the age
+    counter beside it exists to prevent."""
+    first = mock_monitor.synthetic_bgr8(1)
+    assert first != mock_monitor.synthetic_bgr8(2)
+    assert first == mock_monitor.synthetic_bgr8(1)          # and it is deterministic
+    assert len(first) == mock_monitor.ECHO_SOURCE_W * mock_monitor.ECHO_SOURCE_H * 3
+    # `bgr8`, which is what the G1's colour stream publishes -- so the producer's channel
+    # swap is on the path `--mock` exercises rather than only on the robot's.
+    frame = mock_monitor.synthetic_frame(1)
+    assert frame.encoding == "bgr8"
+    assert raw_echo.looks_like_image(frame)
+
+
+def test_the_mock_echoes_the_moment_the_contract_admits_the_topic():
+    """The `WIRE_ADMITS_*` gate again, and for the fourth time the same reason: the
+    topic and its validators are P0's, a producer publishing frames the gateway's own
+    ingress check would reject is the approximation this module is not allowed to be,
+    and a flag someone has to remember to flip is a flag that stays unflipped.
+
+    One extra term this time: the summaries are the producer's, so a build without
+    `backend/adapters/raw_echo.py` has nothing to build them with and the mock echoes
+    nothing rather than inventing a second convention. Asserted in both directions, so
+    this passes on a build with the producer and on one without, and fails on a mock that
+    guessed. Note what it is deliberately *not* gated on: whether the gateway forwards the
+    topic to a browser. That is `STREAM_TOPICS`, it is P6's, and the mock is valid either
+    way.
+    """
+    admits = (mock_monitor.echo_producer is not None
+              and api.RAW_ECHO in api.TOPICS and api.RAW_ECHO_REQUEST in api.TOPICS
+              and api.validate_for_topic(
+                  api.RAW_ECHO, mock_monitor._probe_raw_echo()) == []
+              and api.validate_for_topic(
+                  api.RAW_ECHO_REQUEST,
+                  api.build_raw_echo_request(source_id=None)) == [])
+    assert mock_monitor.WIRE_ADMITS_RAW_ECHO is admits
+
+
+# ================================================ pane 3's echo half, read off the page
+
+
+def _page_regex(name):
+    """A `const NAME = /.../;` from the page, as a Python pattern.
+
+    The page's own literal and not a copy of it: a test that spelled the rule a second
+    time would pass while the page allowed something else through, which for this
+    particular rule -- what may be put in an `img` src -- is the failure worth catching.
+    """
+    match = re.search(rf"^const {name} = /(.+)/;$", _page(), re.M)
+    assert match, f"the page has no `const {name} = /.../;`"
+    return re.compile(match.group(1))
+
+
+@pytest.mark.parametrize("uri", [
+    "data:image/png;base64,iVBORw0KGgo=",
+    "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
+    "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+])
+def test_the_page_loads_a_data_image_uri(uri):
+    assert _page_regex("DATA_IMAGE").fullmatch(uri)
+
+
+@pytest.mark.parametrize("uri", [
+    "javascript:alert(1)",
+    "JAVASCRIPT:alert(1)",
+    "https://example.invalid/x.png",
+    "//example.invalid/x.png",
+    "/api/monitors/g1/adapter",
+    "data:text/html;base64,PHNjcmlwdD4=",
+    # SVG is markup that carries script, and it is left out for the same reason `.svg`
+    # is not in the gateway's STATIC_TYPES: this origin holds the X-Skill-Monitor grant
+    # and the websocket Origin grant.
+    "data:image/svg+xml;base64,PHN2Zz4=",
+    "data:image/svg+xml,<svg onload=alert(1)>",
+    "data:image/png,notbase64",
+    'data:image/png;base64,AAA" onerror="alert(1)',
+    "data:image/png;base64,AAAA data:image/png;base64,AAAA",
+    " data:image/png;base64,AAAA",
+    "",
+])
+def test_the_page_refuses_anything_else_in_an_img_src(uri):
+    """`data_uri` comes off the wire, and it is the one string on this page that becomes
+    something the browser fetches. An allowlist, not a sanitiser: everything that is not
+    a whole base64 data URI of a raster image type fails, and what fails is *reported*
+    to the operator rather than loaded."""
+    assert _page_regex("DATA_IMAGE").fullmatch(uri) is None
+
+
+def test_the_page_puts_nothing_but_a_checked_uri_in_an_img_src():
+    """The check and the sink, pinned together. There is one `img` in the page, its src
+    is the value `imageSrc` returned, and the branch above it is what happens when
+    `imageSrc` said no -- so there is no way to reach the sink without the check."""
+    page = _page()
+    # One interpolated URL sink in the whole page, and this is it.
+    assert page.count('src="${') == 1
+    assert 'src="${esc(src)}"' in page
+    body = _fn(page, "echoImage")
+    assert body.count("<img") == 1
+    assert "const src = imageSrc(sum.data_uri);" in body
+    assert "if (src === null) {" in body
+    check = _fn(page, "imageSrc")
+    assert 'if (typeof uri !== "string") return null;' in check
+    assert "DATA_IMAGE.test(uri) ? uri : null" in check
+    # And the size cap, so one frame cannot be a per-tick megabyte of DOM.
+    assert "if (uri.length > DATA_URI_MAX) return null;" in check
+
+
+def test_the_page_asks_for_the_echo_with_the_payload_the_contract_validates():
+    """`api.build_raw_echo_request`'s shape, and nothing else: `{schema_version,
+    source_id}`, with `null` for the stop. The literal the page builds is asserted, and
+    then the shipped validator is asked about that exact literal -- a payload the route
+    rejects is a 400 and a picker that does nothing."""
+    page = _page()
+    assert ("JSON.stringify({ schema_version: SCHEMA_VERSION, source_id: sourceId })"
+            in page)
+    for source_id in ("points", None):
+        assert api.validate_raw_echo_request(
+            {"schema_version": api.SCHEMA_VERSION, "source_id": source_id}) == []
+        assert api.build_raw_echo_request(source_id=source_id) == {
+            "schema_version": api.SCHEMA_VERSION, "source_id": source_id}
+    # Through the one `fetch` wrapper, which is where X-Skill-Monitor lives: a
+    # hand-rolled fetch here is a 403 the operator reads as a broken robot.
+    assert "fetch(" not in _fn(page, "echoAsk")
+    assert 'method: "POST"' in _fn(page, "echoAsk")
+
+
+def test_the_page_offers_one_source_at_a_time_and_an_explicit_off():
+    """A picker, not checkboxes: two sources at once is not something the wire can
+    express. And an option that says off in words, because "none selected" and "the echo
+    is off" have to be the same visible thing."""
+    page = _page()
+    picker = _fn(page, "renderEcho")
+    assert '<option value="">off — nothing is echoed</option>' in picker
+    # The options are the adapter's own sources. No source list is spelled in this page.
+    assert "sources.map(s =>" in picker
+    assert "echoAsk($(\"echo-pick\").value || null)" in picker
+    # An empty selection is the null the contract stops on, not the string "".
+    state = _fn(page, "updateEchoControls")
+    assert 'S.ech.on === null' in state
+    assert "off — nothing is echoed, and nothing is by default" in state
+
+
+def test_the_page_shows_what_is_echoing_and_never_what_was_merely_clicked():
+    """A request that was refused turned nothing on. Leaving the picker on the source it
+    named would be the page claiming an echo it has no evidence for -- so the control is
+    re-synced from `S.ech.on`, and `S.ech.on` moves only on an answer under 400."""
+    page = _page()
+    ask = _fn(page, "echoAsk")
+    assert "} else if (r.status < 400) {" in ask
+    assert ask.index("S.ech.on = sourceId;") > ask.index("r.status < 400")
+    assert "pick.value = S.ech.on === null ? \"\" : S.ech.on;" in _fn(
+        page, "updateEchoControls")
+
+
+def test_the_page_disables_the_picker_and_says_why_when_there_is_no_route():
+    """No ingress route is a dead control, and a dead control that looks live is worse
+    than an absent one. The same answer both disables the picker and is printed beside
+    it, and the route is learned from the wire -- a 404 or a 405 -- and never guessed
+    at."""
+    page = _page()
+    refusal = _fn(page, "echoRefusal")
+    assert "if (!S.seg)" in refusal
+    assert 'if (S.ech.route === "absent")' in refusal
+    assert "S.ech.busy" in refusal
+    assert f"no {api.ADAPTER} is latched" in refusal
+    ask = _fn(page, "echoAsk")
+    assert "if (r.status === 404 || r.status === 405) {" in ask
+    assert 'S.ech.route = "absent";' in ask
+    controls = _fn(page, "updateEchoControls")
+    assert "pick.disabled = why !== null;" in controls
+    assert '$("echo-why").innerHTML' in controls
+    # And a refusal that is not a missing route says so with its status and its body,
+    # the way the command strip and the clock's step button report one.
+    assert "the echo request was refused (${txt(r.status)})" in ask
+
+
+def test_the_page_says_a_requested_echo_that_never_arrived_is_not_a_frame():
+    """Requested and silent is its own state, and it is not the same as off and not the
+    same as showing something. Both reasons it could be silent are named -- the producer
+    or the route -- rather than one of them being guessed at."""
+    frame = _fn(_page(), "renderEchoFrame")
+    assert "was requested" in frame
+    assert f"no <code>{api.RAW_ECHO}</code> frame has arrived" in frame
+    assert "api.RAW_ECHO" in frame and "STREAM_TOPICS" in frame
+
+
+def test_the_page_stops_showing_the_frame_when_the_echo_stops():
+    """The one thing an operator must never see: a picture still on screen after they
+    turned the source off. The frame is dropped on the stop and on a switch -- a frame of
+    what was echoing before is not a frame of what is echoing now -- and the off branch
+    renders no frame at all even if one arrives late."""
+    page = _page()
+    assert "S.ech.frame = null;" in _fn(page, "echoAsk")
+    off = _fn(page, "renderEchoFrame")
+    assert "the echo is off, and a frame for" in off
+    assert "It is not drawn, because it is not this console's echo." in off
+
+
+def test_the_page_ages_the_frame_in_ticks_and_dims_it_when_it_is_stale():
+    """Not this browser's clock: under replay and under a manual clock a wall-clock age
+    is wrong, for the same reason the state banner measures in ticks. And the answer is
+    carried twice -- the words and a class that dims and greys the picture -- because a
+    screenshot of a stale frame with only a colour to say so is a screenshot somebody
+    misreads."""
+    page = _page()
+    age = _fn(page, "renderEchoAge")
+    assert "latestSeq()" in age
+    assert "const ticks = now - f.seq;" in age
+    assert "Date.now" not in age and "performance.now" not in age
+    assert "ticks old" in age
+    assert 'body.classList.toggle("stale", stale)' in age
+    assert "#echo-body.stale img" in page
+    # The two it cannot compute, each said rather than guessed: no seq to measure
+    # against, and a frame ahead of the newest seq this page has seen.
+    assert "age unknown" in age
+    assert "ahead of this page" in age and "no age is" in age
+    # The age moves with the clock, so a paused monitor's frame visibly goes stale.
+    assert "renderEchoAge()" in _fn(page, "connect")
+
+
+def test_an_unrecognised_kind_renders_and_is_not_an_error():
+    """The extension point, and the reason `summary` is opaque on the wire at all:
+    `api.build_raw_echo` says its shape is the adapter's business so that a new sensor
+    type does not edit the contract. A page that treated an unknown `kind` as a fault
+    would put that cost straight back."""
+    page = _page()
+    summary = _fn(page, "echoSummary")
+    assert 'if (kind === "image") return echoImage(sum);' in summary
+    assert 'if (kind === "fields") return echoFields(sum);' in summary
+    assert "this console has no renderer for it" in summary
+    assert "echoJson(sum)" in summary
+    # It is a dump of the summary, clipped, and not an error message.
+    dump = _fn(page, "echoJson")
+    assert "JSON.stringify(value, null, 2)" in dump
+    assert "ECHO_JSON_MAX" in dump
+
+
+def test_the_page_says_so_when_there_is_no_summary_and_no_kind():
+    """Three absences, three sentences. An envelope with no `summary`, a summary with no
+    `kind`, and a `kind: image` whose `data_uri` is not an image -- each one said, and
+    none of them rendered as a blank box or as the last thing that worked."""
+    page = _page()
+    summary = _fn(page, "echoSummary")
+    assert "the frame carries no <code>summary</code> object" in summary
+    assert "the summary carries no <code>kind</code>" in summary
+    image = _fn(page, "echoImage")
+    assert "is not one this page will load" in image
+    assert "Not rendered, and\n        not fetched." in image
+    fields = _fn(page, "echoFields")
+    assert "carries no <code>values</code> object" in fields
+
+
+def test_the_page_shows_what_the_echo_costs_beside_what_it_produced():
+    """An operator turning a camera on over a field link should be able to see what they
+    turned on: the samples, the rate the echo actually runs at, and the bytes, beside the
+    picture rather than under it.
+
+    The rate matters because it is not the tick rate. The producer limits the echo to a
+    stride of whole ticks and reports `rate_hz` and `every_n_ticks`, so a per-second cost
+    figured against the tick would be wrong by that stride -- and the line says which
+    clock it used.
+    """
+    page = _page()
+    facts = _fn(page, "echoFacts")
+    assert "samples this tick" in facts and "echoSamples(sum)" in facts
+    assert "echoRate(sum)" in facts and "echo rate" in facts
+    assert "echoBytes(sum)" in facts
+    rate = _fn(page, "echoRate")
+    assert "sum.rate_hz" in rate and "sum.every_n_ticks" in rate
+    cost = _fn(page, "echoBytes")
+    assert "S.adapter || {}).tick_hz" in cost
+    assert "the echo's rate" in cost and "the adapter's tick rate" in cost
+    # A stride means `samples_this_tick` counts a window and not a tick, and saying
+    # "this tick" over a five-tick window would be wrong by four ticks of messages.
+    samples = _fn(page, "echoSamples")
+    assert "the skipped ones included" in samples
+    image = _fn(page, "echoImage")
+    assert "sum.width" in image and "sum.height" in image
+    assert "encoding" in image
+
+
+def test_the_page_says_a_frame_it_could_not_render_and_why():
+    """`image_unavailable` is a normal outcome, not a fault: a depth topic is the first
+    thing an operator clicks, and `16UC1` is not something any echo can turn into a
+    picture. The producer writes the reason as a sentence for a human, so it is rendered
+    as one -- beside the source's own dimensions and encoding -- rather than falling
+    through to the JSON dump, which answers nothing.
+
+    And no picture rather than a wrong one: a frame decoded with the wrong stride renders
+    as a plausible image of nothing, which is the one output an operator cannot act on.
+    """
+    page = _page()
+    summary = _fn(page, "echoSummary")
+    assert ('if (kind === "image_unavailable") return echoImageUnavailable(sum);'
+            in summary)
+    body = _fn(page, "echoImageUnavailable")
+    assert "sum.reason" in body
+    assert "no picture from this source" in body
+    assert "source_encoding" in body and "source_width" in body
+    assert "source_bytes" in body
+    # A summary of this kind with no reason on it says that, rather than showing blank.
+    assert "gives no <code>reason</code>" in body
+    # This kind is rendered, so it must not reach the unknown-kind dump.
+    assert "echoJson" not in body
+
+
+def test_the_page_says_when_a_frame_was_shrunk_to_fit_the_cap():
+    """The producer halves a frame that will not fit its data-URI cap. A console that
+    drew the smaller picture without saying so would be telling an operator the camera
+    sent that, and the detail they went looking for went missing somewhere they cannot
+    see."""
+    image = _fn(_page(), "echoImage")
+    assert "sum.downscaled_to_fit === true" in image
+    assert "sum.cap_bytes" in image
+    # And the source's own size beside the size that was sent, so the reduction is a
+    # number rather than a suspicion.
+    assert "sum.source_width" in image and "sum.source_encoding" in image
+
+
+def test_the_page_posts_to_the_route_the_gateway_serves():
+    """`INGRESS_TOPICS`'s key for the request topic is the verb, and the page spells it
+    once. A page that guessed a different one would render a permanently dead picker with
+    a perfectly good route sitting next to it."""
+    page = _page()
+    verb = next(v for v, t in gateway.INGRESS_TOPICS.items() if t == api.RAW_ECHO_REQUEST)
+    assert f'const ECHO_VERB = "{verb}";' in page
+    assert ("api(`/api/monitors/${S.seg}/${ECHO_VERB}`, { method: \"POST\", body })"
+            in page)
+
+
+def test_the_page_does_not_stretch_a_camera_frame_to_fill_the_pane():
+    """160x120 blown up to the pane's width is a picture of the pane. Natural size,
+    capped, and never `width:100%`."""
+    page = _page()
+    style = page[page.index("#echo img {"):page.index("#echo pre {")]
+    assert "width:auto" in style and "height:auto" in style
+    assert "max-width:320px" in style
+    assert "width:100%" not in style
+
+
 # ============================================ the monitor controls, from the mock's end
 #
 # The console can now stop the monitor, and a stopped monitor is a moving robot with
@@ -1088,7 +1754,9 @@ def test_the_page_reports_a_refused_command_the_way_it_reports_a_refused_step():
     swallowing it, and the same refusal from the command route has to read the same way:
     a control that fails silently is a control the operator believes worked."""
     page = _page()
-    assert page.count("r.text.slice(0, 300)") == 2
+    # Three now: the clock's step, the command strip, and pane 3's echo request. Every
+    # control on this page that can be refused reports the refusal the same way.
+    assert page.count("r.text.slice(0, 300)") == 3
     assert "step refused (${r.status})" in page
     assert "refused (${txt(r.status)})" in page
     # A 202 is "published", not "done". The state is the monitor's own answer.

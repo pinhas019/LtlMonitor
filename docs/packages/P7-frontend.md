@@ -86,7 +86,7 @@ below says which is which.
 | [`/monitor/manifest`](../api.md#monitormanifest-latched--monitor--everyone) *(latched)* | `GET .../manifest` | the spec as authored — description, APs with their rules, formulas, phases, bounds — and `source` | P4 |
 | `/monitor/spec_status` *(latched)* | `GET .../spec_status`, and also returned inline by the spec POST | whether the last pushed spec was accepted, and why not | P4 |
 | `/monitor/status` *(latched **and** streamed)* | `GET .../status` — derived, like every other latched GET — **and** the same socket, since `api.MONITOR_STATUS` is in `STREAM_TOPICS` too | whether the monitor is `running`, `paused`, `halted` or `idle`; the `reason`; and `since_seq`, the tick the state began at | P4 |
-| [`/monitor/raw_echo`](../api.md#monitorraw_echo_request--monitorraw_echo) | **no route** — it is neither in `STREAM_TOPICS` nor in `api.LATCHED_TOPICS`, so the gateway has no way to hand it to a browser | the actual decoded message from one chosen source | P3, and a P6 route |
+| [`/monitor/raw_echo`](../api.md#monitorraw_echo_request--monitorraw_echo) | `WS /api/monitors/{seg}/stream` — since `api.RAW_ECHO` joined `STREAM_TOPICS` | one chosen source's frames, summarised: a downscaled PNG for a camera, a value table for anything else, and the reason a frame could not be rendered when it could not | P3 |
 | `/monitor/adapter_status` *(latched)* | **no route, and no topic constant** | whether the last pushed descriptor was accepted | P0, then P3 |
 
 The latched GETs come free: `LATCHED_ROUTES` is *derived* from `api.LATCHED_TOPICS`
@@ -110,12 +110,14 @@ takes the streamed frames in between.
 | `/monitor/command` — arm ｜ reset ｜ pause ｜ resume | `POST /api/monitors/{seg}/command`, from the control strip in the header | P4 |
 | `/monitor/load_spec` — the edited spec | `POST .../spec`, replying with `spec_status` | P4 |
 | `/monitor/load_adapter` — the edited descriptor | **none** — `INGRESS_TOPICS` is `{command, spec}` | P0, P6, P3 |
-| `/monitor/raw_echo_request` | **none** — same reason | P0 has the constant; P6 has the route |
+| `/monitor/raw_echo_request` — which one source to echo, `null` to stop | `POST /api/monitors/{seg}/raw_echo_request`, from the picker in pane 3 | P3 |
 | `POST /api/clock/step`, `/api/clock/mode` | proxied under the clock's own paths | P1 |
 
-Two of the five have no way onto the wire from a browser. That is not a detail the design
-can defer, because the panes that depend on them — descriptor reload and raw echo — are
-otherwise specified as if the transport existed.
+One of the five has no way onto the wire from a browser. That is not a detail the design
+can defer, because the pane that depends on it — descriptor reload — is otherwise
+specified as if the transport existed. Raw echo was the other one and is no longer:
+`INGRESS_TOPICS` gained `raw_echo_request` and `STREAM_TOPICS` gained `api.RAW_ECHO`, both
+in P6's file and by P6's hand, and pane 3's echo half is built against them.
 
 ## Design
 
@@ -210,17 +212,54 @@ message type, `expected_hz` against measured `rate_hz`, `age_s`, `samples_this_t
 `refreshed`, `dropped`. A source below its expected rate renders as an alert, not as a
 number to notice.
 
-Selecting a row would open the **actual decoded message** via `raw_echo`, opt-in and one
-source at a time, and the reason for that discipline is unchanged: a point cloud per frame
-is not free and the panel is usually across a link.
+Below the table, **the echo**: a picker naming the adapter's sources and an explicit off,
+which is what it is until somebody chooses. One at a time, and the reason for that
+discipline is unchanged: a point cloud per frame is not free and the panel is usually
+across a link. Choosing a source posts `api.build_raw_echo_request`'s payload —
+`{schema_version, source_id}`, with `null` for the stop — and the frames arrive on
+`/monitor/raw_echo` with the rest of the stream. The row table was never the fallback for
+the echo: it is the pane, and the echo is the zoom.
 
-**This pane's echo half cannot be built yet, and the design should not pretend it can.**
-`/monitor/raw_echo_request` has no publish route and `/monitor/raw_echo` has no read route;
-both are routes in `gateway.py`, which is P6's to add. So the row table ships — it is
-`data_health` off the observation, which already streams — and the echo says "no route"
-rather than offering a toggle that does nothing, until P6 adds it. What matters is
-that the row table was never the fallback for the echo: it is the pane, and the echo is the
-zoom.
+**`summary` is opaque, and the page renders by a `kind` it does not own.**
+`api.build_raw_echo` says the summary's shape is the adapter's business, so that a new
+sensor type does not edit the wire contract. The console has three renderings and a fourth
+case:
+
+* `image` — the frame from its `data_uri`, drawn at its own size and never stretched to
+  the pane, with `topic`, the size sent against the size the camera produced, the encoding,
+  `samples_this_tick`, the echo's rate and the bytes beside it. A frame the producer had to
+  shrink below its own box to fit the byte cap says so; a silently smaller picture is a
+  small lie about what the camera sent.
+* `fields` — a sorted value table.
+* `image_unavailable` — the producer had a frame and could not turn it into a picture. Its
+  `reason` is a sentence written for an operator (`encoding '16UC1' is not one this echo
+  can render`) and is rendered as one, beside the source's own dimensions. A depth topic is
+  the first thing anybody clicks, and no picture with a reason beats a plausible picture of
+  nothing.
+* **anything else** — a readable JSON dump, and this is a first-class case rather than a
+  fallback nobody exercises. It is the whole reason the summary is opaque: the depth or
+  lidar summary somebody writes next shows an operator every field it carries with no
+  change to this page. `--mock` publishes such a kind on one source so the path is
+  reviewed rather than discovered.
+
+**What it refuses to do.** `data_uri` comes off the wire and is the one string on this page
+that becomes something the browser fetches, so it is checked against an allowlist before it
+reaches an `img` `src`: the whole string must be a base64 `data:image/…` URI of a raster
+type. `javascript:` fails, a remote URL fails — that would have the console fetch from a
+host the wire named, from the origin holding the `X-Skill-Monitor` grant — and
+`data:image/svg+xml` fails too, for the same reason `.svg` is not in the gateway's
+`STATIC_TYPES`. What fails is reported to the operator, never loaded.
+
+**And it degrades rather than guesses.** No ingress route (a 404 or a 405) disables the
+picker and prints why. A request that was refused moves nothing: the picker goes back to
+what is actually echoing, because a control showing a source that was not accepted is a
+claim with no evidence. A source requested with nothing arriving says exactly that, and
+names both things it could be — the producer, or the topic not being on this build's
+stream. The frame is aged in ticks against the newest `seq` the page has seen, and once it
+stops being this tick's it is greyed and labelled with its age: the words and the dimming
+both, so a screenshot of a stale frame cannot be read as a live one. Turning the echo off,
+switching source, and reconnecting each drop the frame — the last one is a period the page
+was not watching, so the request is not silently re-sent either.
 
 **4 — Plots, most of which cost nothing extra.** Every observation already carries every
 schema key, every tick. So these time series are genuinely free: `min_range` over time
@@ -471,7 +510,7 @@ draws no track until then.
 | `/monitor/load_adapter` and `/monitor/adapter_status` as constants, each with a `VALIDATORS` entry, and `adapter_status` in `api.LATCHED_TOPICS` | **P0** | api.md is explicit: topic names are "declared once as constants in `core/api.py`. Nothing else in the repo may contain a `/monitor/...` string literal". The gateway's ingress routes call `validate_for_topic`, and an unregistered topic there is itself a problem, not a pass |
 | the `load_adapter` ingress route — an `INGRESS_TOPICS` entry | **P6** | `gateway.py` is P6's file. The *GET* for `adapter_status` costs nothing once the constant lands, because `LATCHED_ROUTES` is derived from `api.LATCHED_TOPICS` |
 | validate-and-answer for a pushed descriptor | **P3** | mirroring `load_spec`/`spec_status` exactly — same shape, same latched status |
-| the `raw_echo_request` ingress route and a way to read `/monitor/raw_echo` | **P6 alone** | pane 3's echo half. Both constants and both validators are already in `core/api.py`, so P0 owes nothing here — only the transport is missing |
+| ~~the `raw_echo_request` ingress route and a way to read `/monitor/raw_echo`~~ | **P6 alone** | **landed.** `INGRESS_TOPICS` gained the verb and `STREAM_TOPICS` gained `api.RAW_ECHO`; the summary convention that rides on the opaque `summary` is P3's, in `backend/adapters/raw_echo.py`. Pane 3's echo half is built against both |
 
 **Two rows left this table by being built rather than by being asked for.** Static-file
 serving was a P6 ask and is now `Gateway(static_dir=...)`, off by default; `api.TICK` on
@@ -509,10 +548,11 @@ landed is a frontend that gets built last and rushed.
 **The one route that was blocking has landed.** Static-file serving was not a degradation —
 without it the browser has nothing to fetch and there is no surface to run at all — which is
 why it is the change this package did make to `gateway.py` rather than wait on. The two
-routes still outstanding are not blocking and are not degradations either: the descriptor
-push and the raw echo ship *visibly disabled*, naming the route they wait on, which is a
-different thing from a pane that renders with a field missing. Both are P6's, and P7 asks
-for them in a PR comment rather than writing them.
+route still outstanding is not blocking and is not a degradation either: the descriptor
+push ships *visibly disabled*, naming the route it waits on, which is a different thing
+from a pane that renders with a field missing. It is P6's, and P7 asks for it in a PR
+comment rather than writing it. The raw echo was the other one and is no longer: P6 added
+its two routes, and the pane that was asking for them is built.
 
 ### The rest
 
@@ -593,7 +633,8 @@ P0 for payloads and topic names; **P6 for the transport, which is merged** — t
 routes, the three latched GETs and the two ingress POSTs. The static route and the `TICK`
 entry on `STREAM_TOPICS` are in `gateway.py` too, added here and listed under
 [Files owned](#files-owned) as the two lines of P6's file this package touched. The
-raw-echo and `load_adapter` routes are still owed and still P6's. The payload fields above
+raw-echo routes have since landed in P6's file, by P6's hand, and the pane is built on
+them; `load_adapter` is still owed and still P6's. The payload fields above
 are wanted, not required — build against their absence first. The X-Y track waits on P12
 and is drawn by nothing until then.
 
@@ -784,14 +825,16 @@ field it needs: it has no `verdict.timing` and shows only the frame interval thi
 measured, labelled as such. The AP map is a second
 implementation of
 `sensor_keys_in_rule` in JavaScript rather than the validator's own answer off the wire;
-`ap_dependencies` replaces it and deletes that code. Raw payload echo has no gateway
-ingress route for `raw_echo_request`, so the pane says "no route" rather than offering a
-dead toggle.
+`ap_dependencies` replaces it and deletes that code. Raw payload echo is complete: a picker
+over the adapter's sources with an explicit off, an image, a value table, the producer's
+reason for a frame it could not render, and a JSON dump for a `kind` nobody has written a
+renderer for yet — and on a gateway without the ingress route, a disabled picker saying so
+rather than a dead toggle.
 
 ## Non-goals
 
 A 3D point-cloud viewport. Serving the API — the `/api/*` surface is P6's, which is why the
-raw-echo routes and `load_adapter` are asks and not work items. The static route and the
+raw-echo routes and `load_adapter` were asks and not work items. The static route and the
 `TICK` entry are the stated exception, not a licence: they are the two lines of
 `gateway.py` without which there is no page at all and no tick to show on it, they are
 named in [Files owned](#files-owned), and any further route belongs to P6. Deciding
