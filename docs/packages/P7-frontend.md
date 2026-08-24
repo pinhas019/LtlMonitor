@@ -25,9 +25,10 @@ flowchart LR
   CLK --> GW
   EVAL --> GW
   MON --> GW
-  GW -- "WS /api/monitors/{seg}/stream<br/>tick + observation + verdict" --> FE
-  GW -- "GET health / monitors / manifest / adapter / spec_status<br/>latched" --> FE
+  GW -- "WS /api/monitors/{seg}/stream<br/>tick + observation + verdict + status" --> FE
+  GW -- "GET health / monitors / manifest / adapter / spec_status / status<br/>latched" --> FE
   FE -- "POST spec" --> GW
+  FE -- "POST command<br/>arm ｜ reset ｜ pause ｜ resume" --> GW
   FE -- "POST /api/clock/step" --> GW
 ```
 
@@ -84,19 +85,29 @@ below says which is which.
 | [`/monitor/adapter`](../api.md#monitoradapter-latched--evaluator--everyone) *(latched)* | `GET /api/monitors/{seg}/adapter` | the loaded descriptor: schema, every source's topic, type, `expected_hz`, resolved steps | P3 |
 | [`/monitor/manifest`](../api.md#monitormanifest-latched--monitor--everyone) *(latched)* | `GET .../manifest` | the spec as authored — description, APs with their rules, formulas, phases, bounds — and `source` | P4 |
 | `/monitor/spec_status` *(latched)* | `GET .../spec_status`, and also returned inline by the spec POST | whether the last pushed spec was accepted, and why not | P4 |
+| `/monitor/status` *(latched **and** streamed)* | `GET .../status` — derived, like every other latched GET — **and** the same socket, since `api.MONITOR_STATUS` is in `STREAM_TOPICS` too | whether the monitor is `running`, `paused`, `halted` or `idle`; the `reason`; and `since_seq`, the tick the state began at | P4 |
 | [`/monitor/raw_echo`](../api.md#monitorraw_echo_request--monitorraw_echo) | **no route** — it is neither in `STREAM_TOPICS` nor in `api.LATCHED_TOPICS`, so the gateway has no way to hand it to a browser | the actual decoded message from one chosen source | P3, and a P6 route |
 | `/monitor/adapter_status` *(latched)* | **no route, and no topic constant** | whether the last pushed descriptor was accepted | P0, then P3 |
 
-The three latched GETs come free: `LATCHED_ROUTES` is *derived* from `api.LATCHED_TOPICS`
+The latched GETs come free: `LATCHED_ROUTES` is *derived* from `api.LATCHED_TOPICS`
 rather than listed, so a topic added to that frozenset gains an endpoint with no edit to
 `gateway.py`. That is why `adapter_status` is cheap on the read side and not on the write
 side — see the asks table.
+
+**`/monitor/status` is the one input that needs both transports, and it is not redundancy.**
+Latched, so a console *opening* mid-pause learns the truth on its first request instead of
+waiting for a change that only the operator who caused it can make. Streamed, so a console
+*already open* learns that another operator has just paused the monitor. Either half alone
+leaves somebody reading a page that says the robot is being watched while it is not. The
+page uses both: it GETs the state on boot, re-GETs it on every reconnect — a gap is a
+period nobody was watching, and the state held across it is a claim about that period — and
+takes the streamed frames in between.
 
 ## Outputs
 
 | output | route today | consumers |
 |---|---|---|
-| `/monitor/command` — arm ｜ reset ｜ pause ｜ resume | `POST /api/monitors/{seg}/command` | P4 |
+| `/monitor/command` — arm ｜ reset ｜ pause ｜ resume | `POST /api/monitors/{seg}/command`, from the control strip in the header | P4 |
 | `/monitor/load_spec` — the edited spec | `POST .../spec`, replying with `spec_status` | P4 |
 | `/monitor/load_adapter` — the edited descriptor | **none** — `INGRESS_TOPICS` is `{command, spec}` | P0, P6, P3 |
 | `/monitor/raw_echo_request` | **none** — same reason | P0 has the constant; P6 has the route |
@@ -108,10 +119,54 @@ otherwise specified as if the transport existed.
 
 ## Design
 
-### The nine panes, and what each is actually reading
+### The nine panes, the strip above them, and what each is actually reading
 
 Numbered as the page numbers them, so a heading here and a heading on screen are the same
-heading.
+heading. The state banner and the control strip carry no number: they are in the sticky
+header rather than in the grid, for the reason below.
+
+**0 — Whether the monitor is watching, and the four commands that change it.** Not a pane
+and deliberately not one. *Pausing the monitor does not pause the robot.* It stops the only
+thing that was watching the robot, and the robot carries on: no verdicts, no failure modes,
+no intervention. So this is not a media player, and the two halves of it are built against
+that one fact.
+
+**The banner.** Whenever the state is anything other than `running`, a banner names the
+state, the reason and how long — `since_seq` against the live tick, which is why the field
+exists and why the length is in ticks rather than in a wall-clock duration measured in the
+browser, where replay and a manual clock would both make it wrong. It is in the header, so
+an operator who opens the console mid-pause reads it before anything else and without
+scrolling to the strip that caused it. It is **not colour alone**: the state is a word in
+capitals — `NOT MONITORING` for every state that is not `running` — beside a glyph and a
+heavy edge, and the tab title carries it too, because a background tab is where a console
+gets left. `paused`, `halted` and `idle` all raise it; so does a `state` this console does
+not recognise, and so does a `state` that is absent, because an unknown state is not a
+running one.
+
+**The controls.** `arm`, `reset`, `pause`, `resume` — `api.COMMANDS`, posted through the
+same `fetch` wrapper as every other request, so `X-Skill-Monitor` is on them by
+construction. `arm` and `reset` restart the episode and discard its history, and `pause`
+leaves the robot moving with nothing watching it; all three confirm, and the confirmation
+names the consequence rather than asking "are you sure". `resume` asks nothing — it is the
+one that puts the watching back. A 202 is reported as *published*, not as done: what the
+monitor did with the command is what `/monitor/status` says, and the banner never moves on
+the strength of this page having sent something. A refusal shows its status and its body,
+the way the clock's step button shows a 503.
+
+**Where control is impossible the buttons are disabled and say why** — no monitor
+discovered, so there is nothing to address; a `404`/`405` from the command route, learned
+from the wire rather than guessed at; or a command already in flight. The monitor's *state*
+is deliberately not on that list: the command route does not depend on the status topic, so
+a build that reports no state can still be armed, reset, paused and resumed, and taking the
+robot's stop button away over a field the producer had not shipped yet would be a worse
+failure than the one it prevents.
+
+**And the state is never inferred.** Not from the absence of verdicts, which is the
+inference this whole feature exists to remove: a paused monitor publishes none and a dead
+one publishes none either, and any rule that reads that silence gets one of the two wrong —
+the dangerous one. Where `/monitor/status` is not on the wire at all, the page says so by
+name and owner through the same `missing()` helper every other unreported field uses, and
+claims nothing.
 
 **1 — Description and spec, editable, hot-reloaded.** The free-language skill
 **description** the spec was generated from, read-only above the spec itself in an editor,
@@ -425,6 +480,16 @@ Both are described under [Files owned](#files-owned), with the note that P7's te
 cover them. `--mock` was also asked of the gateway and is not there either — it lives in
 `frontend/web.py`, for the layering reason in [Services](#services), and needed no route.
 
+**A third row left it the same way, and it was never on the table at all.**
+`/monitor/status` — the run state — was the field this package had no way to ask for while
+it was inferring the answer instead. The console had no state to render, so nothing named
+it as missing, and "the monitor is quiet" was going to be read as "the monitor is fine"
+until someone paused one. It is P0's topic and P4's to publish, both have landed, and the
+consuming half here is a banner and four buttons. The transport cost nothing on either
+side: the GET is derived from `api.LATCHED_TOPICS` like every other latched read, and the
+`POST .../command` route it drives has existed in `INGRESS_TOPICS` since P6 merged and was
+simply unused by the page.
+
 **Two more left it by being answered.** `manifest.automata` and `formulas[].state` were the
 two rows pane 6 was waiting on; both are now on the wire and the pane draws from them. The
 `automata` row was also the one that could not be satisfied from a payload owner's own
@@ -565,6 +630,51 @@ spec's own rule, so an AP-pane review is not reviewing a coincidence);
 `test_the_mock_says_on_the_wire_that_it_is_a_fiction`;
 `test_the_mock_splits_a_rule_with_the_shared_splitter`.
 
+**The controls and the state, from the mock's end** —
+`test_the_mock_honours_every_command_the_contract_declares`;
+`test_a_paused_mock_stops_its_automata_its_phases_and_its_verdicts`, which is the one that
+matters, because a mock whose values kept changing under a pause would make every review of
+this feature a review of a control that does nothing;
+`test_a_paused_monitor_and_a_dead_one_are_the_same_silence`, which asserts the premise
+rather than arguing it — verdicts, observations and `last_seen` freshness all say exactly
+the same thing about both, which is why the state needs a topic;
+`test_a_resumed_mock_starts_advancing_again`;
+`test_arm_and_reset_restart_the_episode_and_discard_its_history`, the consequence the
+console makes the operator confirm, asserted at the end that has to honour it;
+`test_since_seq_moves_only_when_the_state_does`, so a second `pause` cannot reset a count of
+how long the robot has been unwatched;
+`test_the_status_payload_is_the_shape_the_console_reads`;
+`test_the_state_a_monitor_starts_in_names_no_tick_it_never_counted` (`since_seq: null`, not
+zero); `test_a_console_that_connects_during_a_pause_is_told_at_once`, which pins the
+TRANSIENT_LOCAL replay the real bus gets from DDS and the mock now does itself; and
+`test_the_mock_reports_a_state_the_moment_the_contract_admits_the_topic`, the same
+validator-answered gate as `formulas[].state` and `phase_guards`.
+
+**The controls and the banner, read off the page** — there is no JavaScript test runner
+here, so these assert the source at the points where a rewrite would quietly turn a safety
+control into a decoration: `test_the_page_offers_exactly_the_commands_the_contract_declares`
+(pinned against `api.COMMANDS`); `test_the_page_posts_the_payload_the_command_route_validates`
+(the literal the page builds, then the validator asked about that literal, and that it goes
+through the one `fetch` wrapper that carries the header);
+`test_the_page_confirms_the_three_commands_that_cannot_be_taken_back`;
+`test_the_page_reports_a_refused_command_the_way_it_reports_a_refused_step`;
+`test_the_page_never_reads_the_state_from_the_absence_of_verdicts`, asserted structurally —
+the only two things ever assigned to the state are a payload off the status topic and
+`null`; `test_the_page_names_the_field_and_its_owner_when_no_state_is_reported`;
+`test_the_page_treats_an_unrecognised_state_as_unknown_and_not_as_running`;
+`test_the_banner_does_not_carry_the_state_in_colour_alone`;
+`test_the_page_disables_the_controls_and_says_why_when_it_cannot_send`, including that the
+missing state topic is *not* one of those reasons;
+`test_the_banner_measures_the_state_against_the_tick_and_not_this_browsers_clock`; and
+`test_the_page_re_reads_the_state_after_a_gap_it_did_not_watch`.
+
+**Not asserted, and checked by hand in a browser against `--mock`:** that the banner is
+legible without scrolling with the page scrolled to the bottom pane, the `window.confirm`
+texts as they appear, and the tab title while the state is not running. A native dialog
+blocks script injection, so the confirmations cannot be driven from a harness at all;
+`window.confirm` is still the right control — this page has no build step and no dependency
+to spend on a modal.
+
 **Pane 6's frames** — `test_the_manifest_carries_a_graph_for_every_monitor_it_can_compile`
 (well-formed, named the way the verdict names its rows, and deterministic — one edge per
 `(from, label)`, or the state the page lights would depend on edge order);
@@ -648,7 +758,9 @@ already on the ROS graph, and this is defence in depth. Nothing in this repo ass
 
 ## Done when
 
-The nine panes render from a live gateway and from `--mock`; the AP-dependency map is the
+The nine panes render from a live gateway and from `--mock`; the monitor can be armed,
+reset, paused and resumed from the console, and a monitor that is not `running` is
+impossible to miss and impossible to mistake for a crash; the AP-dependency map is the
 validator's own; the automaton lights the current state and claims only the path it
 witnessed; the phase machine draws every phase, marks the one we are in by shape, and shows
 each of its guards with the truth the monitor reported rather than one the page computed;
@@ -656,7 +768,11 @@ provenance reads as a declaration; a build missing every new backend field still
 naming what it cannot show; and the two panes whose routes do not exist say which route
 they are waiting for rather than failing.
 
-**Where this stands.** Eight of the nine panes render from the wire as it is today. The
+**Where this stands.** The control strip and the state banner are complete: all four
+commands go out on `POST .../command`, and the state is read from `/monitor/status` —
+latched on boot and on every reconnect, streamed in between — with a placeholder naming the
+field and its owner on a build that does not publish it. Eight of the nine panes render
+from the wire as it is today. The
 automaton draws its graphs from `manifest.automata` and lights the state each verdict row
 reports, showing the path from the tick this page connected and saying so; where a build
 publishes no graph, or a row no state, it says which of those it is and lights nothing.

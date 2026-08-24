@@ -36,11 +36,39 @@ Pane 7 (the phase machine) splits the same way, and the same gap is the reason:
   labels, that the current phase is marked by a caret and a second outline and not by
   colour alone, the in-phase progress bar, and the guard table with each expression's
   propositions and their live values beside it.
+
+The monitor controls and the state banner split the same way again, and here the split
+matters more than anywhere else on the page, because the thing being controlled can stop
+watching a moving robot:
+
+* asserted, below: that the mock honours all four commands; that a paused mock really
+  stops -- its step counter, every automaton and, with the step counter, its phase
+  machine -- while its clock goes on, which is what makes `since_seq` measurable and what
+  makes a paused monitor indistinguishable from a dead one on every other topic; that
+  `arm` and `reset` restart the episode and un-pause; that `since_seq` moves only when
+  the state does; that the state frame is the shape the console reads and that the mock
+  publishes it only when the shipped validator says the topic admits it. And, by reading
+  the page's source: that the four buttons are `api.COMMANDS`, that the payload posted is
+  `api.build_command`'s and validates, that three of the four confirm and `resume` does
+  not, that a refusal is reported with its status and body the way the clock's step
+  button reports one, that the state is only ever assigned from a status payload and
+  never inferred from the absence of verdicts, that an unrecognised state is unknown
+  rather than running, that the banner carries a word and a glyph and not colour alone,
+  and that the controls disable themselves with a stated reason -- and that the missing
+  state topic is *not* one of those reasons.
+* checked by hand in a browser against `--mock`: that the banner is legible without
+  scrolling with the page scrolled to the bottom pane, the `window.confirm` texts as they
+  appear, the tab title changing while the state is not running, and -- against a
+  throwaway launcher that added the status topic to `api.TOPICS`/`LATCHED_TOPICS` as P0
+  will, since this build's contract has no such topic yet -- that pausing from the strip
+  raises the banner, freezes panes 3 to 7, and that the tick count in the banner goes on
+  rising while they stay frozen.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import time
 import urllib.parse
@@ -190,6 +218,13 @@ def test_every_frame_the_mock_publishes_validates(bus):
         json.loads(bus.latched(mock_monitor.NS, api.MANIFEST))) == []
     assert api.validate_spec_status(
         json.loads(bus.latched(mock_monitor.NS, api.SPEC_STATUS))) == []
+    if mock_monitor.WIRE_ADMITS_STATUS:
+        # Both halves of it: the latched copy a console GETs on boot, and the frame the
+        # stream replays to it. They are one payload and both go past the validator.
+        assert api.validate_for_topic(
+            mock_monitor.STATUS_TOPIC, seen[mock_monitor.STATUS_TOPIC]) == []
+        assert api.validate_for_topic(mock_monitor.STATUS_TOPIC, json.loads(
+            bus.latched(mock_monitor.NS, mock_monitor.STATUS_TOPIC))) == []
 
 
 def test_the_answer_to_a_pushed_spec_validates_too(bus):
@@ -740,6 +775,438 @@ def test_the_panes_are_numbered_the_way_the_page_lays_them_out():
         encoding="utf-8")
     assert "**7 — The phase machine" in doc
     assert "**8 — Clock.**" in doc
+
+
+# ============================================ the monitor controls, from the mock's end
+#
+# The console can now stop the monitor, and a stopped monitor is a moving robot with
+# nothing watching it. So the fixture the controls are reviewed against has to actually
+# stop -- a mock whose values keep changing under a pause would make every review of this
+# feature a review of a control that does nothing.
+
+
+def _command(bus, command):
+    """One command in, by the path `POST /api/monitors/{ns}/command` takes: the
+    gateway validates `api.build_command`'s payload and publishes it verbatim."""
+    payload = api.build_command(command=command)
+    assert api.validate_command(payload) == []
+    bus.publish(mock_monitor.NS, api.COMMAND, json.dumps(payload))
+
+
+def _wait_until(predicate, timeout=3.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def _seen_after(bus, seconds=0.05):
+    """Which streamed topics the mock puts on the wire over `seconds`, starting now."""
+    seen = set()
+    unsubscribe = bus.subscribe(mock_monitor.NS, gateway.STREAM_TOPICS,
+                                lambda topic, _text: seen.add(topic))
+    try:
+        time.sleep(seconds)
+    finally:
+        unsubscribe()
+    return seen
+
+
+def test_the_mock_honours_every_command_the_contract_declares(bus):
+    """`--mock` is the only way this console is developed or reviewed on a host with no
+    ROS. A command it accepts and drops is a button that looks like it worked."""
+    for command in api.COMMANDS:
+        _command(bus, command)
+        assert bus._state in mock_monitor.MONITOR_STATES
+        assert bus._paused is (bus._state != "running")
+    assert bus._state == "running"          # `resume` is the last of them
+
+
+def test_a_paused_mock_stops_its_automata_its_phases_and_its_verdicts(bus):
+    """The control has to be real. A paused monitor steps no automaton, changes no phase
+    and publishes no verdict -- so the panes the console draws from freeze, which is the
+    visible half of "nothing is watching the robot".
+
+    The clock does not stop with it: `seq` goes on counting, because that is the axis the
+    banner measures `since_seq` against and the only thing that lets it say how long the
+    robot has been running unwatched.
+    """
+    frames(bus)                                     # running, and getting somewhere
+    _command(bus, "pause")
+    time.sleep(0.05)                                # let the pulse thread reach the gate
+    step, states, seq = bus._step, dict(bus._auto_state), bus._seq
+
+    seen = _seen_after(bus)
+    assert bus._step == step                        # the episode's step counter
+    assert bus._auto_state == states                # every automaton
+    assert bus._phase_at(bus._step) == bus._phase_at(step)      # and the phase machine
+    assert api.TICK in seen                         # the clock runs
+    assert api.VERDICT not in seen                  # the monitor does not
+    assert api.OBSERVATION not in seen
+    assert bus._seq > seq
+
+
+def test_a_paused_monitor_and_a_dead_one_are_the_same_silence(bus):
+    """Why the state needs a topic of its own, asserted rather than argued. Every other
+    signal a console has -- verdicts, observations, `last_seen` freshness -- says exactly
+    the same thing about a paused monitor as about one whose process died. The mock is
+    held to that rather than faking a freshness on the monitor's behalf, because a page
+    that could tell them apart from the silence would not need the banner."""
+    frames(bus)
+    _command(bus, "pause")
+    time.sleep(0.05)
+    last_seen = bus.last_seen(mock_monitor.NS)
+    seen = _seen_after(bus)
+    assert bus.last_seen(mock_monitor.NS) == last_seen
+    # And the clock is running through all of it, which is what makes the silence a
+    # statement about the monitor rather than about the whole stack.
+    assert api.TICK in seen
+    # Everything else is exactly as quiet as it would be if the process had died --
+    # except the state topic, which is the only thing on this wire that says which of
+    # the two this is. That asymmetry is the entire design.
+    assert seen - {api.TICK} == ({mock_monitor.STATUS_TOPIC}
+                                 if mock_monitor.WIRE_ADMITS_STATUS else set())
+
+
+def test_a_resumed_mock_starts_advancing_again(bus):
+    """The other half: a control that stops and cannot start is not a control either."""
+    frames(bus)
+    _command(bus, "pause")
+    time.sleep(0.05)
+    step = bus._step
+    _command(bus, "resume")
+    assert _wait_until(lambda: bus._step > step), "resume did not restart the stepping"
+    assert bus._state == "running" and bus._paused is False
+
+
+@pytest.mark.parametrize("command", ["arm", "reset"])
+def test_arm_and_reset_restart_the_episode_and_discard_its_history(bus, command):
+    """The consequence the console makes the operator confirm, asserted at the end that
+    has to honour it: the step counter goes back to zero and every automaton returns to
+    its initial state -- and the monitor comes back *running*, because arming into a
+    paused state would be a control that appeared to work and did not.
+
+    Asserted as "the step went backwards" rather than as "the step is 0": the pulse
+    thread is running and the counter starts climbing again immediately.
+    """
+    assert _wait_until(lambda: bus._step > 5), "the mock never got going"
+    _command(bus, "pause")
+    time.sleep(0.05)
+    before = bus._step
+    _command(bus, command)
+    assert bus._step < before
+    assert bus._auto_state == mock_monitor._initial_states(bus._automata)
+    assert bus._state == "running" and bus._paused is False
+    assert bus._state_reason == f"operator command: {command}"
+
+
+def test_since_seq_moves_only_when_the_state_does(bus):
+    """`since_seq` is how long the robot has been unwatched, and the console renders it
+    against the current tick. A second `pause` on an already-paused monitor must not
+    reset that count back to zero -- the robot has been unwatched since the first one."""
+    _command(bus, "pause")
+    first = bus._state_since
+    assert bus._state == "paused"
+    time.sleep(0.02)
+    _command(bus, "pause")
+    assert bus._state_since == first
+    _command(bus, "resume")
+    assert bus._state == "running" and bus._state_since >= first
+
+
+def test_the_status_payload_is_the_shape_the_console_reads(bus):
+    """The contract the banner was written against: a closed field set, a state from the
+    declared vocabulary, and two fields that are genuinely nullable. `reason: null` and
+    `since_seq: null` are values the console renders as their own sentence, so the mock
+    has to be able to produce the shape they live in."""
+    payload = bus._status_payload()
+    assert set(payload) == {"schema_version", "seq", "t",
+                            "state", "reason", "since_seq"}
+    assert payload["schema_version"] == api.SCHEMA_VERSION
+    assert payload["state"] in mock_monitor.MONITOR_STATES
+    assert payload["reason"] is None or isinstance(payload["reason"], str)
+    assert payload["since_seq"] is None or isinstance(payload["since_seq"], int)
+    nullable = mock_monitor._probe_status(reason=None, since_seq=None)
+    assert nullable["reason"] is None and nullable["since_seq"] is None
+    # The vocabulary is the contract's and not a second opinion about it.
+    if hasattr(api, "RUN_STATES"):
+        assert mock_monitor.MONITOR_STATES == tuple(api.RUN_STATES)
+
+
+def test_the_state_a_monitor_starts_in_names_no_tick_it_never_counted(bus):
+    """`since_seq: null` at startup, and it is not the same as zero. Nothing has been
+    ticked, so there is no tick the running began at, and a 0 would be a tick this
+    monitor is claiming to have counted. The console renders it as a length it cannot
+    measure rather than as "running for 0 ticks"."""
+    fresh = mock_monitor.MockBus(rate_scale=200.0)
+    try:
+        assert fresh._state == "running"
+        assert fresh._state_reason == "monitor started"
+        assert fresh._state_since is None
+        payload = fresh._status_payload()
+        assert payload["since_seq"] is None
+        if mock_monitor.WIRE_ADMITS_STATUS:
+            assert api.validate_for_topic(mock_monitor.STATUS_TOPIC, payload) == []
+    finally:
+        fresh.shutdown()
+
+
+def test_a_console_that_connects_during_a_pause_is_told_at_once(bus):
+    """The reason the state is latched *and* streamed, at the end that has to honour it.
+
+    A paused monitor publishes nothing else at all, so a stream that only carried
+    changes would tell a console connecting mid-pause nothing until the operator who
+    caused the pause ended it. The real bus subscribes to a latched topic with
+    TRANSIENT_LOCAL and DDS replays the last sample; the mock replays it itself, so the
+    fixture the console is reviewed against does not have the one gap the design is
+    built to close.
+    """
+    if not mock_monitor.WIRE_ADMITS_STATUS:
+        pytest.skip("this build's contract has no monitor-state topic")
+    frames(bus)
+    _command(bus, "pause")
+    time.sleep(0.05)
+
+    # A console arriving now, into a wire on which nothing but the clock is moving.
+    late = {}
+    unsubscribe = bus.subscribe(
+        mock_monitor.NS, gateway.STREAM_TOPICS,
+        lambda topic, text: late.setdefault(topic, json.loads(text)))
+    try:
+        assert mock_monitor.STATUS_TOPIC in late, "the pause was not replayed"
+        assert late[mock_monitor.STATUS_TOPIC]["state"] == "paused"
+        assert late[mock_monitor.STATUS_TOPIC]["since_seq"] is not None
+        assert api.VERDICT not in late              # and nothing else says so
+    finally:
+        unsubscribe()
+
+
+def test_the_mock_reports_a_state_the_moment_the_contract_admits_the_topic(bus):
+    """The `WIRE_ADMITS_*` gate again, and for the third time the same reason: the topic
+    is P0's to declare, a producer publishing on a topic with no `VALIDATORS` entry sends
+    frames the gateway's own ingress check would reject, and a flag someone has to
+    remember to flip is a flag that stays unflipped. The gate is the validator's answer,
+    asserted here in both directions -- so this test passes on a build without the topic
+    and on the build where it lands, and fails on a mock that guessed.
+
+    The topic is found by its last segment, which is also the gateway's route verb for
+    it: `LATCHED_ROUTES` is derived from the topic name, so the console's
+    `GET /api/monitors/{seg}/status` appears with no edit to `gateway.py`.
+    """
+    expected = f"{api.VERDICT.rsplit('/', 1)[0]}/{mock_monitor.STATUS_VERB}"
+    assert (mock_monitor.STATUS_TOPIC == expected) is (expected in api.TOPICS)
+    assert mock_monitor.WIRE_ADMITS_STATUS is (
+        mock_monitor.STATUS_TOPIC is not None
+        and api.validate_for_topic(mock_monitor.STATUS_TOPIC,
+                                   mock_monitor._probe_status()) == [])
+
+    latched = bus.latched(mock_monitor.NS, mock_monitor.STATUS_TOPIC)
+    assert (latched is not None) is mock_monitor.WIRE_ADMITS_STATUS
+    if mock_monitor.WIRE_ADMITS_STATUS:
+        assert api.validate_for_topic(
+            mock_monitor.STATUS_TOPIC, json.loads(latched)) == []
+        _command(bus, "pause")
+        after = json.loads(bus.latched(mock_monitor.NS, mock_monitor.STATUS_TOPIC))
+        assert after["state"] == "paused"
+        assert api.validate_for_topic(mock_monitor.STATUS_TOPIC, after) == []
+    else:
+        # No topic, so nothing to publish on -- and the console's degrade path is what
+        # `--mock` demonstrates today. The mock still *has* a state; it just cannot say
+        # so, which is exactly the build the banner has to survive.
+        assert bus._state == "running"
+
+
+# ================================== the controls and the banner, read off the page
+#
+# The same split as panes 6 and 7, for the same reason: there is no JavaScript test
+# runner in this repo. What is asserted here is the source, and it is asserted at the
+# points where a rewrite would quietly turn a safety control into a decoration.
+
+
+def _block(page, opening):
+    """The body of a top-level `const NAME = {` ... `\n};` declaration, with the closing
+    newline kept so the last entry ends the way every other one does."""
+    start = page.index(opening) + len(opening)
+    return page[start:page.index("\n};", start)] + "\n"
+
+
+def _fn(page, name):
+    """The body of a top-level `function name(...)`, which ends at the first `}` in
+    column zero -- everything inside the page's functions is indented."""
+    start = page.index(f"function {name}(")
+    return page[start:page.index("\n}", start)]
+
+
+def test_the_page_offers_exactly_the_commands_the_contract_declares():
+    """A command in `api.COMMANDS` and not in this list is a control the console silently
+    does not offer; one here and not there is a 400 from the gateway. Pinned against the
+    constant, so the contract moving fails here rather than in a browser."""
+    page = _page()
+    assert "const COMMANDS = [" + ", ".join(
+        f'"{c}"' for c in api.COMMANDS) + "];" in page
+    for command in api.COMMANDS:
+        assert f'id="cmd-{command}"' in page, command
+
+
+def test_the_page_posts_the_payload_the_command_route_validates():
+    """`POST .../command` runs `api.validate_for_topic` and hands the problem list back
+    to the client, so a payload missing its envelope version is a 400 and a dead button.
+    The literal the page builds is asserted, and then the validator is asked about that
+    exact literal."""
+    page = _page()
+    assert f"const SCHEMA_VERSION = {api.SCHEMA_VERSION};" in page
+    assert "JSON.stringify({ schema_version: SCHEMA_VERSION, command: cmd })" in page
+    assert "api(`/api/monitors/${S.seg}/command`, {" in page
+    for command in api.COMMANDS:
+        assert api.validate_command(
+            {"schema_version": api.SCHEMA_VERSION, "command": command}) == []
+    # And it goes through the one `fetch` wrapper, which is where X-Skill-Monitor lives:
+    # a hand-rolled fetch here is a 403 the operator reads as a broken monitor.
+    assert "fetch(" not in _fn(page, "command")
+
+
+def test_the_page_confirms_the_three_commands_that_cannot_be_taken_back():
+    """`arm` and `reset` throw the episode away; `pause` leaves the robot moving with
+    nothing watching it. `resume` is the one that puts the watching back and asks
+    nothing. The confirmations have to name the consequence rather than ask "are you
+    sure", which is a question nobody reads."""
+    page = _page()
+    block = _block(page, "const CMD = {")
+    for command in api.COMMANDS:
+        entry = re.search(rf"\n  {command}: \{{(.*?)\}},\n", block, re.S)
+        assert entry, command
+        assert ("confirm:" in entry.group(1)) is (command != "resume"), command
+    assert "IT DOES NOT STOP THE ROBOT" in block
+    assert block.count("restarts the episode") == 2
+    assert "if (ask && !window.confirm(ask))" in page
+
+
+def test_the_page_reports_a_refused_command_the_way_it_reports_a_refused_step():
+    """The clock's step button prints the status and the body of a 503 rather than
+    swallowing it, and the same refusal from the command route has to read the same way:
+    a control that fails silently is a control the operator believes worked."""
+    page = _page()
+    assert page.count("r.text.slice(0, 300)") == 2
+    assert "step refused (${r.status})" in page
+    assert "refused (${txt(r.status)})" in page
+    # A 202 is "published", not "done". The state is the monitor's own answer.
+    assert "published (${txt(r.status)})" in page
+    assert "this page does not assume" in page
+
+
+def test_the_page_never_reads_the_state_from_the_absence_of_verdicts():
+    """The bug this whole feature exists to fix. A paused monitor publishes no verdicts
+    and a dead one publishes none either, so any inference from silence gets one of the
+    two wrong -- and it is the dangerous one it gets wrong.
+
+    Asserted structurally: the only two things ever assigned to the state are a payload
+    off the status topic and `null`.
+    """
+    page = _page()
+    assert re.findall(r"S\.mon\.status = ([^;]+);", page) == [
+        "null",
+        '(payload && typeof payload === "object") ? payload : null',
+    ]
+    banner = _fn(page, "renderStateBanner")
+    assert "S.mon.status" in banner
+    for inferred in ("S.verdict", "S.connected", "last_seen", "missed_ticks"):
+        assert inferred not in banner, inferred
+
+
+def test_the_page_names_the_field_and_its_owner_when_no_state_is_reported():
+    """The build without the producer half is this one, so this is the path `--mock`
+    actually shows today. It gets the same placeholder every other unreported field on
+    the page gets -- the field, its owner, and no inference -- rather than a console
+    quietly drawing a monitor that is running."""
+    page = _page()
+    topic = f"{api.VERDICT.rsplit('/', 1)[0]}/{mock_monitor.STATUS_VERB}"
+    assert f'missing("{topic}", "P0, then P4"' in page
+    assert "STATE UNREPORTED" in page
+    # The two silences a 404 can be, told apart by whether the gateway's error names the
+    # topic it looked for: no route in this build, or a route and a monitor that has
+    # never published one.
+    assert "S.mon.route = !!body.topic;" in page
+
+
+def test_the_page_treats_an_unrecognised_state_as_unknown_and_not_as_running():
+    """`state` absent, `state` null, `state` a word this console has no meaning for: all
+    three are unknown, all three raise the banner, and none of them is running."""
+    page = _page()
+    banner = _fn(page, "renderStateBanner")
+    assert 'const name = typeof s.state === "string" ? s.state : null;' in banner
+    assert "Object.prototype.hasOwnProperty.call(MON_STATES, name)" in banner
+    assert "const alarm = !known || meta.alarm;" in banner
+    assert "STATE UNKNOWN" in banner
+    assert "never as running" in banner
+
+
+def test_the_banner_does_not_carry_the_state_in_colour_alone():
+    """A monochrome screen, a colour-blind operator, a photograph of the screen sent to
+    somebody else. The state is a word, in capitals, beside a glyph -- and every state
+    that is not `running` says the same three words, so the alarm is one thing to
+    recognise rather than four."""
+    page = _page()
+    block = _block(page, "const MON_STATES = {")
+    for state in mock_monitor.MONITOR_STATES:
+        entry = re.search(rf"\n  {state}: \{{(.*?)\}},\n", block, re.S)
+        assert entry, state
+        assert ("alarm: false" in entry.group(1)) is (state == "running"), state
+        assert "mark:" in entry.group(1) and "says:" in entry.group(1), state
+    assert block.count('mark: "NOT MONITORING"') == 3
+    assert 'class="mark"' in page
+    # And it is in the sticky header rather than in a pane, so it is read without
+    # scrolling to the strip that caused it.
+    assert page.index('id="mon-banner"') < page.index('<div class="grid">')
+    assert "header .row" in page
+
+
+def test_the_page_disables_the_controls_and_says_why_when_it_cannot_send():
+    """A dead button that looks live is worse than an absent one. The same answer both
+    disables the buttons and is printed beside them, so there is no way to have one
+    without the other.
+
+    And the monitor's *state* is deliberately not one of the reasons: the command route
+    does not depend on the status topic, and taking the robot's stop button away over a
+    field no producer publishes yet would be a worse failure than the one it prevents.
+    """
+    page = _page()
+    refusal = _fn(page, "controlRefusal")
+    assert "if (!S.seg)" in refusal                          # no monitor selected
+    assert 'if (S.mon.post === "absent")' in refusal          # no POST route
+    assert "S.mon.busy" in refusal                           # one in flight
+    assert "S.mon.status" not in refusal and "S.mon.state" not in refusal
+    controls = _fn(page, "updateControls")
+    assert 'disabled = why !== null' in controls
+    assert '$("cmd-why").innerHTML' in controls
+    # The route is learned from the wire -- a 404 or a 405 -- and never guessed at.
+    assert "if (r.status === 404 || r.status === 405) {" in page
+
+
+def test_the_banner_measures_the_state_against_the_tick_and_not_this_browsers_clock():
+    """How long the robot has been unwatched, in the unit the wire gives. A wall-clock
+    duration measured in the browser would be wrong under replay, wrong under a manual
+    clock, and wrong by the width of the link at every other time."""
+    page = _page()
+    body = _fn(page, "sinceText")
+    assert "since_seq" in body and "latestSeq()" in body
+    assert "const ticks = now - since;" in body
+    assert "Date.now" not in body and "performance.now" not in body
+    # The three things it cannot compute, each said rather than guessed: no `since_seq`,
+    # no seq to measure against, and a `since_seq` ahead of the newest seq seen.
+    assert body.count("no <code>since_seq</code>") == 1
+    assert "nothing to measure it against" in body
+    assert "no duration is derived from that" in body
+
+
+def test_the_page_re_reads_the_state_after_a_gap_it_did_not_watch():
+    """A reconnect is a hole, and another operator may have paused the monitor inside it.
+    The state is latched precisely so it can be re-read; trusting the one held across the
+    gap would be the console asserting something about a period nobody was watching."""
+    page = _page()
+    assert "refreshMonitorStatus()" in _fn(page, "connect")
+    assert "await refreshMonitorStatus();" in _fn(page, "boot")
 
 
 # =============================================================================
