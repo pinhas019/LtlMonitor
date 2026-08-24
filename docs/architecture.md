@@ -109,14 +109,24 @@ It holds by construction, not by discipline. The monitor's only inputs are a spe
 observation stream, and **neither names an embodiment**. Everything embodiment-specific
 stops at the evaluator's descriptor.
 
-Verified today — `real_g1`, `mujoco` and `isaac_lab` declare **identical 14-key schemas**
+Verified today — `real_g1`, `mujoco` and `isaac_lab` declare **identical 21-key schemas**
 over completely different topics:
 
 | adapter | topics |
 |---|---|
-| `real_g1` | `/t265/odom/sample`, `/depth_anything/points`, `/path_manager/status`, `/vision/goal_similarity` |
-| `mujoco` | `/odom`, `/scan`, `/navigate_to_pose/_action/status`, `/vision/goal_similarity` |
-| `isaac_lab` | `/odom`, `/g1/lidar/points`, `/navigate_to_pose/_action/status`, `/vision/goal_similarity` |
+| `real_g1` | `/t265/odom/sample`, `/next_waypoint`, `/depth_anything/points`, `/path_manager/status`, `/vision/goal_similarity` |
+| `mujoco` | `/odom`, `/goal_pose`, `/scan`, `/navigate_to_pose/_action/status`, `/vision/goal_similarity` |
+| `isaac_lab` | `/odom`, `/goal_pose`, `/g1/lidar/points`, `/navigate_to_pose/_action/status`, `/vision/goal_similarity` |
+
+Those 21 keys are **composed, not one file**: each descriptor declares
+`"schema": ["pose_schema.json", "nav_schema.json"]`. A shared vocabulary is what makes the
+monitor *embodiment*-agnostic; splitting it into fragments is what stops it being
+*navigation*-only. A manipulation or inspection skill keeps `pose_schema.json` — `pos_x`,
+`pos_y`, `pos_z`, `yaw`, where the robot is, which belongs to the embodiment and not to
+navigation — and drops the nav fragment, instead of having to adopt `nav_stuck` and
+`num_waypoints` before it can say anything at all. Fragments merge left to right, later
+wins, and an override that changes what a key *means* is reported in the adapter
+manifest's `warnings` rather than applied in silence.
 
 **Superseded, and the reason matters.** The robot no longer runs Nav2 — navigation is the
 TRAV algorithm on a RealSense D435i, no lidar. That change alone would have broken the two

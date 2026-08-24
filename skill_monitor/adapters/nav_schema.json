@@ -56,6 +56,18 @@
     "image_similarity_to_goal": {
       "doc": "float, 0.0-1.0. Visual similarity between the current camera view and a reference photo of the goal.",
       "default": 0.0
+    },
+    "goal_x": {
+      "doc": "float, metres. X of the point the robot has been COMMANDED to drive to, in the same odometry frame as pos_x. This is the target handed to the navigation algorithm, never the algorithm's own account of where it thinks it is going. 0.0 until a goal has been commanded, which is the odometry origin and not a way of saying 'no goal'.",
+      "default": 0.0
+    },
+    "goal_y": {
+      "doc": "float, metres. Y of the commanded goal point, in the same odometry frame as pos_y. Same source and same caveat as goal_x.",
+      "default": 0.0
+    },
+    "dist_to_goal": {
+      "doc": "float, metres. Straight-line distance in the ground plane from (pos_x, pos_y) to (goal_x, goal_y), recomputed once per tick from those four keys. Height is ignored deliberately: the z of a commanded waypoint is whatever the publisher stamped it at, not ground the robot has to cover. Until a goal has been commanded this reads as the distance back to the odometry origin, so a rule that treats a small value as 'arrived' must also establish that a goal exists.",
+      "default": 0.0
     }
   }
 }

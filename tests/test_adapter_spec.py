@@ -1376,6 +1376,163 @@ def test_manifest_feeds_the_wire_contract_directly():
     assert api.validate_adapter(api.build_adapter(**spec.manifest())) == []
 
 
+# ----------------------------------------------------------- schema composition
+#
+# A shared vocabulary across the three descriptors is what makes the monitor
+# EMBODIMENT-agnostic. One vocabulary that is entirely navigation's is what keeps it
+# SKILL-specific. Composition is the seam between the two, so what is exercised here is
+# that a fragment list behaves like the single file it replaces, plus the one thing a
+# merge can do that a single file cannot: silently change what a key means.
+
+def _fragment(tmp_path, name, keys):
+    path = tmp_path / name
+    path.write_text(json.dumps({"name": name.split("_")[0], "keys": keys}))
+    return path
+
+
+POSE_FRAGMENT = {"pos_x": {"doc": "float, metres. X in odom.", "default": 0.0}}
+NAV_FRAGMENT = {"min_range": {"doc": "float, metres. Nearest obstacle.",
+                              "default": 10.0}}
+
+
+def _composed(tmp_path, schema, steps=None):
+    """A descriptor whose `schema` is whatever the test is exercising, over a source
+    that writes nothing -- so the composition is the only thing under test."""
+    return adapter_spec.from_dict(
+        {"name": "composed", "schema": schema,
+         "sources": [_source(list(steps or []), sid="s", topic="/t")]},
+        base_dir=tmp_path)
+
+
+def test_a_schema_list_composes_its_fragments(tmp_path):
+    """The whole point: pose keys and nav keys in one vocabulary, from two files
+    neither of which had to know about the other."""
+    _fragment(tmp_path, "pose_schema.json", POSE_FRAGMENT)
+    _fragment(tmp_path, "nav_schema.json", NAV_FRAGMENT)
+    spec = _composed(tmp_path, ["pose_schema.json", "nav_schema.json"])
+    assert spec.keys() == frozenset({"pos_x", "min_range"})
+    assert spec.defaults() == {"pos_x": 0.0, "min_range": 10.0}
+    # ...and the prose comes along, because that is what the spec generator writes over.
+    assert "odom" in spec.docs()["pos_x"]
+    assert "obstacle" in spec.docs()["min_range"]
+
+
+def test_a_later_fragment_overrides_an_earlier_one(tmp_path):
+    """Left to right, later wins. Without this "the standard fragment, with this one
+    key retuned for my robot" is not expressible and every robot forks the file."""
+    _fragment(tmp_path, "nav_schema.json", NAV_FRAGMENT)
+    spec = _composed(
+        tmp_path,
+        ["nav_schema.json",
+         {"min_range": {"doc": "float, metres. Nearest obstacle.", "default": 4.0}}])
+    assert spec.defaults()["min_range"] == 4.0, "the earlier fragment won"
+
+
+def test_composition_is_ordered_not_a_set_union(tmp_path):
+    """The same two fragments the other way round give the other answer -- which is
+    what makes the order load-bearing rather than decorative."""
+    _fragment(tmp_path, "a_schema.json", {"k": {"doc": "a", "default": 1.0}})
+    _fragment(tmp_path, "b_schema.json", {"k": {"doc": "b", "default": 2.0}})
+    assert _composed(tmp_path, ["a_schema.json", "b_schema.json"]).defaults()["k"] == 2.0
+    assert _composed(tmp_path, ["b_schema.json", "a_schema.json"]).defaults()["k"] == 1.0
+
+
+def test_a_meaning_changing_override_is_warned_about_rather_than_silent(tmp_path):
+    """Override is allowed, but a fragment redefining what a key MEANS -- or what it
+    holds before any message arrives -- is exactly the plausible-nonsense class this
+    module exists to catch. It goes in warnings(), so it reaches the manifest and the
+    wire instead of living only in the diff."""
+    _fragment(tmp_path, "nav_schema.json", NAV_FRAGMENT)
+    spec = _composed(
+        tmp_path,
+        ["nav_schema.json",
+         {"min_range": {"doc": "float, CENTIMETRES. Nearest obstacle.",
+                        "default": 1000.0}}])
+    warned = [w for w in spec.warnings() if "min_range" in w and "redefined" in w]
+    assert warned, spec.warnings()
+    assert "doc" in warned[0] and "default" in warned[0], (
+        f"the warning must name WHAT changed, not merely that something did: {warned[0]}")
+    assert "nav_schema.json" in warned[0], "the warning does not name the loser"
+    # ...and it is on the wire, not just in a log nobody reads.
+    assert warned[0] in spec.manifest()["warnings"]
+
+
+def test_an_identical_redeclaration_is_not_warned_about(tmp_path):
+    """Two fragments agreeing about a key says nothing new. Warning there trains people
+    to ignore the warnings, which is how the meaning-changing one above gets missed."""
+    _fragment(tmp_path, "a_schema.json", dict(NAV_FRAGMENT))
+    _fragment(tmp_path, "b_schema.json", dict(NAV_FRAGMENT))
+    spec = _composed(tmp_path, ["a_schema.json", "b_schema.json"])
+    assert not [w for w in spec.warnings() if "redefined" in w], spec.warnings()
+
+
+def test_a_bare_schema_string_still_means_what_it_always_meant(tmp_path):
+    """The pre-composition spelling. Every descriptor on disk used it and any one of
+    them may keep using it."""
+    _fragment(tmp_path, "nav_schema.json", NAV_FRAGMENT)
+    bare = _composed(tmp_path, "nav_schema.json")
+    listed = _composed(tmp_path, ["nav_schema.json"])
+    assert bare.keys() == listed.keys() == frozenset({"min_range"})
+    assert bare.defaults() == listed.defaults()
+    assert not [w for w in bare.warnings() if "redefined" in w]
+
+
+def test_an_inline_schema_dict_still_means_what_it_always_meant(tmp_path):
+    """The other pre-composition spelling, and the one every test in this file above
+    uses -- a manipulation adapter declaring its own vocabulary with no file at all."""
+    inline = {"gripper_closed": {"doc": "bool, jaws shut.", "default": False}}
+    spec = _composed(tmp_path, inline)
+    assert spec.keys() == frozenset({"gripper_closed"})
+    assert _composed(tmp_path, [inline]).keys() == spec.keys()
+
+
+def test_a_fragment_list_may_mix_files_and_inline_dicts(tmp_path):
+    _fragment(tmp_path, "pose_schema.json", POSE_FRAGMENT)
+    spec = _composed(
+        tmp_path,
+        ["pose_schema.json", {"gripper_closed": {"doc": "bool.", "default": False}}])
+    assert spec.keys() == frozenset({"pos_x", "gripper_closed"})
+
+
+def test_a_fragment_that_does_not_exist_names_itself_and_the_adapter(tmp_path):
+    """A typo'd fragment name used to be a bare FileNotFoundError out of json.loads,
+    with no adapter in it -- which, with a list, does not say which of them is wrong."""
+    _fragment(tmp_path, "pose_schema.json", POSE_FRAGMENT)
+    with pytest.raises(ValueError, match="nav_scheme.json"):
+        _composed(tmp_path, ["pose_schema.json", "nav_scheme.json"])
+
+
+def test_an_empty_or_absent_schema_is_still_rejected(tmp_path):
+    for schema in ([], {}, [{}]):
+        with pytest.raises(ValueError, match="declares no schema"):
+            _composed(tmp_path, schema)
+    with pytest.raises(ValueError, match="declares no schema"):
+        adapter_spec.from_dict({"name": "composed", "sources": []}, base_dir=tmp_path)
+
+
+def test_a_fragment_of_the_wrong_type_is_rejected_at_load(tmp_path):
+    _fragment(tmp_path, "pose_schema.json", POSE_FRAGMENT)
+    with pytest.raises(ValueError, match="file name or an inline"):
+        _composed(tmp_path, ["pose_schema.json", 5])
+
+
+def test_a_fragment_file_with_no_keys_object_is_rejected_at_load(tmp_path):
+    (tmp_path / "broken_schema.json").write_text(json.dumps({"name": "broken"}))
+    with pytest.raises(ValueError, match="no 'keys' object"):
+        _composed(tmp_path, ["broken_schema.json"])
+
+
+def test_a_composed_schema_validates_steps_exactly_as_a_single_file_does(tmp_path):
+    """Composition changes where the vocabulary comes from and nothing else: a step
+    writing a key no fragment declared is still a load-time error."""
+    _fragment(tmp_path, "pose_schema.json", POSE_FRAGMENT)
+    _composed(tmp_path, ["pose_schema.json"],
+              steps=[{"key": "pos_x", "field": "data"}])          # declared: fine
+    with pytest.raises(ValueError, match="schema does not declare"):
+        _composed(tmp_path, ["pose_schema.json"],
+                  steps=[{"key": "pos_z", "field": "data"}])
+
+
 # ------------------------------------- structural invariants, shipped descriptors
 
 def test_every_shipped_descriptor_loads_and_covers_its_schema():
@@ -1548,6 +1705,7 @@ def test_a_tick_concurrent_with_writers_does_not_tear_the_window():
 SHIPPED_SOURCES = {
     "real_g1": {
         "odom": ("/t265/odom/sample", "nav_msgs/msg/Odometry", None, 10, True),
+        "goal": ("/next_waypoint", "geometry_msgs/msg/PointStamped", None, 10, False),
         "points": ("/depth_anything/points", "sensor_msgs/msg/PointCloud2",
                    "pointcloud_xyz", 10, True),
         "status": ("/path_manager/status", "std_msgs/msg/String", "json", 10, True),
@@ -1555,6 +1713,7 @@ SHIPPED_SOURCES = {
     },
     "mujoco": {
         "odom": ("/odom", "nav_msgs/msg/Odometry", None, 10, True),
+        "goal": ("/goal_pose", "geometry_msgs/msg/PoseStamped", None, 10, False),
         "range": ("/scan", "sensor_msgs/msg/LaserScan", "laserscan_ranges", 10, True),
         "nav2": ("/navigate_to_pose/_action/status", "action_msgs/msg/GoalStatusArray",
                  "goal_status", "action_status", False),
@@ -1562,6 +1721,7 @@ SHIPPED_SOURCES = {
     },
     "isaac_lab": {
         "odom": ("/odom", "nav_msgs/msg/Odometry", None, 10, True),
+        "goal": ("/goal_pose", "geometry_msgs/msg/PoseStamped", None, 10, False),
         "range": ("/g1/lidar/points", "sensor_msgs/msg/PointCloud2",
                   "pointcloud_xyz", 10, True),
         "nav2": ("/navigate_to_pose/_action/status", "action_msgs/msg/GoalStatusArray",
@@ -1608,6 +1768,306 @@ def test_shipped_odom_field_paths_are_pinned():
         assert v["base_height"] == 0.9, f"{name}: not pose.pose.position.z"
         assert v["base_roll"] == 0.0 and v["base_pitch"] == 0.0, name
         assert v["upright_flag"] == 1.0, name
+
+
+# ------------------------------------------ pose and goal, across all three robots
+#
+# `pose_schema.json` is the fragment that makes the vocabulary skill-agnostic, so the
+# claim it rests on -- all three descriptors expose the SAME keys, and every one of
+# them reads the right field -- is what is pinned here.
+
+#: The keys `pose_schema.json` contributes: where the robot is, in the odometry frame.
+#: Nothing in this list mentions a goal, a waypoint or a planner, which is the whole
+#: reason it is a separate fragment.
+POSE_KEYS = frozenset({"pos_x", "pos_y", "pos_z", "yaw"})
+
+#: Navigation's notion of a destination. These are nav's, not the embodiment's, so they
+#: live in `nav_schema.json` and a manipulation skill composing only the pose fragment
+#: never sees them.
+GOAL_KEYS = frozenset({"goal_x", "goal_y", "dist_to_goal"})
+
+
+def _goal_msg(name, x, y, z=0.0):
+    """The commanded-goal message each descriptor's `goal` source expects: a
+    PointStamped on the real robot, a PoseStamped in both sims."""
+    if name == "real_g1":
+        return _ns(point=_ns(x=x, y=y, z=z))
+    return _ns(pose=_ns(position=_ns(x=x, y=y, z=z)))
+
+
+def test_every_shipped_descriptor_exposes_the_identical_vocabulary():
+    """The agnosticism claim, stated as a property. A key one descriptor has and
+    another does not is a rule that silently means nothing on the other robot -- and
+    `--adapter` is advertised as a swap that needs no other change."""
+    vocabularies = {n: adapter_spec.load(n).keys() for n in adapter_spec.available()}
+    assert len(set(vocabularies.values())) == 1, {
+        n: sorted(k ^ set.intersection(*[set(v) for v in vocabularies.values()]))
+        for n, k in vocabularies.items()
+    }
+    shared = next(iter(vocabularies.values()))
+    assert POSE_KEYS <= shared, sorted(POSE_KEYS - shared)
+    assert GOAL_KEYS <= shared, sorted(GOAL_KEYS - shared)
+
+
+def test_pose_fragment_is_composed_by_every_shipped_descriptor():
+    """Composed, not copied. If someone inlines the pose keys into nav_schema.json the
+    vocabulary is unchanged and every other test here still passes -- but the fragment
+    a manipulation skill would compose has quietly stopped existing."""
+    for name in adapter_spec.available():
+        declared = adapter_spec.load(name).raw["schema"]
+        assert isinstance(declared, list), f"{name}: schema is not composed"
+        assert declared == ["pose_schema.json", "nav_schema.json"], name
+
+
+def test_pose_fragment_declares_no_navigation_key():
+    """The fragment is only skill-agnostic if it stays that way. A `goal_x` added here
+    would be inherited by every skill that wants a pose and nothing else."""
+    keys, _ = adapter_spec.compose_schema(
+        "pose_schema.json", skill_monitor.adapters_dir(), "pose")
+    assert set(keys) == POSE_KEYS, sorted(set(keys) ^ POSE_KEYS)
+    for key, entry in keys.items():
+        assert entry.get("doc"), f"pose_schema.json: {key} has no doc"
+        # Units and frame, per key -- the generator writes rules off this prose.
+        assert "metres" in entry["doc"] or "radians" in entry["doc"], key
+        assert "odometry frame" in entry["doc"].lower(), f"{key} does not name its frame"
+
+
+def test_shipped_pose_field_paths_are_pinned():
+    """pos_x/pos_y/pos_z off `pose.pose.position`, from a message whose components are
+    all distinct -- a descriptor reading `.y` into `pos_x` loads and validates cleanly
+    and puts the robot somewhere it has never been."""
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+        st.update("odom", _shipped_odom(px=11.0, py=22.0, pz=0.9))
+        st.tick()
+        v = st.sensor_eval()
+        assert v["pos_x"] == 11.0, f"{name}: not pose.pose.position.x"
+        assert v["pos_y"] == 22.0, f"{name}: not pose.pose.position.y"
+        assert v["pos_z"] == 0.9, f"{name}: not pose.pose.position.z"
+        assert POSE_KEYS <= st.refreshed_keys(), name
+
+
+@pytest.mark.parametrize("heading", [0.0, math.pi / 2, -math.pi / 2, 2.5, -2.5])
+def test_shipped_yaw_is_the_heading_about_the_odometry_z_axis(heading):
+    """A yaw-only quaternion is (0, 0, sin(h/2), cos(h/2)). Reading the wrong Euler
+    component -- or the wrong quaternion element -- gives 0.0 for every one of these,
+    which is indistinguishable from a robot that never turns."""
+    q = (0.0, 0.0, math.sin(heading / 2), math.cos(heading / 2))
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+        st.update("odom", _shipped_odom(q=q))
+        st.tick()
+        v = st.sensor_eval()
+        assert v["yaw"] == pytest.approx(heading, abs=1e-3), name
+        # ...and yaw is not roll or pitch: a level robot that has turned is still level.
+        assert v["base_roll"] == 0.0 and v["base_pitch"] == 0.0, name
+        assert v["upright_flag"] == 1.0, f"{name}: turning is not falling over"
+
+
+def test_shipped_yaw_wraps_rather_than_accumulating():
+    """atan2's range is (-pi, pi]. Pinned because the doc promises it and a rule
+    comparing two headings has to know that -3.13 and 3.13 are neighbours."""
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+        st.update("odom", _shipped_odom(
+            q=(0.0, 0.0, math.sin(1.75 * math.pi), math.cos(1.75 * math.pi))))
+        st.tick()
+        assert -math.pi <= st.sensor_eval()["yaw"] <= math.pi, name
+
+
+def test_shipped_goal_field_paths_are_pinned():
+    """`/next_waypoint` is a PointStamped and both sims' `/goal_pose` is a PoseStamped,
+    so the two field paths genuinely differ -- and a wrong one leaves the goal on its
+    default forever, which reads as a goal at the odometry origin."""
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+        st.update("goal", _goal_msg(name, x=3.0, y=-4.0, z=99.0))
+        st.tick()
+        v = st.sensor_eval()
+        assert v["goal_x"] == 3.0, f"{name}: goal_x is not the commanded x"
+        assert v["goal_y"] == -4.0, f"{name}: goal_y is not the commanded y"
+
+
+def test_shipped_dist_to_goal_is_planar_distance_from_the_pose_to_the_goal():
+    """Three cases the arithmetic has to get right, and one it has to ignore."""
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+
+        # Goal directly ahead: 5 m along +X.
+        st.update("odom", _shipped_odom(px=1.0, py=2.0))
+        st.update("goal", _goal_msg(name, x=6.0, y=2.0))
+        st.tick()
+        assert st.sensor_eval()["dist_to_goal"] == 5.0, f"{name}: goal ahead"
+
+        # Goal directly behind. Distance is unsigned: it is how far, not which way.
+        st.update("odom", _shipped_odom(px=11.0, py=2.0))
+        st.tick()
+        assert st.sensor_eval()["dist_to_goal"] == 5.0, f"{name}: goal behind"
+
+        # Standing on the goal: exactly zero, not an epsilon.
+        st.update("odom", _shipped_odom(px=6.0, py=2.0))
+        st.tick()
+        assert st.sensor_eval()["dist_to_goal"] == 0.0, f"{name}: standing on the goal"
+
+        # 3-4-5, so a mistaken abs(dx)+abs(dy) or a max() reads 7.0 or 4.0, not 5.0.
+        st.update("odom", _shipped_odom(px=3.0, py=6.0))
+        st.update("goal", _goal_msg(name, x=6.0, y=2.0))
+        st.tick()
+        assert st.sensor_eval()["dist_to_goal"] == 5.0, f"{name}: not hypot"
+
+
+def test_shipped_dist_to_goal_ignores_height():
+    """Planar on purpose: the z of a commanded waypoint is whatever the publisher
+    stamped it at, not ground the robot has to cover. Including it would make
+    "arrived" depend on the goal publisher's choice of altitude."""
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+        st.update("odom", _shipped_odom(px=0.0, py=0.0, pz=0.78))
+        st.update("goal", _goal_msg(name, x=3.0, y=4.0, z=25.0))
+        st.tick()
+        assert st.sensor_eval()["dist_to_goal"] == 5.0, f"{name}: z leaked in"
+
+
+def test_shipped_dist_to_goal_is_recomputed_every_tick_as_the_robot_moves():
+    """It is a tick-step, so it tracks the pose even on ticks where no goal message
+    arrives -- a goal topic that publishes once must not freeze the distance."""
+    for name in adapter_spec.available():
+        st = adapter_spec.SensorState(adapter_spec.load(name))
+        st.update("goal", _goal_msg(name, x=10.0, y=0.0))         # once, and never again
+        seen = []
+        for x in (0.0, 2.0, 4.0, 9.5):
+            st.update("odom", _shipped_odom(px=x))
+            st.tick()
+            seen.append(st.sensor_eval()["dist_to_goal"])
+        assert seen == [10.0, 8.0, 6.0, 0.5], name
+
+
+def test_shipped_goal_keys_hold_their_defaults_when_no_goal_arrives():
+    """A silent goal topic must leave the keys at their defaults and the fold intact.
+    The failure this pins is not a wrong number, it is a TypeError out of the middle of
+    tick() on a robot that has simply not been given a mission yet."""
+    for name in adapter_spec.available():
+        spec = adapter_spec.load(name)
+        st = adapter_spec.SensorState(spec)
+        assert st.sensor_eval()["goal_x"] == 0.0, name
+        assert st.sensor_eval()["goal_y"] == 0.0, name
+        assert st.sensor_eval()["dist_to_goal"] == 0.0, name
+
+        st.update("odom", _shipped_odom(px=3.0, py=4.0))          # odom only
+        st.tick()                                                 # must not raise
+        v = st.sensor_eval()
+        assert v["goal_x"] == 0.0 and v["goal_y"] == 0.0, f"{name}: goal invented"
+        # With no goal commanded the goal keys are still the odometry ORIGIN, so this
+        # is the distance home -- documented as such, and why an "arrived" rule needs
+        # more than a small dist_to_goal. P12's `has_goal` is what will separate them.
+        assert v["dist_to_goal"] == 5.0, name
+        assert "goal" not in st.refreshed_sources(), (
+            f"{name}: a source that published nothing is reported as fresh")
+        assert not (GOAL_KEYS & st.refreshed_keys()), (
+            f"{name}: goal keys claim to have been observed")
+
+
+# --------------------------------------------------------- planner independence
+#
+# The hard project rule, which docs/packages/P7-frontend.md already states as though it
+# were enforced ("they may only come from odometry and the commanded goals, never from
+# the planner's self-report") and P12 lists as a test that does not exist yet: the
+# monitor reads the ROBOT's own data and the COMMANDED target, never the navigation
+# algorithm's account of how it is doing.
+#
+# The six keys already coming off /path_manager/status -- nav_state, nav_stuck,
+# mission_finished, num_waypoints, current_target_idx, nav_mode -- are pre-existing
+# debt that P12 removes wholesale. They are not licence to add a seventh, and position
+# and goal are precisely where it would be easiest: a planner status JSON usually
+# carries its current target already, and wiring goal_x to it would be one line, would
+# load cleanly, and would blind the monitor to exactly the errors the planner makes.
+
+
+def _is_planner_self_report(topic: str, type_: str) -> bool:
+    """Whether a topic is the navigation algorithm talking about ITSELF.
+
+    Structural rather than an allow-list of names, so a descriptor wired to a planner
+    nobody has heard of yet is caught too: anything whose last path segment is `status`
+    (TRAV's /path_manager/status and any other planner's equivalent), or an action
+    server's status -- Nav2's GoalStatusArray being the same self-report for the stack
+    TRAV replaced, matched by TYPE as well as by name so renaming the topic does not
+    launder it.
+    """
+    return (topic.rstrip("/").rsplit("/", 1)[-1] == "status"
+            or type_ == "action_msgs/msg/GoalStatusArray")
+
+
+def _planner_sourced_keys(spec) -> dict:
+    """key -> the planner-status source ids that write it, for one loaded spec."""
+    out: dict = {}
+    for src in spec.sources:
+        if not _is_planner_self_report(src.topic, src.type):
+            continue
+        for step in src.steps:
+            for key in step.keys:
+                out.setdefault(key, set()).add(f"{src.id} ({src.topic})")
+    return out
+
+
+def test_no_position_or_goal_key_is_sourced_from_a_planner_status_topic():
+    """The guard. Wire goal_x to /path_manager/status and this is what fails."""
+    protected = POSE_KEYS | GOAL_KEYS
+    for name in adapter_spec.available():
+        spec = adapter_spec.load(name)
+        assert protected <= set(spec.keys()), f"{name}: the guard protects nothing"
+        offending = {k: v for k, v in _planner_sourced_keys(spec).items()
+                     if k in protected}
+        assert not offending, (
+            f"{name}: {sorted(offending)} come from the planner's own status stream "
+            f"({offending}). Position comes from odometry and the goal from the "
+            f"COMMANDED target; the planner's account of how it is doing is not an "
+            f"observation of the robot")
+
+
+def test_the_planner_independence_guard_is_not_vacuous():
+    """Every shipped descriptor still HAS a planner-status source, so the guard above
+    is passing because the protected keys avoid it and not because the predicate never
+    matches anything. The day that stops being true, P12 has landed and this whole
+    section is rewritten -- but until then a silently-inert guard is worse than none."""
+    matched = {
+        name: sorted(s.id for s in adapter_spec.load(name).sources
+                     if _is_planner_self_report(s.topic, s.type))
+        for name in adapter_spec.available()
+    }
+    assert all(matched.values()), matched
+    # ...and it matches the two families separately: TRAV's status JSON on the robot,
+    # Nav2's action status in both sims.
+    assert matched["real_g1"] == ["status"]
+    assert matched["mujoco"] == matched["isaac_lab"] == ["nav2"]
+
+
+def test_the_planner_independence_guard_catches_the_regression_it_exists_for():
+    """The guard is only worth having if it fails on the change it forbids. This is
+    that change: goal_x read straight out of the planner's status JSON."""
+    schema, _ = adapter_spec.compose_schema(
+        ["pose_schema.json", "nav_schema.json"], skill_monitor.adapters_dir())
+    sabotaged = adapter_spec.from_dict({
+        "name": "sabotaged", "schema": dict(schema),
+        "defaults": {k: v.get("default") for k, v in schema.items()},
+        "sources": [_source(
+            [{"key": "goal_x", "field": "target_x", "default": 0.0},
+             {"key": "pos_x", "field": "robot_x", "default": 0.0}],
+            sid="status", topic="/path_manager/status",
+            type_="std_msgs/msg/String", decode="json")],
+    })
+    offending = _planner_sourced_keys(sabotaged)
+    assert set(offending) & (POSE_KEYS | GOAL_KEYS) == {"goal_x", "pos_x"}
+
+    # ...and by TYPE, not only by the topic's name -- renaming the topic to something
+    # innocuous must not get it past the guard.
+    renamed = adapter_spec.from_dict({
+        "name": "renamed", "schema": dict(schema),
+        "defaults": {k: v.get("default") for k, v in schema.items()},
+        "sources": [_source([{"key": "goal_y", "fn": "const", "args": {"value": 1.0}}],
+                            sid="nav2", topic="/where_am_i_going",
+                            type_="action_msgs/msg/GoalStatusArray")],
+    })
+    assert set(_planner_sourced_keys(renamed)) == {"goal_y"}
 
 
 def test_shipped_upright_flag_falls_on_height_and_on_tilt():
@@ -1859,9 +2319,10 @@ def test_shipped_adapter_level_defaults_are_pinned():
 #: key from it, leaves an operator staring at a monitor that reports nothing -- and no
 #: other test looks at this list.
 SHIPPED_DESCRIBE_KEYS = {
-    "real_g1": ["min_range", "nav_mode", "nav_state", "image_similarity_to_goal"],
-    "mujoco": ["min_range", "nav_state", "image_similarity_to_goal"],
-    "isaac_lab": ["min_range", "nav_state", "image_similarity_to_goal"],
+    "real_g1": ["min_range", "nav_mode", "nav_state", "dist_to_goal",
+                "image_similarity_to_goal"],
+    "mujoco": ["min_range", "nav_state", "dist_to_goal", "image_similarity_to_goal"],
+    "isaac_lab": ["min_range", "nav_state", "dist_to_goal", "image_similarity_to_goal"],
 }
 
 
