@@ -292,9 +292,93 @@ def _wire_admits_phase_guards() -> bool:
     return api.validate_verdict(probe) == []
 
 
+#: The last segment of the monitor-state topic, which is also the gateway's route verb
+#: for it: ``LATCHED_ROUTES`` is derived from the topic name, so
+#: ``GET /api/monitors/{ns}/status`` appears with no edit to the gateway the moment the
+#: constant lands. Spelt as the segment and not as the whole topic because
+#: ``tests/test_api.py`` allows a topic literal in ``core/api.py`` and nowhere else.
+STATUS_VERB = "status"
+
+#: The states the contract admits, in the order the console's banner ranks them.
+#: ``api.RUN_STATES`` where the build has it, and the same four words where it does not,
+#: so this module imports on either -- the tuple is not a second opinion about the
+#: vocabulary and ``tests/test_web_ui.py`` asserts the two agree.
+MONITOR_STATES = tuple(getattr(api, "RUN_STATES", None)
+                       or ("running", "paused", "halted", "idle"))
+
+#: The two the mock is ever actually in: it has no fault to halt on and no gap between
+#: episodes to be idle in, and it publishes no state it cannot be in.
+_STATES_EMITTED = ("running", "paused")
+
+
+def status_topic():
+    """The monitor-state topic as ``core.api`` spells it, or None in a build that has no
+    such topic yet.
+
+    Found by its last segment rather than by an attribute name: the *name* of the
+    constant is P0's to choose and its value is the contract's, and this module must not
+    break on a spelling of ``api.STATUS`` it guessed wrong.
+    """
+    named = [t for t in sorted(api.TOPICS) if t.rsplit("/", 1)[-1] == STATUS_VERB]
+    return named[0] if len(named) == 1 else None
+
+
+#: Asked once, at import: neither answer can change while the process runs.
+STATUS_TOPIC = status_topic()
+
+
+def build_status(*, seq: int, t: float, state: str, reason: str | None,
+                 since_seq: int | None) -> dict:
+    """The monitor-state frame: ``api.build_monitor_status`` where the build has it.
+
+    The fallback is the identical shape, hand-built, so this module is importable on a
+    build that predates the builder -- and nothing it returns reaches the wire unless
+    ``WIRE_ADMITS_STATUS``, which is the shipped validator's own answer about this exact
+    payload. A hand-built frame that the validator has never seen is not published.
+
+    ponytail: delete the fallback once ``api.build_monitor_status`` is on dev.
+    """
+    builder = getattr(api, "build_monitor_status", None)
+    if builder is not None:
+        return builder(seq=seq, t=t, state=state, reason=reason, since_seq=since_seq)
+    return {"schema_version": api.SCHEMA_VERSION, "seq": seq, "t": t,
+            "state": state, "reason": reason, "since_seq": since_seq}
+
+
+def _probe_status(state: str = "running", reason: str | None = "operator command",
+                  since_seq: int | None = 0) -> dict:
+    """A monitor-state frame, for asking the validator a question -- and the one shape
+    the mock actually publishes, so the probe and the payload cannot drift apart."""
+    return build_status(seq=1, t=1.0, state=state, reason=reason, since_seq=since_seq)
+
+
+def _wire_admits_status() -> bool:
+    """Whether this build's contract has a monitor-state topic the mock may publish on.
+
+    The same question as ``_wire_admits_phase_guards``, asked the same way and for the
+    same reason: the answer is the shipped validator's, so ``--mock`` starts reporting a
+    state -- and the console's banner starts showing one -- the moment P0's topic lands,
+    with no edit here. Every frame the mock would send is probed, the nullable fields
+    included: a topic that exists and rejects a null ``reason`` is not the contract this
+    module was written against, and publishing into it would be the approximation this
+    module is not allowed to be.
+
+    ponytail: delete this and call ``api.build_monitor_status(...)`` directly once that
+    builder exists.
+    """
+    if STATUS_TOPIC is None:
+        return False
+    probes = [_probe_status(state=s) for s in _STATES_EMITTED]
+    # The startup frame: nothing has ticked, so there is no tick to have begun at.
+    probes.append(_probe_status(reason="monitor started", since_seq=None))
+    probes.append(_probe_status(reason=None, since_seq=None))
+    return all(api.validate_for_topic(STATUS_TOPIC, p) == [] for p in probes)
+
+
 #: Asked once, at import: the answer cannot change while the process runs.
 WIRE_ADMITS_STATE = _wire_admits_state()
 WIRE_ADMITS_PHASE_GUARDS = _wire_admits_phase_guards()
+WIRE_ADMITS_STATUS = _wire_admits_status()
 
 
 def _with_state(row: dict, state) -> dict:
@@ -421,7 +505,18 @@ class MockBus(MonitorBus):
         self._last_seen: float | None = None
         self._seq = 0
         self._step = 0
+        #: The monitor's own state, as the status topic reports it. Tracked whether or
+        #: not this build's contract admits that topic: it is what `_command` acts on and
+        #: what `_run` obeys, and only the *publishing* of it is gated on the probe.
         self._paused = False
+        self._state = "running"
+        self._state_reason = "monitor started"
+        # Null, not 0: nothing has been ticked yet, and 0 would name a tick this monitor
+        # is claiming to have counted. The console renders it as a length it cannot
+        # measure rather than as "running for 0 ticks".
+        self._state_since = None
+        if WIRE_ADMITS_STATUS:
+            self._latched[STATUS_TOPIC] = json.dumps(self._status_payload())
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="mock-monitor",
                                         daemon=True)
@@ -448,8 +543,24 @@ class MockBus(MonitorBus):
 
     def subscribe(self, ns, topics, callback):
         entry = (ns, tuple(topics), callback)
+        replay: list[tuple[str, str]] = []
         with self._lock:
             self._subs.append(entry)
+            if ns == NS:
+                # TRANSIENT_LOCAL, which the real bus gets from DDS: `RclpyBus` uses
+                # `_latched_qos` for every topic in `api.LATCHED_TOPICS`, so a
+                # subscriber arriving after the last publication is handed it anyway.
+                #
+                # It matters here and not only for fidelity. `/monitor/status` is both
+                # latched and streamed, and a paused monitor publishes nothing else at
+                # all -- so without the replay the mock's stream would be the one place
+                # in the system where a console connecting during a pause is told
+                # nothing until the operator who caused the pause ends it. That is the
+                # exact failure the latched state exists to prevent.
+                replay = [(t, self._latched[t]) for t in entry[1] if t in self._latched]
+        # Outside the lock: a callback that publishes would otherwise deadlock on it.
+        for topic, text in replay:
+            callback(topic, text)
 
         def unsubscribe():
             with self._lock:
@@ -486,12 +597,58 @@ class MockBus(MonitorBus):
             "automata": self._automata,
         }
 
+    def _status_payload(self) -> dict:
+        """This monitor's state, on the clock reading it is being published at.
+
+        ``seq`` is now; ``since_seq`` is when the state began, and the two are equal
+        only on the frame that announces a transition. A console reading the latched
+        copy an hour later measures the pause against its own live tick, which is the
+        whole reason the second field exists.
+        """
+        return build_status(
+            seq=self._seq,
+            t=self.t0 + self._seq / self.tick_hz,
+            state=self._state,
+            reason=self._state_reason,
+            since_seq=self._state_since,
+        )
+
+    def _set_state(self, state: str, reason: str | None) -> None:
+        """Move to `state` and say so on the wire, latched and streamed.
+
+        ``since_seq`` moves only when the *state* does. An operator resetting a monitor
+        that was already running has not restarted the running, and a second ``pause``
+        must not reset a banner counting how long the robot has been going unwatched.
+        """
+        if state == self._state and reason == self._state_reason:
+            return
+        if state != self._state:
+            self._state_since = self._seq
+        self._state, self._state_reason = state, reason
+        self._paused = state != "running"
+        if WIRE_ADMITS_STATUS:
+            text = json.dumps(self._status_payload())
+            self._latched[STATUS_TOPIC] = text
+            self._emit(STATUS_TOPIC, text)
+
     def _command(self, command):
-        if command == "reset":
+        """``arm`` | ``reset`` | ``pause`` | ``resume``, with the consequences the
+        console's confirmations name.
+
+        ``arm`` and ``reset`` restart the episode and discard its history -- the step
+        counter, every automaton's state, and with the step counter the phase machine --
+        and they un-pause, because a monitor armed into a paused state would be a control
+        that appears to have worked and has not. ``pause`` stops the stepping and leaves
+        the robot exactly where it was: running, and unwatched.
+        """
+        if command in ("arm", "reset"):
             self._step = 0
             self._auto_state = _initial_states(self._automata)
-        elif command in ("pause", "resume"):
-            self._paused = command == "pause"
+            self._set_state("running", f"operator command: {command}")
+        elif command == "pause":
+            self._set_state("paused", "operator command")
+        elif command == "resume":
+            self._set_state("running", "operator command")
 
     def _load_spec(self, spec):
         """Hot reload, and the episode ends because of it.
@@ -519,9 +676,19 @@ class MockBus(MonitorBus):
 
     def _run(self):
         while not self._stop.wait(self.period):
-            if self._paused:
-                continue
             self._seq += 1
+            if self._paused:
+                # The clock does not stop because the monitor was told to, so the pulse
+                # goes out and `seq` keeps counting -- which is the axis the console
+                # measures `since_seq` against, and the only reason it can say how long
+                # the robot has been running unwatched.
+                #
+                # What stops is the monitor: no step, no automaton transition, no phase
+                # change, no verdict. `_last_seen` is deliberately left alone as well:
+                # the monitor really has gone quiet, and a freshness faked on its behalf
+                # here would hide the very thing the console's banner exists to explain.
+                self._emit(api.TICK, json.dumps(self._tick(self._seq)))
+                continue
             self._step += 1
             self._pulse()
             if self._step >= self._episode_steps():
@@ -532,11 +699,16 @@ class MockBus(MonitorBus):
                 self._step = 0
                 self._auto_state = _initial_states(self._automata)
 
+    def _tick(self, seq):
+        """One clock pulse. Built here rather than inline because a paused monitor still
+        gets clocked, and both paths must put the identical frame on the wire."""
+        return api.build_tick(seq=seq, t=self.t0 + seq / self.tick_hz,
+                              tick_hz=self.tick_hz, t0=self.t0, mode="wall")
+
     def _pulse(self):
         seq, step = self._seq, self._step
         t = self.t0 + seq / self.tick_hz
-        self._emit(api.TICK, json.dumps(api.build_tick(
-            seq=seq, t=t, tick_hz=self.tick_hz, t0=self.t0, mode="wall")))
+        self._emit(api.TICK, json.dumps(self._tick(seq)))
 
         sensors = self._sensors(step)
         stale = self._stale_sources(step)

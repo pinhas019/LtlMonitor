@@ -71,6 +71,33 @@
   .mock { color:#12141a; background:var(--warn); font-weight:700; padding:2px 8px;
           border-radius:3px; letter-spacing:.08em; }
 
+  /* The monitor's own state, and the controls that change it. Both live in the sticky
+     header rather than in a pane, because an operator who opens this page while the
+     monitor is paused has to read that before anything else -- and a pane is something
+     you scroll to.
+
+     Loud, and never colour alone. The state is spelt out in words and in capitals, with
+     a glyph and a heavy edge, so it survives a monochrome screen, a colour-blind reader
+     and a photograph of the screen sent to somebody else. */
+  header .row { flex:1 0 100%; }
+  .strip { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+           border-top:1px solid var(--line); padding-top:6px; margin-top:3px; }
+  .strip .lead { color:var(--dim); font-size:11px; text-transform:uppercase;
+                 letter-spacing:.06em; }
+  .banner { display:flex; gap:12px; align-items:flex-start; border-radius:4px;
+            padding:7px 11px; margin-top:4px; }
+  .banner .mark { font-weight:700; font-size:14px; letter-spacing:.07em;
+                  white-space:nowrap; }
+  .banner .missing { margin:0; }
+  .banner b { color:var(--ink); }
+  .banner.alarm { color:var(--bad); background:#2b1a1e; border:1px solid var(--bad);
+                  border-left:12px solid var(--bad); }
+  .banner.unreported { color:var(--warn); background:#26221a;
+                       border:1px solid var(--warn);
+                       border-left:12px solid var(--warn); }
+  .banner.calm { color:var(--dim); background:#171a22; border:1px solid var(--line);
+                 border-left:12px solid var(--ok); padding:3px 11px; }
+
   /* pane 6. The *shape* carries the kind -- a second outline for accepting, a square
      for an absorbing sink -- so the three are told apart on a monochrome screen, by a
      colour-blind operator, and in a printed screenshot. Colour only agrees with it.
@@ -125,6 +152,22 @@
   <div><span class="k">step / max</span><span class="v" id="h-step">—</span></div>
   <div><span class="k">tick</span><span class="v" id="h-tick">—</span></div>
   <div style="margin-left:auto" id="h-badges"></div>
+
+  <!-- Pane 0, in everything but the numbering: what the monitor's own state is, and
+       the four commands that change it. In the header because the banner must be read
+       without scrolling to the strip that caused it. The buttons are markup rather than
+       generated, so the only thing that ever reaches this strip from the wire is a
+       refusal, and that goes through esc(). -->
+  <div class="row" id="mon-banner"></div>
+  <div class="row strip">
+    <span class="lead">monitor</span>
+    <button id="cmd-arm">arm <span class="dim">· restarts the episode</span></button>
+    <button id="cmd-reset">reset <span class="dim">· restarts the episode</span></button>
+    <button id="cmd-pause">pause <span class="dim">· stops the watching</span></button>
+    <button id="cmd-resume">resume</button>
+    <span id="cmd-note"></span>
+    <span id="cmd-why"></span>
+  </div>
 </header>
 
 <div class="grid">
@@ -184,6 +227,10 @@
 "use strict";
 
 const HDR = { "X-Skill-Monitor": "1", "Content-Type": "application/json" };
+/* `api.SCHEMA_VERSION`. The page builds two payloads -- a command and a pushed spec --
+   and a command carries the envelope version like every other frame on the wire. Pinned
+   against the constant by tests/test_web_ui.py, so a bump there fails here. */
+const SCHEMA_VERSION = 1;
 const S = {
   seg: null, manifest: null, adapter: null, status: null,
   tick: null, obs: null, verdict: null,
@@ -198,6 +245,13 @@ const S = {
   // Pane 7. Same idea, one field: the phases as drawn, so the machine is laid out once
   // per manifest and a verdict only moves the highlight.
   ph: { key: null },
+  // The monitor's own state and this page's ability to change it. `status` is the last
+  // /monitor/status payload and is the ONLY thing the state is ever read from -- see
+  // renderStateBanner. `route` is whether this build has a status route at all, `post`
+  // is whether it has a command route, and `why` is what the last GET said, so the
+  // degrade banner can name which silence this is.
+  mon: { status: null, route: null, post: null, postStatus: null, busy: false,
+         why: "this console has not asked yet." },
 };
 const PLOT_N = 180;
 
@@ -236,6 +290,7 @@ function missing(field, owner, why) {
 /* == bootstrap ============================================================== */
 
 async function boot() {
+  renderMonitor();                 // disabled, and saying why, before anything is known
   const health = await api("/api/health");
   const monitors = await api("/api/monitors");
   const list = (monitors.body && monitors.body.monitors) || [];
@@ -249,6 +304,7 @@ async function boot() {
   S.seg = list[0].path;
   S.services = (monitors.body || {}).services;
   await refreshLatched();
+  await refreshMonitorStatus();
   connect();
 }
 
@@ -270,6 +326,10 @@ function connect() {
     // claims restarts here rather than joining across the hole.
     S.aut.key = null;
     renderBadges();
+    // And the state held across that gap is a claim about a period this page was not
+    // watching -- another operator may have paused the monitor inside it. The latched
+    // topic is re-read rather than trusted, which is the same reason it is latched.
+    refreshMonitorStatus();
   };
   ws.onclose = () => { S.connected = false; renderBadges(); setTimeout(connect, 1500); };
   ws.onmessage = ev => {
@@ -278,10 +338,16 @@ function connect() {
     if (frame.dropped) S.dropped = frame.dropped;
     const p = frame.payload;
     if (!p) return;
-    if (frame.topic.endsWith("/tick")) { S.tick = p; renderClock(); }
+    if (frame.topic.endsWith("/tick")) { S.tick = p; renderClock(); renderStateBanner(); }
     else if (frame.topic.endsWith("/observation")) { S.obs = p; onObservation(p); }
     else if (frame.topic.endsWith("/verdict")) { S.verdict = p; onVerdict(p); }
     else if (frame.topic.endsWith("/spec_status")) { S.status = p; renderStatus(); }
+    // Latched *and* streamed, and both are needed: latched so a console opening
+    // mid-pause learns the truth on its first request, streamed so a console already
+    // open learns that another operator has just paused the monitor. `/spec_status` is
+    // matched above and does not end with `/status`, so the order here is clarity and
+    // not a dependency.
+    else if (frame.topic.endsWith("/status")) { onMonitorStatus(p); }
   };
 }
 
@@ -353,6 +419,281 @@ function renderBadges(health) {
   }
   $("h-badges").innerHTML = bits.join(" ");
 }
+
+/* == 0 · the monitor's state, and the controls that change it ===============
+
+   Pausing the monitor does not pause the robot. It stops the only thing that was
+   watching the robot, and the robot carries on: no verdicts, no failure modes, no
+   intervention. That is why the controls are not a media player and why the state gets
+   a banner in the sticky header rather than a pill in a pane.
+
+   **The state comes off `/monitor/status` and off nothing else.** Never from the absence
+   of verdicts: a paused monitor publishes none and a dead monitor publishes none, and
+   reading that silence as "running" is precisely the fault this pane exists to prevent.
+   A build with no status topic gets the placeholder that names the field and its owner,
+   the same as every other unreported field on this page -- and the controls keep
+   working, because the command route does not depend on the status topic. */
+
+/* `api.COMMANDS`, in the order the strip lays them out. Pinned against the constant by
+   tests/test_web_ui.py: a command added to the contract and not to this list is a
+   control the console silently does not offer. */
+const COMMANDS = ["arm", "reset", "pause", "resume"];
+
+/* What each one does, and -- for the three that cannot be taken back -- what the
+   operator is being asked to agree to. `arm` and `reset` throw the episode away;
+   `pause` leaves the robot moving with nothing watching it. `resume` is the one that
+   puts the watching back, so it asks nothing. */
+const CMD = {
+  arm: { confirm: "arm restarts the episode.\n\n" +
+      "The monitor's step counter goes back to zero, every automaton returns to its " +
+      "initial state and the phase machine returns to the first phase. The history " +
+      "of the episode now running is discarded and cannot be recovered from this " +
+      "page.\n\nArm the monitor?" },
+  reset: { confirm: "reset restarts the episode.\n\n" +
+      "The monitor's step counter goes back to zero, every automaton returns to its " +
+      "initial state and the phase machine returns to the first phase. The history " +
+      "of the episode now running is discarded and cannot be recovered from this " +
+      "page.\n\nReset the monitor?" },
+  pause: { confirm: "PAUSE STOPS THE MONITORING. IT DOES NOT STOP THE ROBOT.\n\n" +
+      "While the monitor is paused it steps no automaton, evaluates no phase guard, " +
+      "publishes no verdict and raises no failure mode. The robot keeps doing " +
+      "whatever it is doing, and nothing is watching it. It will look exactly like a " +
+      "monitor that has died.\n\nPause the monitor?" },
+  resume: {},
+};
+
+/* The four states the contract admits, what each one means for the robot, and which of
+   them are alarms. Only `running` is not: everything else means nobody is watching, and
+   an unrecognised state is treated as unknown rather than as running. */
+const MON_STATES = {
+  running: { alarm: false, mark: "MONITORING",
+             says: "the monitor is stepping and judging every tick." },
+  paused: { alarm: true, mark: "NOT MONITORING",
+            says: "the monitor has stopped stepping. It publishes no verdict, evaluates " +
+                  "no guard and raises no failure mode. The robot is not stopped by " +
+                  "this — it keeps running, unwatched." },
+  halted: { alarm: true, mark: "NOT MONITORING",
+            says: "the monitor has stopped and is judging nothing further. Whatever the " +
+                  "robot does from here is unwatched." },
+  idle: { alarm: true, mark: "NOT MONITORING",
+          says: "the monitor is running no episode, so nothing is being judged. A robot " +
+                "that is moving is moving unwatched." },
+};
+
+/* A background tab is where an operator leaves this page. The state goes in the title so
+   a pause is legible from the tab strip, without the tab having to be looked at. */
+const TITLE = document.title;
+function setTitleMark(mark) {
+  document.title = mark ? `⚠ ${mark} — ${TITLE}` : TITLE;
+}
+
+function renderMonitor() { renderStateBanner(); updateControls(); }
+
+/* The latched read. 200 is a state; a 404 is one of two different silences and the
+   banner says which, because "this build has no such route" and "this monitor has never
+   published one" are different facts about who to go and ask. */
+async function refreshMonitorStatus() {
+  if (!S.seg) return;
+  const r = await api(`/api/monitors/${S.seg}/status`);
+  const body = r.body || {};
+  if (r.status === 200) {
+    onMonitorStatus(r.body);
+    return;
+  }
+  S.mon.status = null;
+  if (r.status === 404) {
+    // The gateway's 404 for an unknown verb carries no `topic`; its 404 for a topic the
+    // monitor has not published names the topic it looked for.
+    S.mon.route = !!body.topic;
+    S.mon.why = body.topic
+      ? "the route exists and this monitor has never published a status."
+      : "this build's gateway has no such route: the topic is not in " +
+        "api.LATCHED_TOPICS, so no GET is derived for it.";
+  } else {
+    // Anything else is a refusal to answer, not an answer. Nothing is concluded from it.
+    S.mon.why = `GET .../status answered ${txt(r.status)}, which is a refusal to ` +
+      "answer rather than an answer; this page concludes nothing from it.";
+  }
+  renderMonitor();
+}
+
+function onMonitorStatus(payload) {
+  S.mon.status = (payload && typeof payload === "object") ? payload : null;
+  S.mon.route = true;
+  if (!S.mon.status) {
+    S.mon.why = "the status route answered with something that is not an object.";
+  }
+  renderMonitor();
+}
+
+/* -- the banner ------------------------------------------------------------ */
+
+function renderStateBanner() {
+  const box = $("mon-banner"), s = S.mon.status;
+
+  if (!s) {
+    setTitleMark("STATE UNREPORTED");
+    box.className = "row banner unreported";
+    box.innerHTML =
+      `<div class="mark">⚠ STATE UNREPORTED</div><div>` +
+      missing("/monitor/status", "P0, then P4",
+        "this build does not report whether the monitor is running, paused, halted or " +
+        "idle — " + S.mon.why) +
+      `<div class="dim" style="margin-top:5px">Nothing on this page infers it. A paused
+        monitor publishes no verdicts and a dead one publishes none either, so a quiet
+        wire is not evidence of a running monitor. The controls below still work: the
+        command route does not depend on this topic.</div></div>`;
+    return;
+  }
+
+  const name = typeof s.state === "string" ? s.state : null;
+  const known = name !== null &&
+    Object.prototype.hasOwnProperty.call(MON_STATES, name);
+  const meta = known ? MON_STATES[name] : null;
+  const alarm = !known || meta.alarm;
+  const mark = known ? meta.mark : "STATE UNKNOWN";
+  const says = known ? meta.says
+    : (s.state === null || s.state === undefined
+      ? `the status on the wire carries no <code>state</code> at all. It is read as
+         unknown and never as running.`
+      : `the status reports a state this console has no meaning for. It is read as
+         unknown and never as running, and nothing on this page assumes the monitor is
+         watching.`);
+
+  setTitleMark(alarm ? mark : null);
+  box.className = "row banner " + (alarm ? "alarm" : "calm");
+  box.innerHTML =
+    `<div class="mark">${alarm ? "⚠ " : ""}${esc(mark)}</div>
+     <div><b>monitor ${esc(raw(s.state).toUpperCase())}</b> — ${sinceText()}.
+       <span class="dim">reason:</span> ${s.reason === null || s.reason === undefined
+         ? `<span class="dim">none given</span>` : esc(String(s.reason))}
+       <div class="dim" style="margin-top:3px">${says}</div></div>`;
+}
+
+/* How long this state has held, in the unit the wire gives: ticks. `since_seq` against
+   the newest seq that has reached this page. Never a wall-clock duration measured here
+   -- this browser's clock and the monitor's are not the same clock, and under replay
+   they are not even the same rate. */
+function sinceText() {
+  const since = (S.mon.status || {}).since_seq;
+  if (typeof since !== "number") {
+    return `held for an unreported length of time <span class="dim">(the status carries
+      no <code>since_seq</code> to measure from)</span>`;
+  }
+  const now = latestSeq();
+  if (now === null) {
+    return `since seq ${txt(since)} <span class="dim">(no tick, observation or verdict
+      has reached this page, so there is nothing to measure it against)</span>`;
+  }
+  const ticks = now - since;
+  if (ticks < 0) {
+    return `since seq ${txt(since)} <span class="dim">(which is ahead of the newest seq
+      this page has seen, ${txt(now)} — no duration is derived from that)</span>`;
+  }
+  const hz = (S.adapter || {}).tick_hz;
+  const secs = (typeof hz === "number" && hz > 0) ? ` ≈ ${num(ticks / hz, 1)} s` : "";
+  // Concatenated rather than folded across lines: a template literal's own indentation
+  // renders as a space, and "≈ 43 s , since seq 248" is a typo on the one line of this
+  // page an operator reads under pressure.
+  return `for ${ticks} tick${ticks === 1 ? "" : "s"}${secs}` +
+    `<span class="dim">, since seq ${txt(since)} (latest ${txt(now)})</span>`;
+}
+
+/* The newest seq this page has been told about, from the clock first. All three are the
+   same axis -- the tick's -- and the observation and verdict are fallbacks for a build
+   whose stream does not carry /monitor/tick. */
+function latestSeq() {
+  for (const p of [S.tick, S.obs, S.verdict]) {
+    if (p && typeof p.seq === "number") return p.seq;
+  }
+  return null;
+}
+
+/* -- the control strip ----------------------------------------------------- */
+
+/* Why a command cannot be sent, or null when one can. A dead button that looks live is
+   worse than an absent one, so the same answer both disables the buttons and is printed
+   beside them.
+
+   Not on this list: the monitor's state. A build that reports no state can still be
+   armed, reset, paused and resumed -- the command route is independent of the status
+   topic -- and disabling the controls because the *state* is unknown would take the
+   robot's only stop button away over a missing field. The banner says the state is
+   unreported; the controls stay live. */
+function controlRefusal() {
+  if (!S.seg) {
+    return "no monitor is selected — the gateway has discovered no namespace to " +
+      "address a command to.";
+  }
+  if (S.mon.post === "absent") {
+    return `this gateway serves no POST .../command route — it answered ` +
+      `${txt(S.mon.postStatus)} — so there is nowhere to send one.`;
+  }
+  if (S.mon.busy) return "the last command has not been answered yet.";
+  return null;
+}
+
+function updateControls() {
+  const why = controlRefusal();
+  for (const c of COMMANDS) $("cmd-" + c).disabled = why !== null;
+  $("cmd-why").innerHTML = why
+    ? `<span class="warn">no control:</span> <span class="dim">${esc(why)}</span>` : "";
+}
+
+/* One command out, and what came back. Reported the way the clock's step button reports
+   a refusal -- the status and the body, not a swallowed failure -- because a control
+   that fails silently is a control an operator believes worked.
+
+   A 202 is "published", and the note says so: what the monitor did with the command is
+   what /monitor/status reports, and this page does not move its own banner on the
+   strength of having sent something. */
+async function command(cmd) {
+  const ask = (CMD[cmd] || {}).confirm;
+  if (ask && !window.confirm(ask)) {
+    $("cmd-note").innerHTML =
+      `<span class="dim">${esc(cmd)} cancelled — nothing was sent.</span>`;
+    return;
+  }
+  S.mon.busy = true;
+  updateControls();
+  $("cmd-note").innerHTML = `<span class="dim">sending ${esc(cmd)}…</span>`;
+  const r = await api(`/api/monitors/${S.seg}/command`, {
+    method: "POST",
+    body: JSON.stringify({ schema_version: SCHEMA_VERSION, command: cmd }),
+  });
+  S.mon.busy = false;
+  // 404 and 405 are the route not being there; every other refusal is this request
+  // being refused, and the buttons stay live for the next one.
+  if (r.status === 404 || r.status === 405) {
+    S.mon.post = "absent";
+    S.mon.postStatus = r.status;
+  } else if (r.status < 400) {
+    S.mon.post = "ok";
+  }
+  if (r.status < 400) {
+    $("cmd-note").innerHTML =
+      `<span class="ok">${esc(cmd)} published (${txt(r.status)})</span>
+       <span class="dim">— what the monitor does with it is what its status reports;
+       this page does not assume.</span>`;
+    if (cmd === "arm" || cmd === "reset") {
+      // The episode this page was watching is over, and its history was witnessed
+      // rather than fetched: there is nowhere to get it back from and nothing it now
+      // describes. Discarded only on a command that actually went out.
+      S.hist = []; S.arrivals = []; S.aut.key = null;
+    }
+  } else {
+    $("cmd-note").innerHTML =
+      `<span class="bad">${esc(cmd)} refused (${txt(r.status)}):
+       ${esc(r.text.slice(0, 300))}</span>`;
+  }
+  updateControls();
+  // The state is the monitor's answer, not the gateway's receipt. Re-read rather than
+  // assumed -- and if the topic is not on this wire, nothing changes and the banner goes
+  // on saying the state is unreported.
+  refreshMonitorStatus();
+}
+
+for (const c of COMMANDS) $("cmd-" + c).onclick = () => command(c);
 
 /* == 1 · description and spec =============================================== */
 
