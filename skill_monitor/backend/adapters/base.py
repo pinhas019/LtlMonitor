@@ -181,6 +181,23 @@ class SensorAdapter(ABC):
         """Confidence in this tick's sensor_eval, 0.0-1.0. Default 1.0."""
         return 1.0
 
+    # -- raw echo ------------------------------------------------------------
+    # The evaluator publishes the raw echo out of these two calls and knows nothing else
+    # about them. Defaulted here rather than probed with `hasattr` at the call site, so
+    # an adapter that cannot echo REFUSES a selection instead of accepting one and then
+    # never producing a frame -- which an operator would read as "the camera is dead".
+
+    def set_raw_echo(self, source_id: str | None) -> bool:
+        """Echo `source_id` and no other source; None stops. False when this adapter
+        cannot echo that source. Default: it cannot echo anything, so only "off" is
+        honoured."""
+        return source_id is None
+
+    def take_raw_echo(self) -> tuple[str, dict] | None:
+        """`(source_id, summary)` for the tick just closed, or None when there is
+        nothing to echo. See `adapters/raw_echo.py` for the summary convention."""
+        return None
+
     def manifest(self) -> dict:
         """What this adapter announces on /ltl/adapter. A declarative adapter
         overrides this with its descriptor's topic list; a hand-written one has no

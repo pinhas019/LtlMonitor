@@ -20,6 +20,7 @@ import json
 
 from skill_monitor.core import adapter_spec
 from skill_monitor.backend.adapters.base import Freshness, SensorAdapter
+from skill_monitor.backend.adapters.raw_echo import RawEcho
 
 
 def _msg_class(type_str: str):
@@ -71,6 +72,10 @@ class DeclarativeAdapter(SensorAdapter):
             tracked, stale_after=stale_after,
             **({"clock": clock} if clock is not None else {}),
         )
+        # Off until something asks. See raw_echo.py for what a summary looks like and
+        # what bounds its size and rate; `tick_hz` is what the stride is derived from.
+        self._echo = RawEcho({s.id: s.topic for s in self.spec.sources},
+                             tick_hz=self.spec.tick_hz)
 
     # SensorAdapter's classmethods would read the class attribute, which is None here
     # -- the schema belongs to the loaded descriptor, not to the class.
@@ -90,9 +95,24 @@ class DeclarativeAdapter(SensorAdapter):
         payload = _decode(src.decode, msg)
         if payload is None and src.decode == "json":
             return
-        self.state.update(src.id, payload)
+        contribution = self.state.update(src.id, payload)
         if src.tracked:
             self._fresh.stamp(src.id)
+        # The one place a raw ROS message still exists: after this method returns it has
+        # been folded to whatever the descriptor's steps extract, and the pixels -- or
+        # the fields no step reads -- are gone. `offer` is a reference and a counter;
+        # the encoding happens on the tick that publishes.
+        if src.id == self._echo.selected:
+            self._echo.offer(src.id, msg,
+                             {k: contribution[k] for k in src.keys if k in contribution})
+
+    # -- raw echo (api.RAW_ECHO_REQUEST -> api.RAW_ECHO, published by the evaluator) --
+
+    def set_raw_echo(self, source_id: str | None) -> bool:
+        return self._echo.select(source_id)
+
+    def take_raw_echo(self) -> tuple[str, dict] | None:
+        return self._echo.take()
 
     def get_sensor_eval(self) -> dict:
         return self.validate_sensor_eval(self.state.sensor_eval())

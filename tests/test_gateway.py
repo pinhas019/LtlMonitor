@@ -517,6 +517,94 @@ def test_command_post_publishes_the_matching_topic_message(serve):
     assert json.loads(payload_text) == api.build_command(command="reset")
 
 
+def test_raw_echo_request_post_publishes_the_matching_topic_message(serve):
+    """The console's half of the raw echo. Without this route the request topic has no
+    publisher a browser can reach, and the pane can render a source list it cannot
+    select from."""
+    bus = FakeBus(namespaces=["/nav"])
+    client = serve(bus)
+
+    asked = api.build_raw_echo_request(source_id="camera")
+    status, text = client.post("/api/monitors/nav/raw_echo_request", asked)
+    assert status == 202
+    assert json.loads(text)["ok"] is True
+
+    ns, topic, payload_text = bus.published[0]
+    assert (ns, topic) == ("/nav", api.RAW_ECHO_REQUEST)
+    assert json.loads(payload_text) == asked
+
+
+def test_raw_echo_request_post_carries_the_null_that_stops_the_echo(serve):
+    """`source_id: null` is the whole off switch, and a route that dropped it -- or a
+    validator that read it as a missing field -- would leave a camera streaming with no
+    way to stop it from the console that started it."""
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+
+    status, _text = client.post("/api/monitors/_/raw_echo_request",
+                                api.build_raw_echo_request(source_id=None))
+    assert status == 202
+    assert json.loads(bus.published[0][2])["source_id"] is None
+
+
+def test_raw_echo_request_post_rejects_a_payload_the_contract_refuses(serve):
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+
+    status, text = client.post("/api/monitors/_/raw_echo_request",
+                               {"schema_version": 1, "source_id": 7})
+    assert status == 400
+    assert json.loads(text)["ok"] is False
+    assert bus.published == []                 # nothing reached the graph
+
+
+def test_the_stream_carries_the_raw_echo(serve):
+    """`/monitor/raw_echo` is neither latched nor pollable -- it is per-tick and exists
+    only while a console asked for it -- so the stream is the only way it reaches a
+    browser. Without this the pane has a source list, a POST that works, and no frames.
+    """
+    assert api.RAW_ECHO in gateway.STREAM_TOPICS
+
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+    echo = json.dumps(api.build_raw_echo(
+        seq=1041, t=1041.0, step=None, source_id="camera",
+        summary={"kind": "image", "topic": "/depth_anything/color_image",
+                 "width": 160, "height": 120, "encoding": "png",
+                 "data_uri": "data:image/png;base64,AAAA",
+                 "samples_this_tick": 3, "bytes": 4},
+    ), indent=2)
+
+    connection = client.ws("/api/monitors/_/stream")
+    try:
+        bus.wait_for_listeners(1)
+        bus.deliver("", api.RAW_ECHO, echo)
+        frame_text = connection.recv()
+    finally:
+        connection.close()
+
+    frame = json.loads(frame_text)
+    assert frame["topic"] == api.RAW_ECHO
+    assert frame["payload"]["summary"]["kind"] == "image"
+    # Byte-identical, like every other topic: a base64 payload re-encoded by the gateway
+    # would be a different string for the same pixels.
+    assert gateway.frame_payload_text(frame_text) == echo
+
+
+def test_every_ingress_topic_has_a_route_that_reaches_it(serve):
+    """An `INGRESS_TOPICS` entry is a table, not a route: the POST dispatch names its
+    verbs. This is the test that fails when the next topic is added to the table and the
+    handler is forgotten, which is exactly how `raw_echo_request` arrived here."""
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+
+    for verb, topic in gateway.INGRESS_TOPICS.items():
+        status, _text = client.post(f"/api/monitors/_/{verb}", {"not": "valid"})
+        # 400 is the contract refusing the body, which means routing got that far;
+        # 404 is the route not existing at all.
+        assert status != 404, f"{verb} -> {topic} has no route"
+
+
 def test_command_post_rejects_a_payload_the_contract_refuses(serve):
     """Validation is `api.validate_for_topic`, so the problem list a client sees is the
     same one every other consumer of the contract produces."""
@@ -840,6 +928,9 @@ BROWSER_PREFLIGHT = {
 STATE_CHANGING_PATHS = [
     "/api/monitors/_/command",
     "/api/monitors/_/spec",
+    # It publishes onto the robot's graph and it turns a camera into bandwidth, so it is
+    # a write like any other -- a page on another origin must not be able to start one.
+    "/api/monitors/_/raw_echo_request",
     "/api/clock/mode",
     "/api/clock/step",
     "/api/clock/rate",
