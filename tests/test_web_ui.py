@@ -25,6 +25,7 @@ for pane 6 (the automaton) the split is:
 from __future__ import annotations
 
 import json
+import shutil
 import time
 import urllib.parse
 
@@ -509,3 +510,49 @@ def test_the_mock_splits_a_rule_with_the_shared_splitter(bus):
     assert values["collision_risk"] is True          # 0.1 < 0.25, not 0.1 < 0
     values, _unknown = bus._aps(sensors | {"min_range": 3.0}, [])
     assert values["collision_risk"] is False
+
+
+# =============================================================================
+# The page is one script, so it parses or nothing does
+# =============================================================================
+#
+# These two shell out to `node`, which the project's testing rule otherwise forbids --
+# no real processes in a unit test. The exception is deliberate and narrow: the thing
+# under test *is* a syntax checker, Python cannot parse JavaScript, and the page has no
+# test runner in this repo. There is no way to assert this property without running a
+# JavaScript engine. Everything else in this file stays fully mocked.
+
+def test_the_page_parses():
+    """The page ships as a single `<script>`, so one syntax error anywhere in it stops
+    the whole script parsing and every pane goes blank at once -- not the one that was
+    edited. That has happened: a backtick inside an HTML comment inside a template
+    literal ended the literal early, and the console rendered nothing at all. It was
+    found by loading it in a browser, because nothing here could see it."""
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed; the page's JavaScript cannot be checked")
+    assert web.page_syntax_problems() == []
+
+
+def test_a_page_that_does_not_parse_is_reported_with_its_own_name(tmp_path):
+    """The regression, reproducing the original failure exactly. Also pins that the
+    scratch file node actually compiles is not what the reader is told about: a path
+    under /tmp is not something anyone can go and fix."""
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed; the page's JavaScript cannot be checked")
+    page = tmp_path / "index.html"
+    page.write_text("<script>\nconst x = `<!-- a ` backtick -->`;\n</script>",
+                    encoding="utf-8")
+    problems = web.page_syntax_problems(page)
+    assert len(problems) == 1
+    assert "SyntaxError" in problems[0]
+    assert problems[0].startswith("index.html:")
+    assert str(tmp_path / "broken") not in problems[0]
+
+
+def test_check_exits_non_zero_without_binding_anything():
+    """`--check` is what CI and a pre-commit hook run. It must answer from the file
+    alone -- no port, no bus, no ROS -- so that a page which cannot parse is caught
+    before a server comes up looking perfectly healthy in front of a blank console."""
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed; the page's JavaScript cannot be checked")
+    assert web.main(["--check"]) == 0
