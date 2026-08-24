@@ -944,3 +944,155 @@ def test_the_ladder_horizon_is_not_two_numbers():
     with pytest.raises(TypeError):
         moved_again.__kwdefaults__["warn_steps"]      # what import used to do
     assert inspect.signature(moved_again).parameters["warn_steps"].default == 3
+
+
+# =============================================================================
+# The phase machine's guards, as evaluated
+#
+# `phase_guards_block` decides two things and nothing else: which guards a phase
+# *declares*, and how a guard the machine did not evaluate is spelled. It computes no
+# truth values -- deliberately, because a second implementation of the expression
+# evaluator is where this project's `min_range < 0.25` decimal-point bug lived three
+# times. Everything below pins one of those two decisions.
+# =============================================================================
+
+def _phase(**overrides) -> dict:
+    p = {
+        "phase": "PlanningAndInitiation",
+        "enter_condition": "mission_started",
+        "precondition": "True",
+        "invariant": "upright and not collision_risk",
+        "progress_condition": "not nav_stuck",
+        "exit_condition": "path_active",
+    }
+    p.update(overrides)
+    return p
+
+
+def test_a_phase_guards_block_reports_the_expression_the_spec_authored():
+    """Carried, never re-derived and never normalised. The pane shows the operator
+    their own words next to the monitor's own answer; anything else is a paraphrase
+    they then have to reconcile against a spec file they cannot see."""
+    block = manifest.phase_guards_block(_phase(), {"invariant": True})
+    assert block["phase"] == "PlanningAndInitiation"
+    by_name = {g["name"]: g for g in block["guards"]}
+    assert by_name["invariant"]["expr"] == "upright and not collision_risk"
+    assert by_name["progress_condition"]["expr"] == "not nav_stuck"
+
+
+def test_a_guard_the_machine_did_not_consult_is_null_and_not_false():
+    """The distinction the whole field exists for. `False` on an invariant is a fault an
+    operator must act on; `null` means the monitor never asked. A block that collapsed
+    the two reports a healthy run as breached, or a breached one as merely unchecked."""
+    block = manifest.phase_guards_block(_phase(), {"invariant": True, "exit_condition": False})
+    by_name = {g["name"]: g["value"] for g in block["guards"]}
+    assert by_name["invariant"] is True
+    assert by_name["exit_condition"] is False
+    # Never consulted this tick -- absent from `values`, so absent from the answer.
+    assert by_name["enter_condition"] is None
+    assert by_name["enter_condition"] is not False
+    assert by_name["progress_condition"] is None
+
+
+def test_a_phase_contributes_no_row_for_a_guard_it_does_not_declare():
+    """A phase with no `progress_condition` has no progress guard. The machine's own
+    `"True"` fallback is not a condition the spec wrote, and drawing it as one of the
+    operator's guards is a lie about their spec."""
+    block = manifest.phase_guards_block(
+        {"phase": "P", "invariant": "upright"}, {"invariant": True}
+    )
+    assert [g["name"] for g in block["guards"]] == ["invariant"]
+
+    # …and a declared-but-blank condition is not a declaration either.
+    blank = manifest.phase_guards_block({"phase": "P", "invariant": "upright",
+                                         "progress_condition": "   "}, {})
+    assert [g["name"] for g in blank["guards"]] == ["invariant"]
+
+
+def test_the_guards_are_reported_in_the_order_the_machine_consults_them():
+    """Enter, then precondition on entry, then invariant, progress and exit each step.
+    A pane reading top to bottom then reads the machine's own order."""
+    block = manifest.phase_guards_block(_phase(), {})
+    assert [g["name"] for g in block["guards"]] == list(api.PHASE_GUARD_NAMES)
+
+
+def test_the_older_condition_spelling_still_declares_an_enter_guard():
+    """`monitor_node._update_phase_state` still accepts `condition` as the enter
+    spelling. A phase using it declares an enter guard just as much as one that does
+    not, and a pane that showed no enter row for it would be describing a phase the
+    monitor does not have."""
+    block = manifest.phase_guards_block(
+        {"phase": "P", "condition": "mission_started"}, {"enter_condition": True}
+    )
+    assert block["guards"] == [
+        {"name": "enter_condition", "expr": "mission_started", "value": True}
+    ]
+
+
+@pytest.mark.parametrize("nonsense", [1, 0, "true", "", None, [], object()])
+def test_a_guard_value_that_is_not_a_bool_becomes_null(nonsense):
+    """The same rule `_automaton_state` follows. `1` is the interesting one: truthy in
+    every consumer language there is, and rendered as a guard that holds on no evidence
+    the machine ever evaluated it."""
+    block = manifest.phase_guards_block(_phase(), {"invariant": nonsense})
+    assert {g["name"]: g["value"] for g in block["guards"]}["invariant"] is None
+
+
+@pytest.mark.parametrize("phase", [None, "PlanningAndInitiation", {}, {"phase": ""},
+                                   {"phase": 7}, []])
+def test_a_phase_that_cannot_name_itself_produces_no_block(phase):
+    """Null for the whole block, never a block with a missing or numeric name: the
+    validator would reject that verdict outright and the monitor would publish nothing
+    at all for the tick."""
+    assert manifest.phase_guards_block(phase, {"invariant": True}) is None
+
+
+def test_a_block_with_no_evaluated_values_at_all_is_still_a_valid_block():
+    """The degrade path for the block itself: every guard null. It still validates, and
+    it still tells the operator which conditions this phase has."""
+    v = _verdict(phase_guards=manifest.phase_guards_block(_phase(), None))
+    assert api.validate_verdict(v) == []
+    assert all(g["value"] is None for g in v["phase_guards"]["guards"])
+
+
+def test_a_verdict_carries_the_block_through_untouched():
+    """`build_verdict_payload` puts the caller's guards on the wire under the right
+    field name. It has no opinion about whether they are right -- having one would be
+    the second evaluator this field exists to avoid."""
+    block = manifest.phase_guards_block(_phase(), {"exit_condition": False})
+    v = _verdict(phase="PlanningAndInitiation", phase_index=0, phase_guards=block)
+    assert api.validate_verdict(v) == []
+    assert v["phase_guards"] == block
+
+
+def test_a_verdict_with_no_phase_machine_at_all_still_validates():
+    """The degrade path. Nothing about the phase pane may make a monitor running a spec
+    with no `execution_phases` publish an invalid verdict -- or one that claims, with an
+    empty guard list, that a phase is running and declares nothing."""
+    v = _verdict(phase=None, phase_index=None)
+    assert v["phase_guards"] is None
+    assert api.validate_verdict(v) == []
+    # …and it is byte-identical to the verdict of a build that never heard of guards.
+    assert v == _verdict(phase=None, phase_index=None, phase_guards=None)
+
+
+def test_every_guard_name_the_block_can_emit_is_one_the_wire_admits():
+    """`PHASE_GUARD_KEYS` and `api.PHASE_GUARD_NAMES` are two lists of the same five
+    names in two modules. A name in one and not the other is a row the monitor builds
+    and the validator then throws the whole verdict out for."""
+    assert set(manifest.PHASE_GUARD_KEYS) == set(api.PHASE_GUARD_NAMES)
+    every = manifest.phase_guards_block(
+        _phase(), {name: True for name in api.PHASE_GUARD_NAMES}
+    )
+    assert api.validate_verdict(_verdict(phase_guards=every)) == []
+    assert len(every["guards"]) == len(api.PHASE_GUARD_NAMES)
+
+
+def test_the_shipped_g1_spec_declares_a_full_set_of_guards_on_every_phase():
+    """The spec the console is actually pointed at. If a phase of it declared a guard
+    the block does not know how to name, the pane would silently lose a row."""
+    for phase in _spec()["execution_phases"]:
+        block = manifest.phase_guards_block(phase, {})
+        assert block["phase"] == phase["phase"]
+        assert [g["name"] for g in block["guards"]] == list(api.PHASE_GUARD_NAMES)
+        assert api.validate_verdict(_verdict(phase_guards=block)) == []

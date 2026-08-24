@@ -244,12 +244,21 @@ def test_builders_reject_positional_arguments():
 # require: only these four are the manifest's own.
 REQUIRED_FIELDS = {"manifest": ("schema_version", "skill_name", "phases", "source")}
 
+# Fields a builder always emits but a validator tolerates absent, because they landed
+# after SCHEMA_VERSION 1 and requiring them would invalidate every producer that
+# predates them with no version bump to make the mismatch detectable. Declared but not
+# required -- the pairing that has to be spelled out somewhere, and this is where.
+OPTIONAL_FIELDS = {"verdict": ("phase_guards",)}
+
 
 @pytest.mark.parametrize("name", list(PAYLOADS))
 def test_a_missing_required_field_is_named(name):
     factory, validate, _ = PAYLOADS[name]
     template = factory()
+    tolerated = OPTIONAL_FIELDS.get(name, ())
     for field in REQUIRED_FIELDS.get(name, tuple(template)):
+        if field in tolerated:
+            continue
         payload = {k: v for k, v in template.items() if k != field}
         problems = validate(payload)
         assert any(f"'{field}'" in p and "missing" in p for p in problems), (
@@ -596,6 +605,207 @@ def test_the_row_field_sets_stay_closed_around_state(rows):
 
     payload[rows][0]["stat"] = 1        # a typo, not a new field
     assert any("unknown field 'stat'" in p for p in api.validate_verdict(payload))
+
+
+# =============================================================================
+# `verdict.phase_guards` -- the evaluated truth of the active phase's guards
+#
+# The structural half of a phase already rides the latched manifest: its conditions,
+# its `max_steps`, its violation limit. What a console cannot get from there is whether
+# each condition holds *right now* -- and it must not work that out itself, because a
+# second implementation of the expression evaluator is where this project's
+# `min_range < 0.25` decimal-point bug lived three times. These tests pin the field the
+# monitor publishes instead, and above all pin that its `null` survives: "we did not
+# check" and "it does not hold" are different facts and one of them is a fault.
+# =============================================================================
+
+def _guarded(*guards, phase="PlanningAndInitiation") -> dict:
+    """A verdict whose phase_guards block carries exactly `guards`."""
+    return a_verdict() | {
+        "phase_guards": api.build_phase_guards(phase=phase, guards=list(guards)),
+    }
+
+
+def test_a_verdict_carries_the_evaluated_truth_of_each_phase_guard():
+    """The whole contract in one payload: which phase, which guards it declares, the
+    expression as the spec authored it, and what the monitor computed for each."""
+    payload = _guarded(
+        api.build_phase_guard(name="enter_condition", expr="mission_started", value=True),
+        api.build_phase_guard(name="invariant", expr="upright and not collision_risk",
+                              value=True),
+        api.build_phase_guard(name="progress_condition", expr="not nav_stuck", value=True),
+        api.build_phase_guard(name="exit_condition", expr="path_active", value=False),
+    )
+    assert api.validate_verdict(payload) == []
+    assert payload["phase_guards"]["phase"] == "PlanningAndInitiation"
+    assert [g["name"] for g in payload["phase_guards"]["guards"]] == [
+        "enter_condition", "invariant", "progress_condition", "exit_condition"
+    ]
+    # The expression is carried, not derived. The console shows the operator their own
+    # words; it never parses them.
+    assert payload["phase_guards"]["guards"][1]["expr"] == "upright and not collision_risk"
+    assert json.loads(json.dumps(payload)) == payload
+
+
+def test_a_guard_that_was_not_evaluated_is_null_and_never_false():
+    """The load-bearing null. A guard the phase machine short-circuited past, or one
+    whose expression read an AP in `unknown_aps`, has no truth value this tick. Spelling
+    that `false` reports an invariant as breached that was never asked."""
+    payload = _guarded(
+        api.build_phase_guard(name="exit_condition", expr="path_active", value=None),
+    )
+    assert api.validate_verdict(payload) == []
+    row = payload["phase_guards"]["guards"][0]
+    assert row["value"] is None
+    assert row["value"] is not False, "null and false are different facts"
+
+
+def test_a_guard_row_defaults_to_not_evaluated():
+    """`value` is the one field a builder may not guess at. A caller that has no answer
+    gets `null` for free; a caller that computed one has to say so."""
+    assert api.build_phase_guard(name="invariant", expr="upright")["value"] is None
+
+
+def test_a_verdict_with_no_active_phase_carries_a_null_block():
+    """Idle, done, or a producer with no phase machine at all. `null` for the whole
+    block is the same absence `phase_index` reports, spelled the same way -- not an
+    empty guard list, which would claim a phase is running and declares nothing."""
+    payload = a_verdict()
+    assert payload["phase_guards"] is None
+    assert api.validate_verdict(payload) == []
+    assert api.validate_verdict(a_verdict() | {"phase_guards": None}) == []
+
+
+def test_a_verdict_may_omit_phase_guards_entirely():
+    """It landed after SCHEMA_VERSION 1. Required would invalidate every producer that
+    predates it with no version bump to make the mismatch detectable -- the same rule
+    `state` and an adapter step's `threshold` already follow."""
+    payload = a_verdict()
+    del payload["phase_guards"]
+    assert api.validate_verdict(payload) == []
+
+
+def test_phase_guards_is_declared_so_it_is_not_an_unknown_field():
+    """`_VERDICT_FIELDS` is closed. Undeclared, a verdict carrying the block would be
+    thrown out whole rather than merely ignored -- so the pane's producer could not
+    ship it at all."""
+    payload = _guarded(
+        api.build_phase_guard(name="invariant", expr="upright", value=True),
+    )
+    assert api.validate_verdict(payload) == []
+    payload["phase_guard"] = payload["phase_guards"]      # a typo, not a new field
+    assert any("unknown field 'phase_guard'" in p
+               for p in api.validate_verdict(payload))
+
+
+@pytest.mark.parametrize("value", ["true", 1, 0, "", [], {}])
+def test_a_guard_value_that_is_not_a_bool_is_named(value):
+    """A stringly-typed "true" is truthy in every consumer language there is. The one
+    reading this field exists to prevent is a guard rendered as holding on evidence the
+    monitor never produced."""
+    payload = _guarded(
+        api.build_phase_guard(name="invariant", expr="upright") | {"value": value},
+    )
+    problems = api.validate_verdict(payload)
+    assert any("phase_guards" in p and "guards[0]" in p and "'value'" in p
+               for p in problems), problems
+
+
+def test_a_guard_name_outside_the_known_set_is_named():
+    """The name is a row label a console renders. An unrecognised one is drawn as a
+    guard nobody can name, so it is rejected at the edge instead."""
+    payload = _guarded(
+        api.build_phase_guard(name="postcondition", expr="arrived", value=True),
+    )
+    problems = api.validate_verdict(payload)
+    assert any("guards[0]" in p and "'name'" in p for p in problems), problems
+    for name in api.PHASE_GUARD_NAMES:
+        assert api.validate_verdict(_guarded(
+            api.build_phase_guard(name=name, expr="x", value=True)
+        )) == []
+
+
+def test_a_guard_with_no_expression_is_named():
+    """`expr` is what the operator reads. A null one leaves a row labelled `invariant`
+    with nothing beside it and no way to tell which condition it is about."""
+    payload = _guarded(
+        api.build_phase_guard(name="invariant", expr="upright") | {"expr": None},
+    )
+    assert any("guards[0]" in p and "'expr'" in p
+               for p in api.validate_verdict(payload)), api.validate_verdict(payload)
+
+
+def test_the_guard_rows_stay_closed():
+    payload = _guarded(
+        api.build_phase_guard(name="invariant", expr="upright", value=True)
+        | {"valeu": True},
+    )
+    assert any("unknown field 'valeu'" in p for p in api.validate_verdict(payload))
+
+
+@pytest.mark.parametrize("block", [[], "PlanningAndInitiation", 7, True])
+def test_a_phase_guards_block_that_is_not_an_object_is_named(block):
+    """The message has to say what was wrong with it, not merely that the field was
+    involved -- "unknown field 'phase_guards'" would satisfy a looser assertion while
+    meaning the contract never admitted the block at all."""
+    payload = a_verdict() | {"phase_guards": block}
+    problems = api.validate_verdict(payload)
+    assert any("'phase_guards'" in p and "an object or null" in p
+               for p in problems), problems
+
+
+def test_a_phase_guards_block_missing_its_own_fields_is_named():
+    for block, wanted in (({"guards": []}, "phase"), ({"phase": "P"}, "guards")):
+        problems = api.validate_verdict(a_verdict() | {"phase_guards": block})
+        assert any(f"'{wanted}'" in p and "missing" in p for p in problems), problems
+    problems = api.validate_verdict(
+        a_verdict() | {"phase_guards": {"phase": "P", "guards": "none"}}
+    )
+    assert any("'guards'" in p for p in problems), problems
+
+
+def test_a_phase_guards_block_stays_closed():
+    payload = a_verdict() | {
+        "phase_guards": {"phase": "P", "guards": [], "phase_index": 1},
+    }
+    assert any("unknown field 'phase_index'" in p
+               for p in api.validate_verdict(payload))
+
+
+def test_the_builder_does_not_alias_the_block_it_is_handed():
+    """`risk` and `intervention` are copied for the same reason: a caller that mutates
+    its own dict after building must not retroactively edit a published frame."""
+    block = api.build_phase_guards(phase="P", guards=[])
+    payload = api.build_verdict(
+        seq=1, t=1.0, step=1, skill_name="s", phase="P", phase_index=0,
+        verdict="UNDECIDED", formulas=[], failure_modes=[],
+        risk=api.build_risk(steps_to_timeout=None, seconds_to_timeout=None,
+                            violations_to_fault=None, warn=False,
+                            trigger_confidence=1.0),
+        intervention=api.build_intervention(action="CONTINUE", confidence=1.0),
+        phase_guards=block,
+    )
+    block["phase"] = "SomethingElse"
+    assert payload["phase_guards"]["phase"] == "P"
+
+
+def test_the_verdict_example_in_the_wire_doc_still_validates():
+    """docs/api.md IS the wire contract as an integrator reads it, and the pane's author
+    writes their consumer against that example. An example carrying a `phase_guards`
+    block the validator rejects means the doc and the code disagree about the payload."""
+    import re
+
+    doc = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "api.md").read_text()
+    section = doc[doc.index("## `/monitor/verdict`"):]
+    block = re.search(r"```json\n(.*?)\n```", section, re.S)
+    assert block, "the /monitor/verdict section lost its example"
+    payload = json.loads(block.group(1))
+    assert api.validate_verdict(payload) == []
+    # …and the example is an example *of this field*: it shows both a real value and the
+    # null, because a doc that only ever showed `true`/`false` would teach the one
+    # reading the field exists to prevent.
+    values = [g["value"] for g in payload["phase_guards"]["guards"]]
+    assert None in values and True in values and False in values
 
 
 def test_an_unknown_command_is_rejected():

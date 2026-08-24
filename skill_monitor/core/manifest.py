@@ -639,6 +639,89 @@ def formula_entries(statuses) -> list[dict]:
 
 
 # =============================================================================
+# The phase machine's guards, as evaluated
+#
+# The structural half of a phase -- its conditions, its `max_steps`, its violation
+# limit -- already rides the latched manifest. The one thing a console cannot get from
+# there is whether each condition *holds right now*, and it must not work that out
+# itself: a second implementation of the expression evaluator is exactly where this
+# project's `min_range < 0.25` decimal-point bug lived three times. So the monitor
+# publishes what its own phase machine computed, and these two functions are the only
+# place that decides which guards a phase has and how an uncomputed one is spelled.
+# =============================================================================
+
+#: guard name -> the spec keys it may be authored under, in the order the phase machine
+#: consults them. `enter_condition` has two spellings: `condition` is the older one,
+#: still accepted by `monitor_node._update_phase_state`, and a phase that uses it
+#: declares an enter guard just as much as one that does not.
+PHASE_GUARD_KEYS: dict[str, tuple[str, ...]] = {
+    "enter_condition": ("enter_condition", "condition"),
+    "precondition": ("precondition",),
+    "invariant": ("invariant",),
+    "progress_condition": ("progress_condition",),
+    "exit_condition": ("exit_condition",),
+}
+
+
+def phase_guard_expressions(phase) -> list[tuple[str, str]]:
+    """(guard name, expression **as the spec authored it**) for each guard declared.
+
+    Only what the phase actually declares. A phase with no `progress_condition` gets no
+    progress row -- the machine's internal `"True"` fallback is not a condition the spec
+    wrote, and showing it to an operator as one of their own guards would be a lie about
+    their spec.
+    """
+    if not isinstance(phase, dict):
+        return []
+    rows: list[tuple[str, str]] = []
+    for name in api.PHASE_GUARD_NAMES:
+        for key in PHASE_GUARD_KEYS.get(name, (name,)):
+            raw = phase.get(key)
+            if isinstance(raw, str) and raw.strip():
+                rows.append((name, raw))
+                break
+    return rows
+
+
+def phase_guards_block(phase, values=None) -> dict | None:
+    """`verdict.phase_guards` for one phase, or None when there is no phase to report.
+
+    `values` maps guard name -> the bool the phase machine computed for it on this tick.
+    A guard the machine did not consult -- it short-circuited before reaching it, or the
+    expression raised because an AP it reads was unknown -- is simply absent from
+    `values`, and reaches the wire as `null`.
+
+    Absent is not False, and nothing here may turn one into the other: `False` on an
+    invariant is a fault the operator must act on, while `null` means the monitor never
+    asked. A block that collapsed the two would report a healthy run as breached, or a
+    breached one as merely unchecked.
+    """
+    if not isinstance(phase, dict):
+        return None
+    name = phase.get("phase")
+    if not isinstance(name, str) or not name:
+        return None
+    seen = values if isinstance(values, dict) else {}
+    return api.build_phase_guards(
+        phase=name,
+        guards=[
+            api.build_phase_guard(name=guard, expr=expr, value=_guard_value(seen.get(guard)))
+            for guard, expr in phase_guard_expressions(phase)
+        ],
+    )
+
+
+def _guard_value(value) -> bool | None:
+    """A guard's truth, or None for anything that is not one.
+
+    The same rule as `_automaton_state`: whatever a caller happens to be holding, only
+    an honest bool reaches the wire. A truthy 1 or a non-empty string would be rendered
+    as a guard that holds, on no evidence that the machine ever evaluated it.
+    """
+    return value if isinstance(value, bool) else None
+
+
+# =============================================================================
 # Which sources a failure mode is believable on
 #
 # Derived, never authored: `spec_contract.sensor_keys_in_rule()` gives an AP's sensor
@@ -1039,6 +1122,7 @@ def build_verdict_payload(
     terminal: str | None = None,
     missed_ticks: int = 0,
     has_data: bool = True,
+    phase_guards: dict | None = None,
     min_confidence: float = MIN_CONFIDENCE,
     warn_steps: int = WARN_STEPS,
 ) -> dict:
@@ -1084,4 +1168,8 @@ def build_verdict_payload(
             warn_steps=warn_steps,
         ),
         missed_ticks=missed_ticks,
+        # Passed through, never recomputed. The caller's phase machine evaluated these;
+        # this function's job is to put them on the wire under the right field name, not
+        # to have an opinion about whether they are right.
+        phase_guards=phase_guards,
     )

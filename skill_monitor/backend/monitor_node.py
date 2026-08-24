@@ -702,6 +702,12 @@ class LtlMonitorNode(Node):
         self.phase_idx = -1           # index into spec.execution_phases; -1 = Idle
         self.phase_violation_count = 0
         self.phase_step_count = 0     # steps elapsed in the current phase
+        # (phase index, guard name) -> the bool `_update_phase_state` computed for it on
+        # the last step. Only guards it actually consulted are in here; the absences are
+        # what `verdict.phase_guards` publishes as `null`.
+        self._phase_guard_values: dict[tuple[int, str], bool] = {}
+        #: This tick's `verdict.phase_guards` block, or None when no phase is active.
+        self._phase_guards: dict | None = None
         self.halted = False
         self.paused = False
         # Confidence in the latest observation (sensor freshness, from the evaluator).
@@ -1126,16 +1132,30 @@ class LtlMonitorNode(Node):
         recoverable=True  → enter IDLE (e.g. progress violations, awaitable)
         recoverable=False → halt  (e.g. invariant, timeout, precondition), subject to
                             the intervention token -- see `_advance`.
+
+        Every guard this consults is recorded in `self._phase_guard_values`, keyed by
+        (phase index, guard name), so `verdict.phase_guards` can publish the truth the
+        machine *acted on* rather than a second evaluation of the same expression. The
+        recording is a side effect of `_eval` and of nothing else: a guard this method
+        short-circuits past is absent from the dict, and absent means `null` on the wire.
         """
         phases = self.spec.execution_phases
+        self._phase_guard_values = {}
         if not phases:
             return "Idle", None
 
-        def _eval(raw: str, default: bool) -> bool:
+        def _eval(raw: str, default: bool, guard: tuple[int, str] | None = None) -> bool:
             try:
-                return bool(eval(_sanitize_condition(raw), {"__builtins__": {}}, observation))
+                value = bool(eval(_sanitize_condition(raw), {"__builtins__": {}}, observation))
             except Exception:
+                # Not recorded, deliberately. The expression decided nothing -- an AP it
+                # reads was in `unknown_aps`, or it is malformed -- and the machine is
+                # falling back on `default`. Publishing `default` as this guard's value
+                # would claim the spec's condition said something it never got to say.
                 return default
+            if guard is not None:
+                self._phase_guard_values[guard] = value
+            return value
 
         def _enter_phase(idx: int) -> tuple[str, dict] | None:
             """Try to enter phase[idx]; return the failure if the precondition fails."""
@@ -1145,7 +1165,7 @@ class LtlMonitorNode(Node):
             self.phase_violation_count = 0
             self.get_logger().info(f"Phase enter: '{p['phase']}'")
             precond = p.get("precondition", "")
-            if precond and not _eval(precond, True):
+            if precond and not _eval(precond, True, (idx, "precondition")):
                 return (
                     p["phase"],
                     _phase_fault_entry(
@@ -1166,7 +1186,7 @@ class LtlMonitorNode(Node):
         if self.phase_idx < 0:
             p0 = phases[0]
             enter = p0.get("enter_condition") or p0.get("condition", "False")
-            if _eval(enter, False):
+            if _eval(enter, False, (0, "enter_condition")):
                 fail = _enter_phase(0)
                 if fail:
                     return fail
@@ -1174,13 +1194,14 @@ class LtlMonitorNode(Node):
         if self.phase_idx < 0:
             return "Idle", None
 
-        p     = phases[self.phase_idx]
+        idx   = self.phase_idx
+        p     = phases[idx]
         name  = p["phase"]
         limit = p.get("progress_violation_limit", _PHASE_VIOLATION_LIMIT)
 
         # ── Hard invariant (immediate failure) ────────────────────
         invariant = p.get("invariant", "")
-        if invariant and not _eval(invariant, True):
+        if invariant and not _eval(invariant, True, (idx, "invariant")):
             return (
                 name,
                 _phase_fault_entry(
@@ -1216,7 +1237,7 @@ class LtlMonitorNode(Node):
 
         # ── Progress condition (counted violations) ───────────────
         progress_condition = p.get("progress_condition", "True")
-        if not _eval(progress_condition, True):
+        if not _eval(progress_condition, True, (idx, "progress_condition")):
             self.phase_violation_count += 1
             self.get_logger().warn(
                 f"Phase '{name}' progress violation {self.phase_violation_count}/{limit}"
@@ -1242,13 +1263,18 @@ class LtlMonitorNode(Node):
             self.phase_violation_count = 0
 
         # ── Exit condition (respects min_steps) ───────────────────
+        # `and` short-circuits, so below min_steps the exit condition is never
+        # evaluated -- and never recorded. That is the honest report: the machine did
+        # not ask whether it could leave, so the wire says `null` rather than `false`.
         min_steps = timing.get("min_steps", 0)
-        if self.phase_step_count >= min_steps and _eval(p.get("exit_condition", "False"), False):
+        if self.phase_step_count >= min_steps and _eval(
+            p.get("exit_condition", "False"), False, (idx, "exit_condition")
+        ):
             next_idx = self.phase_idx + 1
             if next_idx < len(phases):
                 np_ = phases[next_idx]
                 np_enter = np_.get("enter_condition") or np_.get("condition", "True")
-                if _eval(np_enter, True):
+                if _eval(np_enter, True, (next_idx, "enter_condition")):
                     self.get_logger().info(f"Phase: '{name}' → '{np_['phase']}'")
                     fail = _enter_phase(next_idx)
                     if fail:
@@ -1269,6 +1295,29 @@ class LtlMonitorNode(Node):
         self.phase_violation_count = 0
         self.phase_step_count = 0
         self.current_phase = "Idle"
+        self._phase_guard_values = {}
+        self._phase_guards = None
+
+    def _current_phase_guards(self) -> dict | None:
+        """`verdict.phase_guards` for the phase the machine is in now, or None.
+
+        Filtered by phase index, not merged across phases: on a tick that transitions,
+        `_update_phase_state` evaluates the outgoing phase's exit condition *and* the
+        incoming phase's enter condition, and only the latter belongs to the phase this
+        verdict says the run is in. The incoming phase's invariant and progress
+        condition are not consulted until the next tick, so they publish as `null` --
+        which is exactly true, and is why the null must survive to the wire.
+        """
+        phases = self.spec.execution_phases
+        if not (0 <= self.phase_idx < len(phases)):
+            return None
+        idx = self.phase_idx
+        values = {
+            guard: value
+            for (i, guard), value in self._phase_guard_values.items()
+            if i == idx
+        }
+        return manifest_mod.phase_guards_block(phases[idx], values)
 
     def _print_phase_context(self) -> None:
         """Print a banner showing the current phase's full constraint set."""
@@ -1693,6 +1742,10 @@ class LtlMonitorNode(Node):
             if self.phase_idx != prev_phase_idx and self.phase_idx >= 0:
                 self._print_phase_context()
         self._phase_fault = phase_fault
+        # Read straight out of what the machine just recorded, before anything else can
+        # run: this block is the truth the monitor acted on this tick, not a second
+        # opinion about the same expressions.
+        self._phase_guards = self._current_phase_guards() if self.has_phases else None
 
         # Print standard console step block
         _print_step_block(
@@ -1951,6 +2004,11 @@ class LtlMonitorNode(Node):
             terminal=self._terminal,
             missed_ticks=self._missed_ticks if missed_ticks is None else missed_ticks,
             has_data=self._has_data if has_data is None else has_data,
+            # The guards as of the last step, for the same reason `formulas` carries the
+            # statuses as of the last step: a stall verdict describes a tick nothing was
+            # evaluated on, and repeating the last evaluation is what every other field
+            # on that frame already does.
+            phase_guards=self._phase_guards,
         )
 
     def publish_verdict(self, **overrides) -> None:

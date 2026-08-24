@@ -189,7 +189,17 @@ repeating the same `seq`.
            "trigger_confidence": 0.67, "stale_sources": ["status"]},
   "intervention": {"action": "WARN", "category": "SAFETY",
                    "imminence": null, "confidence": 0.67},
-  "missed_ticks": 0
+  "missed_ticks": 0,
+  "phase_guards": {
+    "phase": "ExecutionAndTracking",
+    "guards": [{"name": "enter_condition", "expr": "path_active", "value": null},
+               {"name": "invariant", "expr": "upright and not collision_risk",
+                "value": true},
+               {"name": "progress_condition",
+                "expr": "moving_towards_target or not nav_stuck", "value": true},
+               {"name": "exit_condition", "expr": "mission_finished or nav_stuck",
+                "value": false}]
+  }
 }
 ```
 
@@ -205,6 +215,36 @@ repeating the same `seq`.
 | `intervention.action` | one rung of `CONTINUE < WARN < SLOW < REPLAN < HALT < ABORT`. The monitor decides; the supervisor enforces this **and** `terminal` — the two are separate legs of one stop rule, see [P5](packages/P5-supervisor.md). The monitor's own halt is this same decision, so the token and the process's behaviour cannot disagree on one tick |
 | `seconds_to_timeout` | ships **beside** `steps_to_timeout`, never replacing it, until spec bounds move to seconds (P11) |
 | `missed_ticks` | pulses the monitor did not see. Logged, never interpolated |
+| `phase_guards` | the evaluated truth of the active phase's guard conditions, or `null` when no phase is active — see below |
+
+### `phase_guards` — the guards, as the monitor evaluated them
+
+The structural half of a phase already rides the latched `manifest.execution_phases`:
+its `enter_condition`, `exit_condition`, `invariant`, `progress_condition`,
+`precondition`, `timing_bounds.max_steps` and `progress_violation_limit`. The one thing
+a consumer cannot get from there is whether each condition **holds right now**, and it
+must not work that out for itself: a second implementation of the expression evaluator
+is where this project's `min_range < 0.25` decimal-point bug lived three times. So
+`monitor_node._update_phase_state` records what it computed, and this field publishes
+that recording. The number on the wire is the number the monitor acted on.
+
+| field | notes |
+|---|---|
+| `phase_guards` | `object` ｜ `null`. Null — not an empty guard list — when no phase is active, which is the same absence `phase_index` reports |
+| `guards[].name` | closed: `enter_condition` ｜ `precondition` ｜ `invariant` ｜ `progress_condition` ｜ `exit_condition`, in the order the phase machine consults them. Only guards the phase **actually declares**: a phase with no `progress_condition` contributes no row, because the machine's internal `"True"` fallback is not a condition the spec wrote |
+| `guards[].expr` | the expression **exactly as the spec authored it**, so the console shows the operator their own words. Carried, never re-derived, and never parsed by the consumer |
+| `guards[].value` | `true` ｜ `false` ｜ **`null`**, and the null is load-bearing: it means the guard was **not evaluated this tick** — the machine short-circuited before reaching it, an AP the expression reads was in `unknown_aps`, or the expression raised. `null` must stay distinguishable from `false`: "we did not check" and "it does not hold" are different facts and one of them is a fault |
+
+`enter_condition` and `precondition` are asked once, on entry, so they read `null` on
+every later tick of the same phase — as in the example above, which is a steady tick of
+a phase entered earlier. On a tick that *transitions*, the block describes the phase the
+verdict says the run is in: the incoming phase's `enter_condition` and `precondition`
+carry real values, and its `invariant`, `progress_condition` and `exit_condition` are
+`null` because the machine does not reach them until the next tick.
+
+`phase_guards` landed after `schema_version` 1, so it is **declared but not required**:
+a producer that predates it still validates, and one that sends it is type-checked. The
+same rule `formulas[].state` and an adapter step's `threshold` already follow.
 
 ### `terminal` — the episode-end signal
 
