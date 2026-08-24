@@ -1182,3 +1182,242 @@ def test_the_phase_machines_own_fault_reports_no_state():
     rows = {e["name"]: e for e in verdicts(node)[-1]["failure_modes"]}
     phase_row = next(e for name, e in rows.items() if name != "collision_imminent")
     assert phase_row["state"] is None
+
+
+# =============================================================================
+# `verdict.phase_guards` -- the truth the phase machine acted on
+#
+# The one thing the console cannot get from the latched manifest is whether each of a
+# phase's conditions holds right now, and it must not evaluate them itself: a second
+# implementation of the expression evaluator is where this project's
+# `min_range < 0.25` decimal-point bug lived three times. So `_update_phase_state`
+# records what it computed, and the verdict publishes that recording rather than a
+# second opinion. These tests pin that it really is the same number -- and that a guard
+# the machine short-circuited past reaches the wire as `null`, not as `false`.
+# =============================================================================
+
+def _guards(verdict) -> dict:
+    """The published block as {guard name: value}."""
+    return {g["name"]: g["value"] for g in verdict["phase_guards"]["guards"]}
+
+
+def _exprs(verdict) -> dict:
+    return {g["name"]: g["expr"] for g in verdict["phase_guards"]["guards"]}
+
+
+def _two_phase_spec(**first) -> dict:
+    phase0 = {
+        "phase": "Approach",
+        "enter_condition": "mission_started",
+        "invariant": "upright",
+        "invariant_fault_category": "SAFETY",
+        "progress_condition": "not nav_stuck",
+        "exit_condition": "path_active",
+    }
+    phase0.update(first)
+    return a_spec(execution_phases=[
+        phase0,
+        {"phase": "Track", "enter_condition": "path_active",
+         "invariant": "upright", "invariant_fault_category": "SAFETY",
+         "progress_condition": "not nav_stuck", "exit_condition": "arrived"},
+    ])
+
+
+def test_the_verdict_publishes_the_guards_the_phase_machine_evaluated():
+    """The entering tick: the machine consults every guard the phase declares, and every
+    one of them reaches the wire with the expression the spec authored beside it."""
+    node = a_node(_two_phase_spec(), monitors=[FakeMonitor("nav", "F(path_active)")])
+    tick(node, 1)
+    observe(node, 1, aps={"mission_started": True, "upright": True,
+                          "nav_stuck": False, "path_active": False})
+
+    v = verdicts(node)[-1]
+    assert api.validate_verdict(v) == []
+    assert v["phase"] == "Approach" and v["phase_index"] == 0
+    assert v["phase_guards"]["phase"] == "Approach"
+    assert _guards(v) == {
+        "enter_condition": True,        # it is why the phase was entered
+        "invariant": True,
+        "progress_condition": True,
+        "exit_condition": False,        # …and why it was not left again
+    }
+    assert _exprs(v)["progress_condition"] == "not nav_stuck"
+
+
+def test_the_published_exit_condition_is_the_one_that_decided_the_transition():
+    """The point of the whole field: the number on the wire is the number the monitor
+    acted on. `exit_condition` reads true on exactly the tick the phase index advances,
+    and the pane's `true` is therefore the same evaluation that moved the machine."""
+    node = a_node(_two_phase_spec(), monitors=[FakeMonitor("nav", "F(path_active)")])
+    aps = {"mission_started": True, "upright": True, "nav_stuck": False,
+           "path_active": False, "arrived": False}
+    tick(node, 1)
+    observe(node, 1, aps=aps)
+    tick(node, 2)
+    observe(node, 2, aps=dict(aps, path_active=True))
+
+    before, after = verdicts(node)[-2], verdicts(node)[-1]
+    assert before["phase_index"] == 0 and _guards(before)["exit_condition"] is False
+    # The machine moved, and it moved because that same expression came back true.
+    assert after["phase_index"] == 1
+    assert node.phase_idx == 1
+    assert _guards(after)["enter_condition"] is True, (
+        "phase 1's enter condition is what admitted it, and it is published as such"
+    )
+    # The outgoing phase's exit guard is not smuggled into the incoming phase's block.
+    assert after["phase_guards"]["phase"] == "Track"
+    assert _exprs(after)["exit_condition"] == "arrived"
+
+
+def test_a_guard_the_machine_short_circuited_past_reports_null_not_false():
+    """`min_steps` is the cleanest short circuit there is: below it the machine never
+    asks whether it may leave. Publishing `false` would tell an operator the exit
+    condition was checked and did not hold -- a claim about the world, from a tick on
+    which the monitor made no such claim."""
+    node = a_node(
+        _two_phase_spec(timing_bounds={"min_steps": 5}),
+        monitors=[FakeMonitor("nav", "F(path_active)")],
+    )
+    tick(node, 1)
+    observe(node, 1, aps={"mission_started": True, "upright": True,
+                          "nav_stuck": False, "path_active": True})
+
+    v = verdicts(node)[-1]
+    assert api.validate_verdict(v) == []
+    guards = _guards(v)
+    # `path_active` is true and would have fired the exit -- and the machine still sits
+    # in phase 0, because it never evaluated it.
+    assert v["phase_index"] == 0
+    assert guards["exit_condition"] is None
+    assert guards["exit_condition"] is not False
+    # …while the guards it did consult carry real answers on the same tick.
+    assert guards["invariant"] is True and guards["progress_condition"] is True
+
+
+def test_a_steady_tick_reports_null_for_the_guards_entry_consulted():
+    """`enter_condition` and `precondition` are asked once, on entry. On every later
+    tick of the same phase they are simply not consulted, and the honest report of that
+    is `null` -- not the stale `true` that admitted the phase ten steps ago."""
+    node = a_node(
+        _two_phase_spec(precondition="upright"),
+        monitors=[FakeMonitor("nav", "F(path_active)")],
+    )
+    aps = {"mission_started": True, "upright": True, "nav_stuck": False,
+           "path_active": False}
+    for seq in (1, 2):
+        tick(node, seq)
+        observe(node, seq, aps=aps)
+
+    entering, steady = verdicts(node)[-2], verdicts(node)[-1]
+    assert _guards(entering)["enter_condition"] is True
+    assert _guards(entering)["precondition"] is True
+    assert steady["phase_index"] == 0, "still the same phase, still the same entry"
+    assert _guards(steady)["enter_condition"] is None
+    assert _guards(steady)["precondition"] is None
+    assert _guards(steady)["invariant"] is True, "the per-step guards still report"
+
+
+def test_an_ap_the_evaluator_could_not_supply_leaves_its_guard_null():
+    """An AP in `unknown_aps` is simply absent from `ap_values`, so the expression
+    raises and the machine falls back on a default. The default is what the machine
+    *did*; it is not what the spec's condition said, and publishing it as that
+    condition's value invents an evaluation that never happened."""
+    node = a_node(_two_phase_spec(), monitors=[FakeMonitor("nav", "F(path_active)")])
+    tick(node, 1)
+    # `nav_stuck` never arrived: `not nav_stuck` cannot be evaluated at all.
+    observe(node, 1, aps={"mission_started": True, "upright": True,
+                          "path_active": False})
+
+    v = verdicts(node)[-1]
+    assert api.validate_verdict(v) == []
+    guards = _guards(v)
+    assert guards["progress_condition"] is None
+    # The machine's own fallback for an unevaluable progress condition is "no
+    # violation" -- it did not count one -- and that is *not* published as `true`.
+    assert node.phase_violation_count == 0
+    assert guards["progress_condition"] is not True
+    assert guards["invariant"] is True, "an expression that did evaluate still reports"
+
+
+def test_a_breached_invariant_publishes_false_and_stops_asking():
+    """The other side of the same coin. `false` here is a real answer the operator must
+    act on, and everything the machine skipped on its way out is `null` -- so the pane
+    can show which guard ended the phase and which were never reached."""
+    node = a_node(_two_phase_spec(), monitors=[FakeMonitor("nav", "F(path_active)")])
+    aps = {"mission_started": True, "upright": True, "nav_stuck": False,
+           "path_active": False}
+    tick(node, 1)
+    observe(node, 1, aps=aps)
+    tick(node, 2)
+    observe(node, 2, aps=dict(aps, upright=False))
+
+    v = verdicts(node)[-1]
+    assert api.validate_verdict(v) == []
+    guards = _guards(v)
+    assert guards["invariant"] is False
+    assert guards["progress_condition"] is None, "never reached: the phase already failed"
+    assert guards["exit_condition"] is None
+    assert any(fm["name"].endswith(":invariant") for fm in v["failure_modes"])
+
+
+def test_an_idle_run_publishes_a_null_block():
+    """No phase is active, so there is nothing to report guards for. `null` for the
+    whole block, not an empty guard list -- which would claim a phase is running and
+    declares no conditions at all."""
+    node = a_node(_two_phase_spec(), monitors=[FakeMonitor("nav", "F(path_active)")])
+    tick(node, 1)
+    observe(node, 1, aps={"mission_started": False, "upright": True,
+                          "nav_stuck": False, "path_active": False})
+
+    v = verdicts(node)[-1]
+    assert v["phase"] == "Idle" and v["phase_index"] is None
+    assert v["phase_guards"] is None
+    assert api.validate_verdict(v) == []
+
+
+def test_a_spec_with_no_phases_publishes_a_null_block_and_a_valid_verdict():
+    """The degrade path. `a_spec()` declares no `execution_phases` at all, and nothing
+    about the phase pane may make such a monitor publish a verdict its own validator
+    rejects."""
+    node = a_node()
+    assert node.has_phases is False
+    tick(node, 1)
+    observe(node, 1, aps={"path_active": True})
+
+    v = verdicts(node)[-1]
+    assert v["phase_guards"] is None
+    assert api.validate_verdict(v) == []
+
+
+def test_a_reload_forgets_the_guards_of_the_spec_it_replaced():
+    """A spec swap resets the phase machine, and a block left over from the old spec
+    would name a phase the new one does not have."""
+    node = a_node(_two_phase_spec(), monitors=[FakeMonitor("nav", "F(path_active)")])
+    tick(node, 1)
+    observe(node, 1, aps={"mission_started": True, "upright": True,
+                          "nav_stuck": False, "path_active": False})
+    assert verdicts(node)[-1]["phase_guards"] is not None
+
+    node._reset_phase_state()
+    assert node._phase_guards is None
+    assert node.verdict()["phase_guards"] is None
+    assert api.validate_verdict(node.verdict()) == []
+
+
+def test_the_published_guards_are_the_ones_the_machine_recorded():
+    """No second evaluation anywhere on the path. The node's own record of what
+    `_update_phase_state` computed is what the verdict carries, key for key."""
+    node = a_node(_two_phase_spec(), monitors=[FakeMonitor("nav", "F(path_active)")])
+    tick(node, 1)
+    observe(node, 1, aps={"mission_started": True, "upright": True,
+                          "nav_stuck": True, "path_active": False})
+
+    recorded = {guard: value for (idx, guard), value
+                in node._phase_guard_values.items() if idx == node.phase_idx}
+    published = {name: value for name, value in _guards(verdicts(node)[-1]).items()
+                 if value is not None}
+    assert published == recorded
+    assert recorded["progress_condition"] is False
+    assert node.phase_violation_count == 1, (
+        "the machine counted a violation off the same evaluation it published"
+    )

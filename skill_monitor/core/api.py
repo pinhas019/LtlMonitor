@@ -82,6 +82,17 @@ FORMULA_STATUSES = ("INCONCLUSIVE", "ACCEPTED", "VIOLATED")
 
 FAULT_CATEGORIES = ("SAFETY", "INVARIANT", "TIMEOUT", "PROGRESS")
 
+# The guard conditions a spec may declare on an execution phase, in the order the phase
+# machine consults them: a phase is entered when `enter_condition` holds, refuses entry
+# when `precondition` does not, fails outright when `invariant` breaks, counts a
+# violation when `progress_condition` does not hold, and leaves when `exit_condition`
+# does. Closed, because `verdict.phase_guards.guards[].name` is a row label a console
+# renders -- an unrecognised one would be drawn as a guard nobody can name.
+PHASE_GUARD_NAMES = (
+    "enter_condition", "precondition", "invariant",
+    "progress_condition", "exit_condition",
+)
+
 # core.monitor_action.Action, ordered. The monitor decides the rung; the supervisor
 # only enforces it.
 INTERVENTION_ACTIONS = ("CONTINUE", "WARN", "SLOW", "REPLAN", "HALT", "ABORT")
@@ -126,6 +137,10 @@ OBJECT: _Check = (lambda v: isinstance(v, dict), "an object")
 ARRAY: _Check = (lambda v: isinstance(v, list), "an array")
 
 INT_OR_NULL: _Check = (lambda v: v is None or _is_int(v), "an int or null")
+#: The null is a third value, not a missing bool. "We did not check this" and "this
+#: does not hold" are different facts about a guard, and one of them is a fault.
+BOOL_OR_NULL: _Check = (lambda v: v is None or isinstance(v, bool), "a bool or null")
+OBJECT_OR_NULL: _Check = (lambda v: v is None or isinstance(v, dict), "an object or null")
 NUMBER_OR_NULL: _Check = (lambda v: v is None or _is_number(v), "a number or null")
 STRING_OR_NULL: _Check = (lambda v: v is None or isinstance(v, str), "a string or null")
 STRING_ARRAY: _Check = (
@@ -499,6 +514,32 @@ _INTERVENTION_FIELDS: dict[str, _Check] = {
     "confidence": UNIT_INTERVAL,
 }
 
+#: One row of `verdict.phase_guards.guards`: a guard the active phase declares, the
+#: expression **as the spec authored it**, and the truth the phase machine computed for
+#: it on this tick.
+#:
+#: `expr` is carried rather than derived because the consumer must not evaluate it. A
+#: second implementation of the expression evaluator is exactly where this project's
+#: `min_range < 0.25` decimal-point bug lived three times; the console shows the
+#: operator their own words next to the monitor's own answer, and computes nothing.
+_PHASE_GUARD_FIELDS: dict[str, _Check] = {
+    "name": _one_of(PHASE_GUARD_NAMES),
+    "expr": STRING,
+    # Nullable on purpose, and the null is not a shrug: it means the phase machine did
+    # not consult this guard on this tick -- it short-circuited before reaching it, an
+    # AP the expression reads was in `unknown_aps`, or the expression raised. A
+    # consumer that renders null as false reports a guard as broken that was never
+    # asked, which is the one reading this field exists to prevent.
+    "value": BOOL_OR_NULL,
+}
+
+#: `verdict.phase_guards` itself. Null for the whole block when no phase is active --
+#: the same absence `phase_index` reports, spelled the same way.
+_PHASE_GUARDS_FIELDS: dict[str, _Check] = {
+    "phase": STRING,
+    "guards": OBJECT_ARRAY,
+}
+
 _VERDICT_FIELDS: dict[str, _Check] = {
     **_TICK_SCOPED,
     "skill_name": STRING,
@@ -513,7 +554,17 @@ _VERDICT_FIELDS: dict[str, _Check] = {
     # Pulses the monitor did not see. Logged, never interpolated -- and counted, so a
     # negative is a producer talking about a tick axis it is no longer on.
     "missed_ticks": COUNT,
+    # The evaluated truth of the active phase's guard conditions, or null when no phase
+    # is active. See `_PHASE_GUARD_FIELDS`.
+    "phase_guards": OBJECT_OR_NULL,
 }
+
+#: `phase_guards` landed after SCHEMA_VERSION 1 shipped, so it follows the rule `state`
+#: and `threshold` already follow: optional, because making it required would invalidate
+#: every producer that predates it with no version bump to make the mismatch
+#: detectable. `_VERDICT_FIELDS` is CLOSED, so it still has to be *declared* above or a
+#: verdict carrying it is thrown out entirely rather than merely ignored.
+_VERDICT_OPTIONAL = ("phase_guards",)
 
 
 def build_verdict(
@@ -531,12 +582,17 @@ def build_verdict(
     intervention: dict,
     terminal: str | None = None,
     missed_ticks: int = 0,
+    phase_guards: dict | None = None,
 ) -> dict:
     """Exactly once per tick.
 
     `intervention.action` is one rung of CONTINUE < WARN < SLOW < REPLAN < HALT < ABORT.
     The monitor decides it here; the supervisor only enforces what it is handed, so the
     decision is in the recorded stream rather than in the actuating process.
+
+    `phase_guards` defaults to None because "no phase is active" is the ordinary state
+    of an idle or finished run, and because a producer with no phase machine at all
+    still has to be able to build a valid verdict.
     """
     return _tick_scoped_envelope(seq, t, step) | {
         "skill_name": skill_name,
@@ -549,7 +605,23 @@ def build_verdict(
         "risk": dict(risk),
         "intervention": dict(intervention),
         "missed_ticks": missed_ticks,
+        "phase_guards": None if phase_guards is None else dict(phase_guards),
     }
+
+
+def build_phase_guard(*, name: str, expr: str, value: bool | None = None) -> dict:
+    """One row of `verdict.phase_guards.guards`.
+
+    `value` defaults to None -- "the phase machine did not consult this guard on this
+    tick" -- because that is the safe default for a caller that has no answer. A caller
+    that computed one passes it; nothing here computes it, and nothing here may.
+    """
+    return {"name": name, "expr": expr, "value": value}
+
+
+def build_phase_guards(*, phase: str, guards) -> dict:
+    """`verdict.phase_guards`: which phase, and the truth of each guard it declares."""
+    return {"phase": phase, "guards": list(guards)}
 
 
 def build_formula(*, name: str, status: str, state: int | None = None) -> dict:
@@ -623,7 +695,8 @@ def validate_verdict(payload: Any) -> list[str]:
     if (bad := _not_an_object(payload, "verdict")) is not None:
         return bad
     problems: list[str] = []
-    _check_fields(payload, "verdict", _VERDICT_FIELDS, problems)
+    _check_fields(payload, "verdict", _VERDICT_FIELDS, problems,
+                  optional=_VERDICT_OPTIONAL)
     _check_version(payload, "verdict", problems)
     _check_each(payload, "formulas", "verdict", _FORMULA_FIELDS, problems,
                 optional=_ROW_OPTIONAL)
@@ -631,6 +704,14 @@ def validate_verdict(payload: Any) -> list[str]:
                 optional=_ROW_OPTIONAL)
     _check_nested(payload, "risk", "verdict", _RISK_FIELDS, problems)
     _check_nested(payload, "intervention", "verdict", _INTERVENTION_FIELDS, problems)
+    # Two levels, because the rows are the point: a block whose only structure check was
+    # "is an object" would let `{"value": "true"}` through, and a console reading that
+    # string sees a truthy guard whatever the monitor decided.
+    _check_nested(payload, "phase_guards", "verdict", _PHASE_GUARDS_FIELDS, problems)
+    guards = payload.get("phase_guards")
+    if isinstance(guards, dict):
+        _check_each(guards, "guards", "verdict.phase_guards", _PHASE_GUARD_FIELDS,
+                    problems)
     return problems
 
 
