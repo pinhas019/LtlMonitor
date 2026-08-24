@@ -1,0 +1,22 @@
+{
+  "name": "pose",
+  "doc": "Where the robot is. This fragment belongs to the EMBODIMENT and not to any one skill -- an inspection or manipulation skill wants a pose exactly as much as a navigation skill does -- so it is composed alongside a skill fragment rather than folded into one. Nothing here mentions a goal, a waypoint or a planner.",
+  "keys": {
+    "pos_x": {
+      "doc": "float, metres. X of the robot base in the ODOMETRY frame (odom -> base_link), whose origin and axes are wherever the robot was when odometry started. It drifts with the odometry source and is not comparable across runs or to a map frame, so a rule may compare it to another quantity in the same frame (a commanded goal, an earlier position) but never to an absolute place in the world.",
+      "default": 0.0
+    },
+    "pos_y": {
+      "doc": "float, metres. Y of the robot base in the odometry frame, positive to the robot's left at the moment odometry started (ROS REP-103 right-handed, X forward, Y left, Z up). Same frame and same caveats as pos_x.",
+      "default": 0.0
+    },
+    "pos_z": {
+      "doc": "float, metres. Z of the robot base in the odometry frame, positive up. Height above the odometry origin plane, not above the ground the robot is currently standing on -- on a slope or a stair the two differ.",
+      "default": 0.0
+    },
+    "yaw": {
+      "doc": "float, radians in [-pi, pi]. Heading of the robot base about the odometry frame's Z (up) axis, ZYX/aerospace convention. 0.0 means facing along the odometry frame's +X axis and positive is counter-clockwise seen from above. It WRAPS: -3.13 and 3.13 are four hundredths of a radian apart, so a rule that subtracts two yaws without wrapping the difference is wrong twice per revolution.",
+      "default": 0.0
+    }
+  }
+}

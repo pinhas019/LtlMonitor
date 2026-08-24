@@ -26,6 +26,7 @@ Run it on a HOST, not inside trav_app: the container has no docker CLI and no
 
 import argparse
 import json
+import math
 import queue
 import subprocess
 import sys
@@ -373,10 +374,17 @@ class MockSource(threading.Thread):
         min_range = max(0.2, 3.0 - 0.05 * i)
         stale = ["points"] if 20 <= i % 60 < 26 else []
         violated = min_range < 0.25
+        # ...walking along the odometry frame's +X axis toward a goal 6 m out, so the
+        # X-Y track and dist_to_goal are a consistent story rather than seven constants.
+        pos_x, pos_y = round(0.1 * i, 3), 0.0
+        goal_x, goal_y = 6.0, 0.0
         sensors = {
             "min_range": round(min_range, 2), "base_roll": 0.01, "base_pitch": -0.02,
             "base_height": 0.78, "upright_flag": 1.0,
             "linear_vel": round(0.4 + 0.05 * ((i % 7) - 3), 2), "angular_vel": 0.0,
+            "pos_x": pos_x, "pos_y": pos_y, "pos_z": 0.78, "yaw": 0.0,
+            "goal_x": goal_x, "goal_y": goal_y,
+            "dist_to_goal": round(math.hypot(goal_x - pos_x, goal_y - pos_y), 3),
             "nav_mode": "AUTOMATIC", "nav_state": "following",
             "num_waypoints": 4, "current_target_idx": min(3, i // 15),
             "mission_finished": False, "nav_stuck": False,

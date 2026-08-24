@@ -5,7 +5,13 @@ importing the module that subscribes to it.
 
 A descriptor (skill_monitor/adapters/*.json) has:
 
-    schema    "nav_schema.json" or an inline {key: {doc, default}} dict
+    schema    a schema FRAGMENT, or a list of fragments composed left to right.
+              A fragment is either a "*_schema.json" file name or an inline
+              {key: {doc, default}} dict, so
+                  "nav_schema.json"
+                  {"gripper_closed": {"doc": "...", "default": false}}
+                  ["pose_schema.json", "nav_schema.json"]
+              are all legal and the first two mean exactly what they always did.
     defaults  optional per-robot overrides of the schema defaults
     tick_hz   the observation rate this descriptor is written for (default 1.0)
     sources   one per topic: {id, topic, type, decode, qos, tracked, required,
@@ -30,6 +36,31 @@ Arguments handed to `fn`: the values named by `inputs` if present, else the valu
 `field`, else the whole decoded message. An extractor returning None leaves the keys
 untouched -- that is how a Nav2 status array with no goals in it reports nothing
 rather than reporting a wrong state.
+
+## Schema composition
+
+A shared vocabulary across `real_g1`, `mujoco` and `isaac_lab` is what makes the
+monitor EMBODIMENT-agnostic. One vocabulary that is entirely navigation's is what makes
+it SKILL-specific: a manipulation skill would have to adopt `nav_stuck` and
+`num_waypoints` before it could say anything at all. So a descriptor composes its
+schema out of fragments instead of naming one file:
+
+    "schema": ["pose_schema.json", "nav_schema.json"]
+
+`pose_schema.json` -- where the robot is -- belongs to the EMBODIMENT and is what an
+inspection or manipulation skill keeps when it drops the navigation fragment.
+
+Fragments merge left to right and a later one wins on collision, which is what makes
+"the standard fragment, with this one key retuned for my robot" expressible at all. A
+collision that CHANGES a key's meaning -- a different `doc` or a different `default` --
+is not silent: it is recorded in `warnings()` and so published in `manifest()`, beside
+the other descriptor smells. It is a warning and not an error deliberately. Refusing to
+load would make override useless, since an override that changes nothing is not an
+override; but a fragment quietly redefining what `min_range` MEANS, or what value it
+holds before any message arrives, is precisely the plausible-nonsense class this module
+exists to catch, so it has to be visible on the wire rather than only in the diff. A
+fragment that re-declares a key IDENTICALLY says nothing new and is passed over in
+silence.
 
 ## The observation window
 
@@ -151,6 +182,41 @@ def _fn_quat_to_roll_pitch():
     return f
 
 
+def _fn_quat_to_yaw():
+    """Heading about the odometry frame's Z axis, from an orientation quaternion.
+
+    Separate from `quat_to_roll_pitch` rather than a third output of it: roll and pitch
+    answer "is the robot still upright", yaw answers "which way is it facing", and the
+    two live in different schema fragments now. A descriptor that wants only pose
+    should not have to write the tilt keys to get a heading.
+    """
+    def f(q):
+        _roll, _pitch, yaw = g1_sensors.quat_to_euler(
+            _attr(q, "x"), _attr(q, "y"), _attr(q, "z"), _attr(q, "w"))
+        return yaw
+    return f
+
+
+def _fn_planar_distance():
+    """Straight-line distance between two points in the odometry GROUND PLANE, given as
+    four already-folded keys: (x0, y0, x1, y1).
+
+    Planar and not 3-D on purpose. The robot walks on a surface, so the z difference
+    between it and a commanded goal point is the goal publisher's choice of height, not
+    a distance the robot has to cover -- including it would make "arrived" depend on
+    what altitude somebody stamped the waypoint at.
+
+    Returns None -- which leaves the key holding its previous value -- if any input is
+    None, so a descriptor whose goal keys are nullable does not turn a missing goal into
+    a TypeError out of the middle of a tick.
+    """
+    def f(x0, y0, x1, y1):
+        if any(v is None for v in (x0, y0, x1, y1)):
+            return None
+        return math.hypot(x1 - x0, y1 - y0)
+    return f
+
+
 def _fn_upright(tilt_max=0.5, height_min=0.5):
     return lambda roll, pitch, height: (
         1.0 if g1_sensors.base_upright(roll, pitch, height,
@@ -198,6 +264,8 @@ def _fn_eq(to=None):
 
 EXTRACTORS = {
     "quat_to_roll_pitch": _fn_quat_to_roll_pitch,
+    "quat_to_yaw": _fn_quat_to_yaw,
+    "planar_distance": _fn_planar_distance,
     "upright": _fn_upright,
     "min_range_points": _fn_min_range_points,
     "min_range_scan": _fn_min_range_scan,
@@ -515,7 +583,12 @@ class AdapterSpec:
     """A loaded descriptor. Holds the per-run state of its stateful extractors, so
     load it once per adapter instance rather than sharing one across robots."""
 
-    def __init__(self, raw: dict, schema: dict):
+    def __init__(self, raw: dict, schema: dict, schema_warnings=()):
+        #: Complaints raised while COMPOSING `schema` out of fragments, handed in
+        #: because the merge happens in `from_dict()` before this object exists. They
+        #: go in front of the descriptor's own warnings: a key that does not mean what
+        #: the fragment says it means invalidates everything read off it downstream.
+        self._schema_warnings = list(schema_warnings)
         unknown = set(raw) - ADAPTER_KEYS
         if unknown:
             raise ValueError(
@@ -692,7 +765,7 @@ class AdapterSpec:
         return policy
 
     def _build_warnings(self) -> list:
-        out = []
+        out = list(self._schema_warnings)
         unrated: dict[str, list] = {}      # source id -> its unrateable 'last' keys
         for src in self.sources:
             if not src.declares_expected_hz:
@@ -1104,14 +1177,82 @@ def load(name_or_path) -> AdapterSpec:
     return from_dict(raw, base_dir=path.parent)
 
 
+def _read_fragment(fragment, base_dir: Path, label: str, adapter: str) -> dict:
+    """One schema fragment's {key: {doc, default}} map: a "*_schema.json" file name (or
+    path) resolved against `base_dir`, or an inline dict used as-is."""
+    if isinstance(fragment, dict):
+        return fragment
+    if not isinstance(fragment, str):
+        raise ValueError(
+            f"adapter {adapter!r}: schema fragment {label} must be a file name or an "
+            f"inline {{key: {{doc, default}}}} dict, got {type(fragment).__name__}")
+    path = base_dir / fragment
+    try:
+        loaded = json.loads(path.read_text())
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"adapter {adapter!r}: schema fragment {label} names {fragment!r}, which "
+            f"does not exist in {base_dir}") from exc
+    keys = loaded.get("keys")
+    if not isinstance(keys, dict):
+        raise ValueError(
+            f"adapter {adapter!r}: schema fragment {fragment!r} has no 'keys' object")
+    return keys
+
+
+def compose_schema(schema, base_dir: Path, adapter: str = "adapter") -> tuple:
+    """Merge a descriptor's `schema` declaration into one key map, plus the warnings the
+    merge raised.
+
+    `schema` is a single fragment or a LIST of them. Fragments are applied left to
+    right and a later one wins, so ["pose_schema.json", "nav_schema.json"] is the pose
+    vocabulary plus navigation's, and a trailing inline dict retunes individual keys for
+    one robot without forking the shared file.
+
+    A collision only counts as a collision when the two entries DIFFER: re-declaring a
+    key identically says nothing and is silent. When they differ, the later entry still
+    wins -- see the module docstring for why that is not an error -- and the override is
+    named in the returned warnings so it reaches `manifest()` and the wire.
+    """
+    fragments = schema if isinstance(schema, list) else [schema]
+    if not fragments:
+        raise ValueError(f"adapter {adapter!r} declares no schema")
+
+    merged: dict = {}
+    origin: dict = {}
+    complaints: list = []
+    for i, fragment in enumerate(fragments):
+        label = fragment if isinstance(fragment, str) else f"schema[{i}] (inline)"
+        for key, entry in _read_fragment(fragment, base_dir, f"[{i}]", adapter).items():
+            previous = merged.get(key, _MISSING)
+            if previous is not _MISSING and previous != entry:
+                changed = sorted(
+                    f"{field}: {previous.get(field)!r} -> {entry.get(field)!r}"
+                    for field in set(previous) | set(entry)
+                    if isinstance(previous, dict) and isinstance(entry, dict)
+                    and previous.get(field) != entry.get(field)
+                ) or [f"{previous!r} -> {entry!r}"]
+                complaints.append(
+                    f"schema key {key!r} is redefined by {label} and the later "
+                    f"definition wins ({'; '.join(changed)}); it came from "
+                    f"{origin[key]}. If that is intentional this line is the record of "
+                    f"it; if it is not, two fragments disagree about what {key!r} means "
+                    f"and every rule written over it is reading one of the two")
+            merged[key] = entry
+            origin[key] = label
+
+    if not merged:
+        raise ValueError(f"adapter {adapter!r} declares no schema")
+    return merged, complaints
+
+
 def from_dict(raw: dict, base_dir: Path | None = None) -> AdapterSpec:
     base_dir = skill_monitor.adapters_dir() if base_dir is None else base_dir
     schema = raw.get("schema")
-    if isinstance(schema, str):
-        schema = json.loads((base_dir / schema).read_text())["keys"]
-    if not isinstance(schema, dict) or not schema:
+    if schema is None:
         raise ValueError(f"adapter {raw.get('name')!r} declares no schema")
-    return AdapterSpec(raw, schema)
+    merged, complaints = compose_schema(schema, base_dir, raw.get("name", "adapter"))
+    return AdapterSpec(raw, merged, complaints)
 
 
 def available() -> list:
