@@ -1007,6 +1007,273 @@ def test_a_returning_envelope_demotes_the_legacy_wire_again():
 
 
 # =============================================================================
+# 6. A monitor that is not stepping must say so in words, not by going quiet
+#
+# The section above pins the *inference*: the clock advances, nothing steps, say so.
+# But a stall inferred from silence infers the same thing whether the evaluator died or
+# an operator pressed pause -- and pausing a monitor means the robot keeps running
+# unmonitored, which is the one state an operator must never mistake for a crash and
+# never miss.
+#
+# So the run state is stated outright on a latched topic of its own, and the stall
+# detector learns the difference. Both halves are pinned here, and the second one twice:
+# a deliberate pause announces nothing, and a monitor that stops stepping for any other
+# reason still announces exactly as loudly as it did before.
+# =============================================================================
+
+def statuses(node) -> list[dict]:
+    return [json.loads(m) for m in node.publishers[api.MONITOR_STATUS].sent]
+
+
+def latched_status(node) -> dict:
+    """What a subscriber joining now would be handed: the last frame, and only it."""
+    return statuses(node)[-1]
+
+
+def command(node, name):
+    node.command_callback(ros_stub.Message(json.dumps(api.build_command(command=name))))
+
+
+def test_the_status_topic_is_never_empty():
+    """Published at startup, not on the first transition. To a subscriber "no message
+    yet" and "running" are the same silence, and the first transition may be a pause an
+    hour from now -- until which a console would render an unknown monitor as nothing
+    at all."""
+    node = a_node()
+    assert statuses(node), f"{api.MONITOR_STATUS} was never published"
+    assert latched_status(node)["state"] == "running"
+    # Nothing has ticked this monitor, so it cannot name the tick its state began at.
+    # 0 would be a tick it is claiming to have counted.
+    assert latched_status(node)["since_seq"] is None
+
+
+def test_the_status_publisher_is_latched():
+    """A monitor emits nothing else while paused. Without TRANSIENT_LOCAL a console
+    that connected during the pause waits for a change caused by the operator it is
+    trying to inform."""
+    node = a_node()
+    assert node.publishers[api.MONITOR_STATUS].qos is monitor_node._LATCHED
+    # The same profile the manifest rides, which is the one already proven to reach a
+    # console that connected mid-mission.
+    assert node.publishers[api.MANIFEST].qos is monitor_node._LATCHED
+
+
+def test_a_pause_says_it_is_paused_why_and_since_when():
+    node = a_node()
+    for seq in (1, 2, 3):
+        tick(node, seq)
+        observe(node, seq)
+    command(node, "pause")
+
+    frame = latched_status(node)
+    assert frame["state"] == "paused"
+    assert frame["reason"] == "operator command"
+    assert frame["since_seq"] == 3, "the pause is stamped with the clock, not a counter"
+    assert api.validate_monitor_status(frame) == []
+
+
+def test_resume_says_it_is_running_again():
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)
+    command(node, "pause")
+    for seq in range(2, 12):
+        tick(node, seq)
+    command(node, "resume")
+
+    frame = latched_status(node)
+    assert frame["state"] == "running"
+    assert frame["reason"] == "operator command"
+    assert frame["since_seq"] == 11, "the run resumes at the tick it resumed on"
+
+
+@pytest.mark.parametrize("name", ["arm", "reset"])
+def test_arm_and_reset_announce_a_running_monitor(name):
+    node = a_node()
+    tick(node, 1)
+    command(node, "pause")
+    command(node, name)
+    assert node.paused is False
+    frame = latched_status(node)
+    assert frame["state"] == "running"
+    assert name in frame["reason"]
+
+
+def test_a_halt_and_an_idle_are_told_apart_on_the_wire():
+    """Both raise the same `halted` flag and both stop the automaton, but only one of
+    them is waiting for a `reset` that will bring it back. An operator deciding whether
+    to send one has nothing else to go on."""
+    halted = a_node()
+    tick(halted, 4)
+    halted._halt("[SAFETY] collision_imminent: too close")
+    assert latched_status(halted)["state"] == "halted"
+    assert "collision_imminent" in latched_status(halted)["reason"]
+
+    idle = a_node()
+    tick(idle, 4)
+    idle._enter_idle("Terminal state reached")
+    assert latched_status(idle)["state"] == "idle"
+    assert latched_status(idle)["reason"] == "Terminal state reached"
+
+
+def test_every_state_a_run_can_reach_is_in_the_published_vocabulary():
+    """A state outside `api.RUN_STATES` is one a console would draw as a label nobody
+    can name -- and, worse, one it cannot compare against `running` to decide whether
+    the robot is being watched."""
+    reached = set()
+    for drive in (
+        lambda n: None,                                   # startup
+        lambda n: command(n, "pause"),
+        lambda n: command(n, "resume"),
+        lambda n: command(n, "reset"),
+        lambda n: n._halt("a fault"),
+        lambda n: n._enter_idle("a terminal state"),
+    ):
+        node = a_node()
+        tick(node, 1)
+        drive(node)
+        for frame in statuses(node):
+            assert api.validate_monitor_status(frame) == [], frame
+            reached.add(frame["state"])
+    assert reached == set(api.RUN_STATES), \
+        "every run state must be reachable, and only the declared ones reachable"
+
+
+# -- the stall detector, both halves -----------------------------------------
+
+def test_a_deliberate_pause_does_not_announce_a_stall():
+    """The reproduction. An operator presses pause; ticks keep arriving because the
+    clock is a different publisher; `_on_observation` returns above the ledger, so
+    nothing steps. The stall detector then fired on the operator's own action and the
+    monitor announced INCONCLUSIVE_NO_DATA with a rising `missed_ticks` for the rest of
+    the pause -- on the wire, indistinguishable from having crashed.
+
+    Fourteen such frames before this change. The right answer is not "quieter": it is
+    that the monitor states the pause on `api.MONITOR_STATUS` and stops inferring one.
+    """
+    node = a_node()
+    for seq in (1, 2, 3):
+        tick(node, seq)
+        observe(node, seq)
+    command(node, "pause")
+    before = len(verdicts(node))
+
+    for seq in range(4, 22):
+        tick(node, seq)
+        observe(node, seq)          # they keep arriving; a paused monitor drops them
+
+    assert verdicts(node)[before:] == [], \
+        "a deliberate pause was announced as a monitor that stopped monitoring"
+    assert node._stalled is False
+    # …and the pause is not merely unannounced, it is *stated*.
+    assert latched_status(node)["state"] == "paused"
+
+
+def test_a_paused_monitor_that_never_resumes_still_reads_paused():
+    """The case latching exists for: nothing else is published for the rest of the run,
+    so the only thing a console arriving at tick 400 can be handed is the frame from
+    tick 3."""
+    node = a_node()
+    for seq in (1, 2, 3):
+        tick(node, seq)
+        observe(node, seq)
+    command(node, "pause")
+    for seq in range(4, 401):
+        tick(node, seq)
+
+    frame = latched_status(node)
+    assert frame == {"schema_version": 1, "seq": 3, "t": 3.0,
+                     "state": "paused", "reason": "operator command", "since_seq": 3}
+    # 397 pulses of silence and the console can still say how long: the live tick is
+    # 400, the state began at 3.
+    assert node.clock_seq - frame["since_seq"] == 397
+
+
+def test_a_monitor_that_stops_stepping_for_any_other_reason_still_announces():
+    """The half that must not weaken. The evaluator dies while the monitor believes it
+    is running: same silence, same clock, and this is exactly what the detector exists
+    for. Nothing about knowing what `pause` looks like may make this quieter."""
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)
+    assert node._run_state == "running"
+    before = len(verdicts(node))
+
+    last = 1 + monitor_node._STALL_TICKS + 1
+    for seq in range(2, last + 1):
+        tick(node, seq)
+
+    stall = verdicts(node)[before:]
+    assert stall, "an undeliberate silence went unannounced"
+    assert node._stalled is True
+    assert stall[-1]["verdict"] == "INCONCLUSIVE_NO_DATA"
+    assert stall[-1]["seq"] == last
+    assert stall[-1]["missed_ticks"] >= monitor_node._STALL_TICKS
+
+
+def test_observations_that_arrive_and_are_refused_still_announce_a_stall():
+    """A second undeliberate cause, and the more insidious one: observations *are*
+    arriving, so every wire looks alive, but the ledger refuses each as stale and the
+    automaton never advances. The monitor still believes it is running, so the
+    detector must still fire."""
+    node = a_node()
+    for seq in range(1, 51):
+        tick(node, seq)
+        observe(node, seq)
+    before = len(verdicts(node))
+
+    for seq in range(51, 51 + monitor_node._STALL_TICKS + 2):
+        tick(node, seq)
+        observe(node, 7)             # a stale index the ledger will not admit
+    assert node.multi.steps[-1] is not None and node._refused_run > 0
+
+    stall = verdicts(node)[before:]
+    assert stall, "refused observations look identical to a dead monitor and must too"
+    assert stall[-1]["verdict"] == "INCONCLUSIVE_NO_DATA"
+
+
+def test_the_stall_detector_is_silent_exactly_when_the_monitor_refuses_to_step():
+    """The two halves are one decision, asked in one place. `_on_observation` returns
+    early on `halted` or `paused`; `_deliberate_silence` names those and nothing else.
+    Let them drift and the monitor either cries wolf on a pause or -- far worse -- goes
+    quiet about a state it is not actually in."""
+    node = a_node()
+    assert node._deliberate_silence() is None
+
+    node.paused = True
+    assert node._deliberate_silence() == "paused"
+
+    node.paused = False
+    node._halt("a fault")
+    assert node._deliberate_silence() == "halted"
+
+    node = a_node()
+    node._enter_idle("a terminal state")
+    assert node._deliberate_silence() == "idle"
+    # …and every one of them is a state the wire has a word for.
+    assert set(api.RUN_STATES) - {"running"} == {"paused", "halted", "idle"}
+
+
+def test_resuming_does_not_charge_the_pause_to_the_run_that_follows():
+    """`_silent_since` left at the pause meant the first pulse after `resume` measured
+    the entire pause and announced a stall against a monitor that had not yet been
+    handed a tick to step. A ten-minute coffee break would have printed a stall the
+    instant the operator came back."""
+    node = a_node()
+    tick(node, 1)
+    observe(node, 1)
+    command(node, "pause")
+    for seq in range(2, 300):
+        tick(node, seq)
+    command(node, "resume")
+
+    before = len(verdicts(node))
+    tick(node, 300)
+    assert verdicts(node)[before:] == [], "the pause was charged to the resumed run"
+    assert node._stalled is False
+
+
+# =============================================================================
 # The automaton graph: latched once per spec, one integer per tick
 #
 # The console's automaton pane rendered nothing because the node published each

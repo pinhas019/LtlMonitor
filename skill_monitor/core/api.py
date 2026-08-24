@@ -51,17 +51,24 @@ LOAD_SPEC = "/monitor/load_spec"
 SPEC_STATUS = "/monitor/spec_status"
 RAW_ECHO_REQUEST = "/monitor/raw_echo_request"
 RAW_ECHO = "/monitor/raw_echo"
+MONITOR_STATUS = "/monitor/status"
 
 TOPICS = frozenset({
     TICK, OBSERVATION, VERDICT, ADAPTER, MANIFEST,
     COMMAND, LOAD_SPEC, SPEC_STATUS, RAW_ECHO_REQUEST, RAW_ECHO,
+    MONITOR_STATUS,
 })
 
 # Published TRANSIENT_LOCAL, depth 1, reliable. A client that connects mid-mission gets
 # the last value immediately instead of waiting for a change that may never come --
 # which for a manifest or an adapter descriptor is "never", since they are published
 # once at startup.
-LATCHED_TOPICS = frozenset({ADAPTER, MANIFEST, SPEC_STATUS})
+#
+# MONITOR_STATUS is latched for the sharper version of the same reason: a paused monitor
+# emits nothing else, so a console that connected during the pause and waited for a
+# change would wait for the operator who caused it. Not latched, the one state an
+# operator must never miss is the one state that is invisible.
+LATCHED_TOPICS = frozenset({ADAPTER, MANIFEST, SPEC_STATUS, MONITOR_STATUS})
 
 # ---------------------------------------------------------------- closed vocabularies
 
@@ -98,6 +105,20 @@ PHASE_GUARD_NAMES = (
 INTERVENTION_ACTIONS = ("CONTINUE", "WARN", "SLOW", "REPLAN", "HALT", "ABORT")
 
 COMMANDS = ("arm", "reset", "pause", "resume")
+
+# Whether the monitor is watching, and if not, why not. Closed, because `running` is the
+# only member that means the robot is being monitored and a console must be able to
+# decide that by comparison rather than by guessing at a string it has not seen before.
+#
+#   running  the automaton is being stepped -- the only safe state
+#   paused   an operator stopped it; the robot keeps moving, unwatched
+#   halted   a fault ended the run; recoverable only by `reset`
+#   idle     no episode is armed, or a terminal state was reached
+#
+# The last three all mean "not watching", which is why they are one field and not three
+# booleans: a console that renders them separately can render two of them at once, and
+# an operator reading "paused" beside "idle" learns nothing about the robot.
+RUN_STATES = ("running", "paused", "halted", "idle")
 
 # =============================================================================
 # Validation primitives
@@ -1024,6 +1045,74 @@ def validate_command(payload: Any) -> list[str]:
 
 
 # =============================================================================
+# /monitor/status (latched) -- monitor -> everyone
+# =============================================================================
+
+_MONITOR_STATUS_FIELDS: dict[str, _Check] = {
+    **_CLOCKED,
+    "state": _one_of(RUN_STATES),
+    "reason": STRING_OR_NULL,
+    "since_seq": INT_OR_NULL,
+}
+
+
+def build_monitor_status(
+    *,
+    seq: int,
+    t: float,
+    state: str,
+    reason: str | None = None,
+    since_seq: int | None = None,
+) -> dict:
+    """Whether this monitor is watching, and if not, why not.
+
+    The answer to a question every other topic on this wire answers only by omission. A
+    monitor that is not stepping publishes no verdict, and a topic that is quiet when
+    nothing is wrong cannot distinguish "calm" from "stopped a minute ago". That is
+    already why the stall detector exists -- but a stall is an *inference* from silence,
+    and it infers the same thing whether the monitor crashed or an operator pressed
+    pause. This is the monitor stating it outright, which is the only version an
+    operator can act on: a paused monitor means the robot is running unmonitored.
+
+    Clocked rather than plain, unlike the other latched topics. `seq` and `t` are the
+    clock reading when the frame was published, so a console can place a pause on the
+    same axis as the verdicts either side of it.
+
+    `since_seq` is when the state *began*, and it is not redundant with `seq`: a latched
+    frame is arbitrarily old by the time a console receives it, so the length of a pause
+    is `since_seq` against the *live* tick, not against this frame's own `seq`. That is
+    what turns "paused" into "paused for four minutes" for a page that joined during
+    minute three. On the frame announcing a transition the two are equal, which is the
+    degenerate case and not the one the field exists for.
+
+    `since_seq` is null before any clock has been seen: a monitor that has never been
+    ticked cannot name a tick, and 0 would be a tick it is claiming to have counted.
+    `reason` is null when there is nothing to say beyond the state itself.
+    """
+    return _clocked_envelope(seq, t) | {
+        "state": state,
+        "reason": reason,
+        "since_seq": since_seq,
+    }
+
+
+def validate_monitor_status(payload: Any) -> list[str]:
+    if (bad := _not_an_object(payload, "monitor_status")) is not None:
+        return bad
+    problems: list[str] = []
+    _check_fields(payload, "monitor_status", _MONITOR_STATUS_FIELDS, problems)
+    _check_version(payload, "monitor_status", problems)
+    # A state that began after the frame announcing it is not a late clock reading, it
+    # is arithmetic no console can render: "paused for -3 ticks".
+    seq, since = payload.get("seq"), payload.get("since_seq")
+    if _is_int(seq) and _is_int(since) and since > seq:
+        problems.append(
+            f"monitor_status: since_seq is {since}, after this frame's seq {seq}"
+        )
+    return problems
+
+
+# =============================================================================
 # /monitor/load_spec -> /monitor/spec_status (latched)
 # =============================================================================
 
@@ -1183,6 +1272,7 @@ VALIDATORS: dict[str, Callable[[Any], list[str]]] = {
     SPEC_STATUS: validate_spec_status,
     RAW_ECHO_REQUEST: validate_raw_echo_request,
     RAW_ECHO: validate_raw_echo,
+    MONITOR_STATUS: validate_monitor_status,
 }
 
 

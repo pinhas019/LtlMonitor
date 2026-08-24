@@ -46,8 +46,13 @@ class Message:
 
 
 class Publisher:
-    def __init__(self, topic: str) -> None:
+    def __init__(self, topic: str, qos=None) -> None:
         self.topic = topic
+        #: The profile object handed to `create_publisher`, kept verbatim and never
+        #: interpreted -- see the docstring above on what this stub does not simulate.
+        #: It is enough to say *which* profile a topic was created with, which is the
+        #: difference between a latched topic and one a late subscriber never hears.
+        self.qos = qos
         self.sent: list[str] = []
 
     def publish(self, msg) -> None:
@@ -97,7 +102,7 @@ class Node:
 
     def create_publisher(self, msg_type, topic, qos):
         # Last publisher wins per topic, which is fine: this node creates one each.
-        pub = Publisher(topic)
+        pub = Publisher(topic, qos)
         self.publishers[topic] = pub
         return pub
 

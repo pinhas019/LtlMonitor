@@ -710,6 +710,14 @@ class LtlMonitorNode(Node):
         self._phase_guards: dict | None = None
         self.halted = False
         self.paused = False
+        #: What `api.MONITOR_STATUS` last said, and what `_deliberate_silence` reads to
+        #: tell an operator's pause from a monitor that died. `halted` and `paused`
+        #: above are the flags the *stepping* path consults; these three are the
+        #: published account of them, and `_set_run_state` is the only writer, so the
+        #: two cannot drift into a monitor that is not watching while saying it is.
+        self._run_state = "running"
+        self._run_state_reason: str | None = None
+        self._run_state_since: int | None = None
         # Confidence in the latest observation (sensor freshness, from the evaluator).
         # 1.0 until told otherwise, so an evaluator that does not report it behaves
         # exactly as before.
@@ -809,6 +817,13 @@ class LtlMonitorNode(Node):
         self.manifest_pub = self.create_publisher(String, api.MANIFEST, _LATCHED)
         self.spec_status_pub = self.create_publisher(String, api.SPEC_STATUS, _LATCHED)
 
+        # Whether this monitor is watching at all. Latched for the sharpest version of
+        # the reason the manifest is: a paused monitor publishes nothing else, so a
+        # console that connected during the pause and waited for a change would be
+        # waiting for the operator who caused it -- and would meanwhile draw a robot
+        # moving unmonitored as a robot being watched.
+        self.status_pub = self.create_publisher(String, api.MONITOR_STATUS, _LATCHED)
+
         # A spec can also arrive over the wire. Same code path as a file load, and
         # validated against the adapter's schema first -- a spec whose rules mention
         # fields this robot does not publish would otherwise run as silently-false APs.
@@ -854,7 +869,72 @@ class LtlMonitorNode(Node):
         # standalone monitor with no evaluator is discoverable from its latched
         # manifest, which is what a panel needs to describe it.
         self.publish_manifest()
+        # …and whether it is watching. Published here rather than on the first
+        # transition, because "no message yet" and "running" are the same silence to a
+        # subscriber, and the first transition may be a pause an hour from now.
+        self._set_run_state("running", "monitor started")
         self.publish_legacy_state()
+
+    # -- what this monitor is doing, if anything ------------------------------
+
+    def _set_run_state(self, state: str, reason: str | None = None) -> None:
+        """Enter `state` and announce it on the latched `api.MONITOR_STATUS`.
+
+        The only writer of the published run state, and it publishes on every call --
+        including one that re-enters the state already held. A `reset` while running is
+        still a transition an operator wants stamped, and a frame that says the same
+        thing twice costs one message where a missed one costs the operator the fact
+        that the robot is unmonitored.
+
+        `since_seq` is taken from the clock rather than from a counter of this node's
+        own, so "paused since 1038" indexes the same axis as the verdicts either side
+        of it. It is null until a clock has been seen: a monitor nothing has ticked
+        cannot name a tick, and 0 would be a tick it is claiming to have counted.
+        """
+        self._run_state = state
+        self._run_state_reason = reason
+        self._run_state_since = self.clock_seq if self._clock_seen else None
+        self._publish_run_state()
+
+    def _publish_run_state(self) -> None:
+        payload = api.build_monitor_status(
+            seq=self.clock_seq,
+            t=self.clock_t,
+            state=self._run_state,
+            reason=self._run_state_reason,
+            since_seq=self._run_state_since,
+        )
+        self.status_pub.publish(String(data=json.dumps(payload)))
+
+    def _deliberate_silence(self) -> str | None:
+        """The run state this monitor is *supposed* to be quiet in, or None if it
+        ought to be stepping.
+
+        Exactly the two conditions `_on_observation` returns early on, asked in one
+        place so that the refusal to step and the detector that reports not stepping
+        cannot disagree. If a tick will not be stepped because an operator or a fault
+        said so, the silence that follows is the intended behaviour and announcing it
+        as a stall is announcing the operator's own keypress as a failure.
+
+        The distinction is the whole point, and it cuts only this one way. A monitor
+        that *should* be stepping and is not is what `_watch_for_stepping_silence`
+        exists for; nothing here weakens that case, which still announces on the same
+        pulse and with the same `missed_ticks` it always did. What it removes is the
+        stall that fired on `pause` -- indistinguishable, on the wire, from the monitor
+        having crashed, and so an operator who has learned that pause prints a stall
+        has learned to ignore stalls.
+
+        Note what does *not* appear here: a stale wire, a refused epoch, a dead
+        evaluator, a spec that failed to load. None of those are deliberate, all of
+        them leave the monitor believing it is running, and all of them keep firing.
+        """
+        if self.halted:
+            # `_halt` and `_enter_idle` both raise `halted`; the run state is the only
+            # thing that says which of the two it was.
+            return "idle" if self._run_state == "idle" else "halted"
+        if self.paused:
+            return "paused"
+        return None
 
     # -- manifest / spec push -------------------------------------------------
 
@@ -958,13 +1038,18 @@ class LtlMonitorNode(Node):
             return
         command = payload["command"]
         self.get_logger().info(f"Command: {command}")
+        # Each of these is a transition an operator caused, so each of them ends with
+        # the monitor saying what it now is. `pause` above all: it is the one command
+        # whose entire effect is to stop producing the evidence a console reads.
         if command in ("arm", "reset"):
             self.paused = False
-            self._reset_for_new_skill()
+            self._reset_for_new_skill(f"operator command: {command}")
         elif command == "pause":
             self.paused = True
+            self._set_run_state("paused", "operator command")
         elif command == "resume":
             self.paused = False
+            self._set_run_state("running", "operator command")
 
     def load_spec_callback(self, msg: String) -> None:
         try:
@@ -1113,6 +1198,11 @@ class LtlMonitorNode(Node):
 
         _print_step_block("init", self.multi, {}, "Idle")
         self.publish_manifest("pushed" if spec_data is not None else None)
+        # A reload clears `halted` above, so a monitor that was idle is watching again.
+        # Announced for the same reason the manifest is republished here: the console
+        # is being told this is a different run, and "which spec" without "and it is
+        # running again" leaves the previous state on the pane.
+        self._set_run_state("running", "spec loaded")
         self.get_logger().info("Monitor reset successfully with new specs.")
 
     def _update_phase_state(
@@ -1370,6 +1460,11 @@ class LtlMonitorNode(Node):
             self._enter_idle(f"[passive] {reason}")
             return
         self.halted = True
+        # Before the console prints and before the shutdown timer is armed: this
+        # process has half a second left to live, and the state it died in is the one
+        # thing a console reconnecting afterwards can still be told, because the topic
+        # is latched and the frame outlives the publisher.
+        self._set_run_state("halted", reason)
         self._terminal = self._terminal or "FAILURE"
         RED = "\033[31m"
         print(f"\n{BOLD}{'═' * 64}{RESET}")
@@ -1402,6 +1497,10 @@ class LtlMonitorNode(Node):
     def _enter_idle(self, reason: str) -> None:
         """Suspend monitoring and wait for reset (recoverable — e.g. progress failure)."""
         self.halted = True
+        # `idle`, not `halted`: both raise the same flag and both stop the automaton,
+        # but only one of them is waiting for a `reset` that will bring it back, and an
+        # operator deciding whether to send one needs to know which they are looking at.
+        self._set_run_state("idle", reason)
         self._terminal = self._terminal or "FAILURE"
         YELLOW = "\033[33m"
         print(f"\n{BOLD}{'═' * 64}{RESET}")
@@ -1422,8 +1521,14 @@ class LtlMonitorNode(Node):
         desc_msg.data = json.dumps(idle_desc)
         self.state_desc_pub.publish(desc_msg)
 
-    def _reset_for_new_skill(self) -> None:
-        """Reset automaton state and resume monitoring for a new skill execution."""
+    def _reset_for_new_skill(self, reason: str = "reset") -> None:
+        """Reset automaton state and resume monitoring for a new skill execution.
+
+        Every path here clears `halted` and leaves the monitor watching again, so every
+        path here also announces `running` -- including the `__reset__` control key on
+        the legacy observation wire, which is the one caller no operator typed and the
+        one whose transition would otherwise never reach a console.
+        """
         self.multi.reset()
         self.prev_statuses = dict(self.multi.statuses())
         self.step_idx = 0
@@ -1442,6 +1547,7 @@ class LtlMonitorNode(Node):
         print(f"{BOLD}  Monitoring Trace (New Execution){RESET}")
         print(f"{BOLD}{'─' * 64}{RESET}")
         _print_step_block("init", self.multi, {}, "Idle")
+        self._set_run_state("running", reason)
         self.publish_legacy_state()
 
     # -- one tick in, one verdict out -----------------------------------------
@@ -1625,10 +1731,23 @@ class LtlMonitorNode(Node):
         quiet whenever nothing is wrong is indistinguishable from health. A supervisor
         cannot tell "no verdict because the run is calm" from "no verdict because the
         monitor stopped a minute ago".
+
+        A stall is an *inference* from silence, though, and there are two kinds. See
+        `_deliberate_silence` for the one this must not announce and for why the
+        distinction cannot be left implicit.
         """
-        if self.halted or self.clock_seq is None:
-            # A halted monitor is *supposed* to be quiet; crying wolf there would teach
-            # an operator to ignore the one indication that matters.
+        if self.clock_seq is None:
+            return
+        if self._deliberate_silence() is not None:
+            # Not a stall: this monitor is not stepping because it was told not to, and
+            # `api.MONITOR_STATUS` is already carrying that fact in words. Crying wolf
+            # here would teach an operator to ignore the one indication that matters.
+            #
+            # The window slides with the clock while it lasts, so a pause is not
+            # charged to the run that follows it: left where it was, the first pulse
+            # after `resume` would measure the whole length of the pause and announce a
+            # stall against a monitor that had not yet been given a tick to step.
+            self._silent_since = self.clock_seq
             return
         if self._silent_since is None:
             self._silent_since = self.clock_seq
