@@ -235,7 +235,13 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 # same question. The clock's stream is what the clock *sent*; this is what arrived in
 # this namespace, which is the only place a console can see that a monitor is being
 # pulsed by a clock other than the one the gateway proxies -- or by none at all.
-STREAM_TOPICS = (api.TICK, api.OBSERVATION, api.VERDICT)
+#
+# `status` is the one member that is also latched, and it needs both halves. The derived
+# GET is how a console connecting mid-pause learns the truth at once rather than waiting
+# for a change that will not come; the stream is how a page already open learns that
+# *another* operator just paused. Either alone leaves an operator watching a pane that
+# says the robot is monitored while it is not.
+STREAM_TOPICS = (api.TICK, api.OBSERVATION, api.VERDICT, api.MONITOR_STATUS)
 
 # Endpoint name -> topic, for the routes where the client is the publisher. The names
 # are docs/api.md's ("spec", not "load_spec"); the topics come from the constants.

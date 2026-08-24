@@ -310,6 +310,61 @@ def test_ws_stream_carries_observations_and_verdicts_tagged_by_topic(serve):
     assert [first["topic"], second["topic"]] == [api.OBSERVATION, api.VERDICT]
 
 
+def test_the_stream_carries_the_run_state(serve):
+    """A paused monitor publishes nothing else at all, so a console with a page already
+    open would watch a completely idle stream and read it as a calm run. It has to be
+    told, on the connection it is already holding, that another operator just stopped
+    the monitoring on a robot that is still moving."""
+    assert api.MONITOR_STATUS in gateway.STREAM_TOPICS
+
+    bus = FakeBus(namespaces=[""])
+    client = serve(bus)
+    paused = json.dumps(api.build_monitor_status(
+        seq=1041, t=1041.0, state="paused", reason="operator command", since_seq=1038,
+    ))
+
+    connection = client.ws("/api/monitors/_/stream")
+    try:
+        bus.wait_for_listeners(1)
+        bus.deliver("", api.MONITOR_STATUS, paused)
+        frame_text = connection.recv()
+    finally:
+        connection.close()
+
+    frame = json.loads(frame_text)
+    assert frame["topic"] == api.MONITOR_STATUS
+    assert frame["payload"]["state"] == "paused"
+    assert gateway.frame_payload_text(frame_text) == paused
+
+
+def test_the_run_state_has_a_rest_route_of_its_own(serve):
+    """The other half, and the one a *newly* connecting console needs. The stream only
+    carries changes, and the change a page joining mid-pause is waiting for is the
+    operator who caused the pause deciding to end it. Latched plus a derived GET is how
+    it learns the truth on connect instead of on the operator's next keypress."""
+    assert api.MONITOR_STATUS in api.LATCHED_TOPICS
+    assert gateway.LATCHED_ROUTES["status"] == api.MONITOR_STATUS
+    assert set(gateway.LATCHED_ROUTES.values()) == set(api.LATCHED_TOPICS)
+
+    paused = json.dumps(api.build_monitor_status(
+        seq=1041, t=1041.0, state="paused", reason="operator command", since_seq=1038,
+    ))
+    bus = FakeBus(namespaces=[""], latched={("", api.MONITOR_STATUS): paused})
+    client = serve(bus)
+
+    assert client.get("/api/monitors/_/status") == (200, paused)
+
+
+def test_a_monitor_with_no_run_state_latched_is_404_not_a_guess(serve):
+    """"No status yet" is not "running". A gateway that filled in the optimistic
+    default would be inventing the one fact this topic exists to stop anyone
+    inferring."""
+    client = serve(FakeBus(namespaces=[""]))
+    status, text = client.get("/api/monitors/_/status")
+    assert status == 404
+    assert json.loads(text)["topic"] == api.MONITOR_STATUS
+
+
 # ============================================================== REST
 
 

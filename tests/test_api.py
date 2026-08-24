@@ -126,6 +126,11 @@ def a_raw_echo() -> dict:
                               summary={"count": 14, "min": 0.42})
 
 
+def a_monitor_status() -> dict:
+    return api.build_monitor_status(seq=1041, t=1041.0, state="paused",
+                                    reason="operator command", since_seq=1038)
+
+
 # name -> (factory, validator, topic)
 PAYLOADS = {
     "tick": (a_tick, api.validate_tick, api.TICK),
@@ -139,6 +144,8 @@ PAYLOADS = {
     "raw_echo_request": (a_raw_echo_request, api.validate_raw_echo_request,
                          api.RAW_ECHO_REQUEST),
     "raw_echo": (a_raw_echo, api.validate_raw_echo, api.RAW_ECHO),
+    "monitor_status": (a_monitor_status, api.validate_monitor_status,
+                       api.MONITOR_STATUS),
 }
 
 # Payloads whose validator is closed: an unknown field is a problem. The manifest is
@@ -164,16 +171,26 @@ def test_topic_constants_are_the_documented_names():
     assert api.SPEC_STATUS == "/monitor/spec_status"
     assert api.RAW_ECHO_REQUEST == "/monitor/raw_echo_request"
     assert api.RAW_ECHO == "/monitor/raw_echo"
+    assert api.MONITOR_STATUS == "/monitor/status"
 
 
-def test_topics_set_is_exactly_the_ten_constants():
-    assert len(api.TOPICS) == 10
+def test_topics_set_is_exactly_the_eleven_constants():
+    assert len(api.TOPICS) == 11
     assert all(t.startswith("/monitor/") for t in api.TOPICS)
 
 
 def test_latched_topics_are_a_subset_of_declared_topics():
     assert api.LATCHED_TOPICS <= api.TOPICS
-    assert api.LATCHED_TOPICS == {api.ADAPTER, api.MANIFEST, api.SPEC_STATUS}
+    assert api.LATCHED_TOPICS == {api.ADAPTER, api.MANIFEST, api.SPEC_STATUS,
+                                  api.MONITOR_STATUS}
+
+
+def test_the_monitors_run_state_is_latched():
+    """The one topic whose whole point is that it is quiet. A paused monitor publishes
+    nothing else at all, so a console that connected during the pause and waited for a
+    change would be waiting for the operator who caused it -- and until then would
+    render a robot moving unmonitored as a robot being watched."""
+    assert api.MONITOR_STATUS in api.LATCHED_TOPICS
 
 
 def test_every_topic_has_a_validator():
@@ -223,7 +240,8 @@ def test_tick_carries_seq_but_not_step():
 
 
 @pytest.mark.parametrize("name", ["adapter", "manifest", "command", "load_spec",
-                                  "spec_status", "raw_echo_request"])
+                                  "spec_status", "raw_echo_request",
+                                  "monitor_status"])
 def test_untick_scoped_payloads_omit_step(name):
     assert "step" not in PAYLOADS[name][0]()
 
@@ -817,6 +835,71 @@ def test_an_unknown_command_is_rejected():
 def test_spec_status_cannot_be_ok_and_have_problems():
     payload = api.build_spec_status(ok=True, problems=["something"], skill_name="s")
     assert any("ok is true" in p for p in api.validate_spec_status(payload))
+
+
+# =============================================================================
+# /monitor/status -- whether the monitor is watching at all
+# =============================================================================
+#
+# Every other topic answers this only by omission, and omission is exactly what a
+# paused, halted or idle monitor produces. The state has to be *stated*, in a closed
+# vocabulary, because a console that cannot tell `running` from anything else cannot
+# tell an operator that the robot in front of them is moving unwatched.
+
+
+def test_a_pause_says_what_it_is_why_and_since_when():
+    payload = api.build_monitor_status(seq=1041, t=1041.0, state="paused",
+                                       reason="operator command", since_seq=1038)
+    assert api.validate_monitor_status(payload) == []
+    assert payload == {
+        "schema_version": 1, "seq": 1041, "t": 1041.0,
+        "state": "paused", "reason": "operator command", "since_seq": 1038,
+    }
+
+
+@pytest.mark.parametrize("state", list(api.RUN_STATES))
+def test_every_run_state_in_the_vocabulary_validates(state):
+    payload = api.build_monitor_status(seq=1, t=1.0, state=state, since_seq=1)
+    assert api.validate_monitor_status(payload) == []
+
+
+def test_run_states_are_the_four_documented_names():
+    assert api.RUN_STATES == ("running", "paused", "halted", "idle")
+
+
+def test_a_state_outside_the_vocabulary_is_rejected_and_the_vocabulary_named():
+    """Naming the alternatives in the message is the difference between a producer
+    author fixing a typo and one guessing. `stopped` is the plausible wrong word: it
+    could mean `paused`, `halted` or `idle`, and which one it meant is the fact an
+    operator needs."""
+    problems = api.validate_monitor_status(a_monitor_status() | {"state": "stopped"})
+    assert problems != []
+    text = " ".join(problems)
+    for state in api.RUN_STATES:
+        assert repr(state) in text, f"the message does not name {state!r}"
+
+
+def test_reason_and_since_seq_may_both_be_null():
+    """A monitor that has never been ticked cannot name the tick its state began at,
+    and 0 would be a tick it is claiming to have counted. Startup is exactly that
+    case, and the topic must not be empty there."""
+    payload = api.build_monitor_status(seq=0, t=0.0, state="running")
+    assert api.validate_monitor_status(payload) == []
+    assert payload["reason"] is None
+    assert payload["since_seq"] is None
+
+
+def test_a_state_that_began_after_the_frame_announcing_it_is_rejected():
+    """`seq - since_seq` is how a console says "paused for four minutes". Backwards,
+    it says "paused for minus three ticks" -- and a console that renders that has been
+    handed arithmetic no producer should have been able to publish."""
+    problems = api.validate_monitor_status(a_monitor_status() | {"since_seq": 2000})
+    assert any("since_seq" in p for p in problems)
+
+
+def test_monitor_status_is_routed_by_topic_like_every_other_payload():
+    assert api.validate_for_topic(api.MONITOR_STATUS, a_monitor_status()) == []
+    assert api.validate_for_topic(api.MONITOR_STATUS, {"state": "paused"}) != []
 
 
 def test_a_raw_echo_request_may_stop_the_echo():
