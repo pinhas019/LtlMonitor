@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import re
 import threading
 import time
@@ -463,6 +464,202 @@ def _with_phase_guards(verdict: dict, guards) -> dict:
     return verdict | {"phase_guards": guards} if WIRE_ADMITS_PHASE_GUARDS else verdict
 
 
+# =============================================================================
+# Pane 3's raw echo
+#
+# The summaries are **the producer's own**. `backend/adapters/raw_echo.py` is where the
+# `kind` convention lives -- `image`, `fields`, `image_unavailable` -- and it is
+# stdlib-only, so this module can call it on a laptop with no ROS. That is the point:
+# the console is reviewed against the code the robot runs, PNG encoder, downscale, byte
+# cap, rate stride and all, rather than against a second implementation written to
+# resemble it. What the mock fabricates is the *message*, which is what it fabricates
+# everywhere else.
+#
+# `summary` is deliberately opaque on the wire -- `api.build_raw_echo`'s own docstring
+# says its shape is the adapter's business -- so the convention is not a contract. What
+# *is* the contract is the envelope, and every frame here goes through the shipped
+# builder and the shipped validator like every other frame this module publishes.
+# =============================================================================
+
+try:                                    # pragma: no cover -- exercised both ways in CI
+    from skill_monitor.backend.adapters import raw_echo as echo_producer
+except ImportError:                     # a build that predates the producer half
+    echo_producer = None
+
+#: What a RealSense colour stream on the G1 actually publishes: 320x240 `bgr8`. The
+#: mock fabricates a message of exactly that shape so the producer's downscale, its
+#: channel swap and its byte cap are all on the path a reviewer looks at.
+ECHO_SOURCE_W, ECHO_SOURCE_H = 320, 240
+
+#: A frame's worth of low-order noise, computed once. The bars alone compress to under a
+#: kilobyte, and a pane that renders a 700-byte "camera frame" teaches a reviewer that
+#: the echo is free -- which is the one thing this feature exists to contradict. Real
+#: photographic content at 160x120 measures ~48 KB of PNG; six bits of per-pixel noise
+#: over the bars puts the mock in that neighbourhood instead of three orders below it.
+_NOISE_BITS = bytes(i & 0x3F for i in range(256))
+_NOISE = random.Random(20260824).randbytes(
+    ECHO_SOURCE_W * ECHO_SOURCE_H * 3 * 2).translate(_NOISE_BITS)
+
+
+class MockImage:
+    """The five attributes `raw_echo.looks_like_image` duck-types on.
+
+    Not a `sensor_msgs/msg/Image` -- there is no ROS here to define one -- and it does
+    not need to be: the producer matches on the attributes rather than on a type name,
+    precisely so a bag or a stand-in renders the same way a live camera does.
+    """
+
+    __slots__ = ("width", "height", "encoding", "step", "data")
+
+    def __init__(self, width, height, encoding, data, step=None):
+        self.width = width
+        self.height = height
+        self.encoding = encoding
+        self.data = data
+        self.step = width * 3 if step is None else step
+
+
+def _xor(a: bytes, b: bytes) -> bytes:
+    """Byte-wise XOR of two equal-length buffers, done as one big-integer operation --
+    a per-byte loop over a quarter of a megabyte, every tick, in a mock, is not worth
+    the milliseconds."""
+    return (int.from_bytes(a, "big") ^ int.from_bytes(b, "big")).to_bytes(len(a), "big")
+
+
+def synthetic_bgr8(step: int, width: int = ECHO_SOURCE_W,
+                   height: int = ECHO_SOURCE_H) -> bytes:
+    """Raw `bgr8` pixels that could not be mistaken for a camera.
+
+    Diagonal bars in three saturated colours sliding one bar a tick, a white marker box
+    travelling across the frame, and per-pixel noise over all of it. No robot produces
+    this, which is the point: an operator who sees it is looking at the mock, and a
+    reviewer who sees it move knows the echo is live and not a still left in the page.
+
+    The rows are slices of one long pattern line, because a diagonal is the same line
+    shifted by `y` -- which is what makes a 320x240 frame per tick cheap enough to be
+    fabricated by a console rather than a robot.
+    """
+    bars = (b"\x78\x28\xe4", b"\xd2\xc8\x28", b"\x2e\x22\x1e")     # blue, green, red
+    span = 12
+    line = bytearray()
+    for i in range(width + height + span):
+        line += bars[((i // span) + step) % len(bars)]
+    box_x, box_y, box = (step * 3) % max(1, width - 24), (height - 40) // 2, 40
+    offset = (step * width * 3) % (len(_NOISE) - width * height * 3)
+    rows = []
+    for y in range(height):
+        row = bytearray(line[y * 3:(y + width) * 3])
+        if box_y <= y < box_y + box:
+            row[box_x * 3:(box_x + box) * 3] = b"\xff" * (box * 3)
+        rows.append(bytes(row))
+    return _xor(b"".join(rows), _NOISE[offset:offset + width * height * 3])
+
+
+def synthetic_frame(step: int) -> MockImage:
+    """The colour frame the mock's camera source "publishes" this tick."""
+    return MockImage(ECHO_SOURCE_W, ECHO_SOURCE_H, "bgr8", synthetic_bgr8(step))
+
+
+#: The ticks in every sixty on which the camera source publishes a frame the echo cannot
+#: render. Fabricated for the same reason `_stale_sources` fabricates a dropout: the
+#: console has a rendering for it -- `image_unavailable`, with the producer's own reason
+#: sentence -- and a path that only appears when somebody points a console at a depth
+#: topic on a real robot is a path nobody reviews. `16UC1` is what a depth stream
+#: actually publishes, and the reason string is the producer's, not the mock's.
+_UNRENDERABLE = range(44, 50)
+
+
+def _depth_frame(step: int) -> MockImage:
+    """A 16-bit depth frame: a real message, and one no echo can turn into a picture."""
+    return MockImage(ECHO_SOURCE_W, ECHO_SOURCE_H, "16UC1",
+                     bytes(ECHO_SOURCE_W * ECHO_SOURCE_H * 2),
+                     step=ECHO_SOURCE_W * 2)
+
+
+def echo_message(source: dict, step: int, sensors: dict):
+    """The message the mock's `source` "published" this tick, and the values folded from
+    it -- the two things `RawEcho.offer` takes.
+
+    The camera-derived source gets a picture; everything else gets the keys it feeds,
+    read off the same fabricated frame the observation was folded from, so a number in
+    the echo and the same number in the row table above it are one number and not two
+    fictions.
+    """
+    values = {key: sensors[key] for key in sorted(source.get("keys") or ())
+              if key in sensors}
+    ros_type = str(source.get("type", ""))
+    if ros_type.endswith(("/Image", "/CompressedImage", "/PointCloud2")):
+        msg = _depth_frame(step) if step % 60 in _UNRENDERABLE \
+            else synthetic_frame(step)
+        return msg, values
+    return values, values
+
+
+def mock_kind(source: dict, summary: dict) -> dict:
+    """A `kind` the console has no renderer for, on one source, on purpose.
+
+    `/path_manager/status` is a `std_msgs/String` carrying a JSON document, and a
+    summary of it as that document is a shape the page has never seen. It renders as a
+    pretty-printed dump, which is the extension point working: `kind` is open so that a
+    depth or lidar summary written next month shows an operator every field it carries
+    with no edit to the page. `--mock` exercises that path rather than leaving it to be
+    discovered by whoever adds the next sensor type.
+
+    Deliberately the mock's invention and not the producer's -- it is what a *future*
+    adapter does, which is the thing the page has to survive.
+    """
+    if not str(source.get("type", "")).endswith("/String"):
+        return summary
+    document = summary.get("values") or {}
+    return {key: value for key, value in summary.items()
+            if key not in ("kind", "values")} | {
+        "kind": "document",
+        "media_type": "application/json",
+        "bytes": len(json.dumps(document)),
+        "document": document,
+    }
+
+
+def _probe_raw_echo() -> dict:
+    """A raw-echo frame, for asking the validator a question -- built by the shipped
+    builder, around the producer's own summary of the mock's own camera frame."""
+    echo = echo_producer.RawEcho({"probe": "/probe"}, tick_hz=1.0)
+    echo.select("probe")
+    echo.offer("probe", synthetic_frame(0))
+    _source_id, summary = echo.take()
+    return api.build_raw_echo(seq=1, t=1.0, step=0, source_id="probe", summary=summary)
+
+
+def _wire_admits_raw_echo() -> bool:
+    """Whether this build has a raw-echo topic the mock may publish on, and a producer
+    to build the summaries with.
+
+    The same question as ``_wire_admits_status``, asked the same way and for the same
+    reason: the topic and its validator are P0's, and a producer publishing on a topic
+    the gateway's own ingress check would reject is the approximation this module is not
+    allowed to be. Both halves are probed -- the frame going out and the request coming
+    in, including the ``source_id: null`` that stops it -- because the mock honours one
+    and publishes the other, and a build that admitted only one of them is not the
+    contract this was written against.
+
+    Note what this is *not* gated on: whether the gateway forwards the topic to a
+    browser. That is ``STREAM_TOPICS``, it is P6's, and a mock is valid either way.
+    """
+    if echo_producer is None:
+        return False
+    if api.RAW_ECHO not in api.TOPICS or api.RAW_ECHO_REQUEST not in api.TOPICS:
+        return False
+    requests = [api.build_raw_echo_request(source_id=None),
+                api.build_raw_echo_request(source_id="probe")]
+    return (api.validate_for_topic(api.RAW_ECHO, _probe_raw_echo()) == []
+            and all(api.validate_for_topic(api.RAW_ECHO_REQUEST, r) == []
+                    for r in requests))
+
+
+#: Asked once, at import: the answer cannot change while the process runs.
+WIRE_ADMITS_RAW_ECHO = _wire_admits_raw_echo()
+
+
 class MockBus(MonitorBus):
     """One namespace, one monitor, ticking at the adapter's own ``tick_hz``."""
 
@@ -515,6 +712,14 @@ class MockBus(MonitorBus):
         # is claiming to have counted. The console renders it as a length it cannot
         # measure rather than as "running for 0 ticks".
         self._state_since = None
+        #: The producer's own echo buffer, off until something selects a source: opt-in
+        #: and one at a time is the contract's rule and it is enforced in there, not
+        #: here. The mock's job is to hand it a message a tick; the selection, the rate
+        #: stride, the accumulated sample count and the summary are all the real code's.
+        self._echo = echo_producer.RawEcho(
+            {source["id"]: source["topic"] for source in self.adapter["sources"]},
+            tick_hz=self.tick_hz,
+        ) if WIRE_ADMITS_RAW_ECHO else None
         if WIRE_ADMITS_STATUS:
             self._latched[STATUS_TOPIC] = json.dumps(self._status_payload())
         self._stop = threading.Event()
@@ -575,6 +780,8 @@ class MockBus(MonitorBus):
             self._command(json.loads(payload_text).get("command"))
         elif topic == api.LOAD_SPEC:
             self._load_spec(json.loads(payload_text).get("spec") or {})
+        elif topic == api.RAW_ECHO_REQUEST:
+            self._raw_echo_request(json.loads(payload_text))
         # Anything else is accepted and dropped: the mock is not the place to decide
         # which ingress topics a real monitor answers.
 
@@ -650,6 +857,53 @@ class MockBus(MonitorBus):
         elif command == "resume":
             self._set_state("running", "operator command")
 
+    def _raw_echo_request(self, payload):
+        """``{"source_id": "points"}`` to start, ``{"source_id": null}`` to stop.
+
+        Handed straight to the producer's own `RawEcho.select`, which is where "one at a
+        time" and "a source this adapter does not declare is refused rather than
+        silently turning off an echo somebody is watching" already live. The mock does
+        not get a second opinion about either.
+
+        A request the shipped validator rejects changes nothing -- the gateway's ingress
+        route validates before it publishes, so a payload that got here malformed did
+        not come through the console, and a mock that acted on it would be a fixture
+        more permissive than the system it stands in for.
+        """
+        if self._echo is None or api.validate_raw_echo_request(payload) != []:
+            return
+        self._echo.select(payload.get("source_id"))
+
+    def _raw_echo(self, seq, t, step, health, sensors):
+        """One tick of the echo, or None when there is nothing to say.
+
+        The message is offered only for a tick the source actually delivered on:
+        `data_health` is where the mock's dropouts live, and re-offering a frame through
+        the depth camera's own six-tick outage would hide the one thing pane 3's age
+        counter exists to show. Everything after that -- the rate stride, the sample
+        count over the window, the summary -- is `RawEcho`'s.
+        """
+        if self._echo is None:
+            return None
+        source = next((s for s in self.adapter["sources"]
+                       if s["id"] == self._echo.selected), None)
+        if source is not None:
+            samples = (health.get(source["id"]) or {}).get("samples_this_tick") or 0
+            if samples:
+                # Fabricated once and offered `samples` times: `offer` is a reference
+                # and a counter by design, and drawing the frame once per message would
+                # make the mock the expensive half of a feature whose whole subject is
+                # what things cost.
+                msg, values = echo_message(source, step, sensors)
+                for _ in range(samples):
+                    self._echo.offer(source["id"], msg, values)
+        taken = self._echo.take()
+        if taken is None:
+            return None
+        source_id, summary = taken
+        return api.build_raw_echo(seq=seq, t=t, step=step, source_id=source_id,
+                                  summary=mock_kind(source or {}, summary))
+
     def _load_spec(self, spec):
         """Hot reload, and the episode ends because of it.
 
@@ -714,13 +968,24 @@ class MockBus(MonitorBus):
         stale = self._stale_sources(step)
         ap_values, unknown = self._aps(sensors, stale)
         confidence = 0.5 if stale else 1.0
+        # Bound rather than built twice: the echo reports the same `samples_this_tick`
+        # the row table above it shows, and two calls could not be relied on to agree.
+        health = self._health(step, stale)
         self._emit(api.OBSERVATION, json.dumps(api.build_observation(
             seq=seq, t=t, step=step, sensors=sensors, ap_values=ap_values,
             unknown_aps=unknown, confidence=confidence,
-            data_health=self._health(step, stale))))
+            data_health=health)))
 
         self._emit(api.VERDICT, json.dumps(self._verdict(seq, t, step, ap_values,
                                                          unknown, stale, confidence)))
+
+        # Last, and inside `_pulse`, which is the half of `_run` a pause does not
+        # reach. A paused monitor is not watching, and an echo going out under one
+        # would be the pane contradicting the banner above it.
+        if self._echo is not None and self._echo.selected is not None:
+            frame = self._raw_echo(seq, t, step, health, sensors)
+            if frame is not None:
+                self._emit(api.RAW_ECHO, json.dumps(frame))
         self._last_seen = time.time()
 
     def _emit(self, topic, text):

@@ -71,6 +71,33 @@
   .mock { color:#12141a; background:var(--warn); font-weight:700; padding:2px 8px;
           border-radius:3px; letter-spacing:.08em; }
 
+  /* pane 3's echo half. One picker, because the echo is one source at a time, and a
+     frame drawn at its own size: a 160x120 camera frame stretched to the pane's width
+     is a picture of the pane and not of what the robot sees. `stale` is a class on a
+     block that is already in the document -- the age is recomputed every tick and the
+     frame is not redrawn for it -- and it exists so that the last frame which arrived
+     cannot go on looking like the one arriving now. It dims and greys, which is a
+     second signal beside the words above it and not a substitute for them. */
+  select { background:#242938; color:var(--ink); border:1px solid var(--line);
+           border-radius:4px; padding:3px 6px; font:inherit; max-width:100%; }
+  select:hover:enabled { border-color:var(--acc); }
+  select:disabled { opacity:.4; cursor:default; }
+  #echo { border-top:1px solid var(--line); margin-top:9px; padding-top:8px; }
+  #echo .pick { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #echo .frame { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
+  #echo .frame > table { width:auto; min-width:190px; flex:1 1 190px; }
+  #echo img { display:block; width:auto; height:auto; max-width:320px;
+              image-rendering:pixelated; background:#0e1016;
+              border:1px solid var(--line); border-radius:3px; }
+  #echo pre { margin:5px 0 0; padding:7px 9px; background:#0e1016; color:var(--ink);
+              border:1px solid var(--line); border-radius:3px; max-height:210px;
+              overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere;
+              font:12px/1.45 ui-monospace,monospace; }
+  #echo .missing { margin-top:7px; }
+  #echo-body { margin-top:6px; }
+  #echo-body.stale img { opacity:.28; filter:grayscale(1); }
+  #echo-body.stale table, #echo-body.stale pre { opacity:.5; }
+
   /* The monitor's own state, and the controls that change it. Both live in the sticky
      header rather than in a pane, because an operator who opens this page while the
      monitor is paused has to read that before anything else -- and a pane is something
@@ -188,7 +215,13 @@
 
   <section>
     <h2>3 · input data <span class="dim" id="in-note"></span></h2>
-    <div class="body" id="inputs"></div>
+    <div class="body">
+      <div id="inputs"></div>
+      <!-- The echo half. Built by renderEcho() from the adapter's own sources, so the
+           picker offers exactly what this robot declares and nothing this page knows
+           about any particular robot. -->
+      <div id="echo"></div>
+    </div>
   </section>
 
   <section>
@@ -252,6 +285,16 @@ const S = {
   // degrade banner can name which silence this is.
   mon: { status: null, route: null, post: null, postStatus: null, busy: false,
          why: "this console has not asked yet." },
+  // Pane 3's echo half. `on` is the source this console last *successfully* asked for
+  // and null is off, which is what it is until somebody picks one -- a request that was
+  // refused turned nothing on and must not move it. `key` is the picker as drawn, so
+  // the control is built once per adapter and never rebuilt under a frame. `frame` is
+  // the last /monitor/raw_echo payload and is dropped whenever it stops describing what
+  // was asked for: on a stop, on a switch, and across a reconnect. `route`/`status` are
+  // whether this build has an ingress route at all and what it answered; `verb` is
+  // which of the candidate route names replied, once one has.
+  ech: { key: null, on: null, frame: null, since: null, gap: false,
+         route: null, status: null, busy: false },
 };
 const PLOT_N = 180;
 
@@ -291,6 +334,7 @@ function missing(field, owner, why) {
 
 async function boot() {
   renderMonitor();                 // disabled, and saying why, before anything is known
+  renderEcho();                    // and the same for the echo picker
   const health = await api("/api/health");
   const monitors = await api("/api/monitors");
   const list = (monitors.body && monitors.body.monitors) || [];
@@ -315,6 +359,7 @@ async function refreshLatched() {
     S[slot] = r.status === 200 ? r.body : null;
   }
   renderSpec(); renderConfig(); renderStatus(); renderAutomaton(); renderPhases();
+  renderEcho();
 }
 
 function connect() {
@@ -330,6 +375,13 @@ function connect() {
     // watching -- another operator may have paused the monitor inside it. The latched
     // topic is re-read rather than trusted, which is the same reason it is latched.
     refreshMonitorStatus();
+    // The echo is a request this console made to an evaluator that may have restarted
+    // inside the gap, and the frame it last showed is older than the gap either way.
+    // The frame goes; the request is *not* silently re-sent, because turning a point
+    // cloud back on is the operator's decision and not this page's.
+    if (S.ech.on !== null) S.ech.gap = true;
+    S.ech.frame = null;
+    renderEchoFrame();
   };
   ws.onclose = () => { S.connected = false; renderBadges(); setTimeout(connect, 1500); };
   ws.onmessage = ev => {
@@ -338,9 +390,18 @@ function connect() {
     if (frame.dropped) S.dropped = frame.dropped;
     const p = frame.payload;
     if (!p) return;
-    if (frame.topic.endsWith("/tick")) { S.tick = p; renderClock(); renderStateBanner(); }
+    if (frame.topic.endsWith("/tick")) {
+      // The echo's age is measured in ticks, so the clock is what moves it -- and it
+      // has to go on moving while the monitor is paused, which is exactly when a stale
+      // frame would otherwise sit there looking live.
+      S.tick = p; renderClock(); renderStateBanner(); renderEchoAge();
+    }
     else if (frame.topic.endsWith("/observation")) { S.obs = p; onObservation(p); }
     else if (frame.topic.endsWith("/verdict")) { S.verdict = p; onVerdict(p); }
+    // `/monitor/raw_echo`, which reaches a browser only on a build whose gateway has
+    // `api.RAW_ECHO` in STREAM_TOPICS. `/monitor/raw_echo_request` is the outbound half
+    // and never arrives here; it does not end with `/raw_echo` either.
+    else if (frame.topic.endsWith("/raw_echo")) { onRawEcho(p); }
     else if (frame.topic.endsWith("/spec_status")) { S.status = p; renderStatus(); }
     // Latched *and* streamed, and both are needed: latched so a console opening
     // mid-pause learns the truth on its first request, streamed so a console already
@@ -354,7 +415,7 @@ function connect() {
 function onObservation(o) {
   S.hist.push(o);
   if (S.hist.length > PLOT_N) S.hist.shift();
-  renderInputs(); renderPlots(); renderAps(); renderClock();
+  renderInputs(); renderPlots(); renderAps(); renderClock(); renderEchoAge();
 }
 
 function onVerdict(v) {
@@ -680,6 +741,11 @@ async function command(cmd) {
       // rather than fetched: there is nowhere to get it back from and nothing it now
       // describes. Discarded only on a command that actually went out.
       S.hist = []; S.arrivals = []; S.aut.key = null;
+      // The echoed frame belonged to the episode that was just thrown away. What is
+      // *echoing* does not change -- that is a standing request to the evaluator and
+      // not a piece of this episode's history -- so the request is left alone and only
+      // the frame goes.
+      S.ech.frame = null; renderEchoFrame();
     }
   } else {
     $("cmd-note").innerHTML =
@@ -809,14 +875,7 @@ function renderInputs() {
   }).join("");
   $("inputs").innerHTML =
     `<table class="fixed"><colgroup><col style="width:30%"><col style="width:19%"><col style="width:13%"><col></colgroup><tr><th>source</th><th>rate</th><th>tick</th><th>values this tick</th></tr>${rows}</table>`;
-  $("in-note").innerHTML = "raw payloads: " + missingRawEcho();
-}
-
-function missingRawEcho() {
-  // /monitor/raw_echo_request is on the wire contract but the gateway exposes no
-  // ingress route for it, so this page cannot ask for one. Said plainly rather than
-  // rendered as a dead toggle.
-  return `<span class="warn">no route</span>`;
+  $("in-note").innerHTML = "raw payloads: " + echoNote();
 }
 
 function fmt(v) {
@@ -824,6 +883,496 @@ function fmt(v) {
   if (typeof v === "number") return num(v);
   if (typeof v === "boolean") return v ? "true" : "false";
   return String(v);
+}
+
+/* == 3b · the echo half =====================================================
+
+   The row table above is `data_health` off the observation: every source, every tick,
+   free. This is the zoom: one source's actual frames, asked for on
+   `/monitor/raw_echo_request` and arriving on `/monitor/raw_echo`. Opt-in and one at a
+   time, because a point cloud per frame is not free and this console is usually across
+   a link — so nothing echoes until an operator picks a source, and `source_id: null`
+   is how the contract spells "stop".
+
+   **`summary` is deliberately opaque.** `api.build_raw_echo`'s own docstring says its
+   shape is the adapter's business, so that a new sensor type does not edit the wire
+   contract. Which means this page renders by a `kind` discriminator it does not own.
+   Three kinds have renderers here — `image`, `fields`, and `image_unavailable`, which
+   is a frame the producer could not turn into a picture and says why — and a kind this
+   page has never heard of is a *first-class* case and not an error: it is dumped as
+   readable JSON, so the depth or lidar summary somebody writes next shows an operator
+   something useful with no change here. */
+
+/* The gateway's ingress verb, which is `INGRESS_TOPICS`'s key for
+   `/monitor/raw_echo_request`. Spelled once. A build without the route answers 404 and
+   the picker goes dead saying so, which is the only thing this page infers from it. */
+const ECHO_VERB = "raw_echo_request";
+
+/* How many ticks old a frame may be and still be the frame arriving now. One: the echo
+   is tick-scoped, so the frame for this tick and the frame for the last one are the two
+   a live echo can be showing, and anything older means nothing came. */
+const ECHO_LIVE_TICKS = 1;
+
+/* A `data_uri` is wire data and it is about to become an `img` `src` — the one place on
+   this page where a string turns into something the browser fetches. So it is checked
+   against an allowlist and never sanitised into one: the *whole* string must be a
+   base64 data URI whose media type is one of a fixed set of raster image types.
+   `javascript:…` fails it. `https://host/x.png` fails it, and must — a remote URL would
+   have this page fetch from whatever host the wire named, from the origin that holds
+   the X-Skill-Monitor grant. `data:text/html,…` fails it. So does `data:image/svg+xml`:
+   SVG is markup that carries script, and it is left out here for the same reason `.svg`
+   is not in the gateway's STATIC_TYPES. Anything that fails is *reported*, never
+   loaded — the operator is told the summary claimed an image and what it actually
+   carried. */
+const DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/]+={0,2}$/;
+
+/* Past this the page refuses to load it rather than hand the browser a string measured
+   in megabytes once per tick. The echo exists to make the cost of a source visible; it
+   must not be the thing that makes the console unusable. */
+const DATA_URI_MAX = 8 * 1024 * 1024;
+
+function imageSrc(uri) {
+  if (typeof uri !== "string") return null;
+  if (uri.length > DATA_URI_MAX) return null;
+  return DATA_IMAGE.test(uri) ? uri : null;
+}
+
+/* -- the picker ------------------------------------------------------------ */
+
+function echoSources() {
+  return ((S.adapter || {}).sources || []).filter(s => s && typeof s.id === "string");
+}
+
+/* Why an echo cannot be asked for, or null when one can. Same rule as the control
+   strip: the one answer both disables the control and is printed beside it, so there is
+   no way to have a live-looking picker that does nothing. */
+function echoRefusal() {
+  if (!S.seg) {
+    return "no monitor is selected — the gateway has discovered no namespace to " +
+      "address a request to.";
+  }
+  if (!S.adapter) {
+    return "no /monitor/adapter is latched, so this page does not know what sources " +
+      "this robot has to echo. P3 publishes it.";
+  }
+  if (!echoSources().length) {
+    return "the adapter declares no sources, so there is nothing to echo.";
+  }
+  if (S.ech.route === "absent") {
+    return `this gateway serves no ingress route for the request — POST ` +
+      `.../${ECHO_VERB} answered ${txt(S.ech.status)} — so there is nowhere to ask ` +
+      "for one. The topic and its validator are in core/api.py; the route is an " +
+      "INGRESS_TOPICS entry in gateway.py, which is P6's file.";
+  }
+  if (S.ech.busy) return "the last request has not been answered yet.";
+  return null;
+}
+
+/* Built once per source list and never rebuilt under an arriving frame: a `select`
+   redrawn at the tick rate is a control that closes itself while it is being used. */
+function renderEcho() {
+  const sources = echoSources();
+  const key = JSON.stringify(sources.map(s => [s.id, s.topic]));
+  if (S.ech.key !== key) {
+    S.ech.key = key;
+    const options = [`<option value="">off — nothing is echoed</option>`].concat(
+      sources.map(s =>
+        `<option value="${esc(s.id)}">${esc(s.id)} — ${esc(s.topic)}</option>`));
+    $("echo").innerHTML =
+      `<div class="pick">
+         <span class="dim">raw echo</span>
+         <select id="echo-pick">${options.join("")}</select>
+         <span id="echo-state"></span>
+       </div>
+       <div id="echo-note" style="margin-top:4px"></div>
+       <div id="echo-why"></div>
+       <div id="echo-frame"></div>`;
+    $("echo-pick").onchange = () => echoAsk($("echo-pick").value || null);
+  }
+  updateEchoControls();
+  renderEchoFrame();
+}
+
+function updateEchoControls() {
+  const pick = $("echo-pick");
+  if (!pick) return;
+  const why = echoRefusal();
+  pick.disabled = why !== null;
+  // The control shows what is *echoing*, not what was last clicked. A request that was
+  // refused turned nothing on, and leaving the picker on the source it named would be
+  // the page claiming an echo it has no evidence for.
+  pick.value = S.ech.on === null ? "" : S.ech.on;
+  $("echo-why").innerHTML = why
+    ? `<div class="missing">no echo: ${esc(why)}</div>` : "";
+  $("echo-state").innerHTML = S.ech.on === null
+    ? `<span class="dim">off — nothing is echoed, and nothing is by default</span>`
+    : `<span class="ok">● echoing ${esc(S.ech.on)}</span>`;
+  $("in-note").innerHTML = "raw payloads: " + echoNote();
+}
+
+/* The one-word version, in the pane's heading. */
+function echoNote() {
+  if (S.ech.route === "absent") return `<span class="warn">no route</span>`;
+  if (S.ech.on === null) return `<span class="dim">off</span>`;
+  return `<span class="ok">echoing ${esc(S.ech.on)}</span>`;
+}
+
+/* One request out, and what came back — reported with its status and its body, the way
+   the command strip reports a refusal, because a control that fails quietly is a
+   control an operator believes worked.
+
+   `{schema_version, source_id}` is `api.build_raw_echo_request`'s shape exactly, and a
+   null `source_id` is the contract's own stop. */
+async function echoAsk(sourceId) {
+  if (!S.seg || S.ech.busy) return;
+  S.ech.busy = true;
+  updateEchoControls();
+  $("echo-note").innerHTML = `<span class="dim">asking…</span>`;
+  const body = JSON.stringify({ schema_version: SCHEMA_VERSION, source_id: sourceId });
+  const r = await api(`/api/monitors/${S.seg}/${ECHO_VERB}`, { method: "POST", body });
+  S.ech.busy = false;
+  if (r.status === 404 || r.status === 405) {
+    S.ech.route = "absent";
+    S.ech.status = r.status;
+    // The refusal box below says the whole of it. Leaving "asking…" here would be the
+    // page reporting a request that is never going to be answered.
+    $("echo-note").innerHTML = "";
+  } else if (r.status < 400) {
+    S.ech.route = "ok";
+    // Only a request that actually went out moves what this page believes is echoing.
+    S.ech.on = sourceId;
+    S.ech.since = latestSeq();
+    S.ech.gap = false;
+    // And the frame of whatever was echoing before is not a frame of this: it goes on
+    // the switch and on the stop, so the last one cannot sit under a new label or under
+    // an echo that has been turned off.
+    S.ech.frame = null;
+    $("echo-note").innerHTML = sourceId === null
+      ? `<span class="dim">stop published (${txt(r.status)}) — nothing is echoed.</span>`
+      : `<span class="ok">${esc(sourceId)} requested (${txt(r.status)})</span>
+         <span class="dim">— published, which is not the same as arriving. What the
+         evaluator does with it is what turns up on /monitor/raw_echo, and this pane
+         shows nothing until something does.</span>`;
+  } else {
+    // The route is there and refused this request. Nothing changed at the far end, so
+    // nothing changes here either, and the picker stays live for the next one.
+    $("echo-note").innerHTML =
+      `<span class="bad">the echo request was refused (${txt(r.status)}):
+       ${esc(r.text.slice(0, 300))}</span>`;
+  }
+  updateEchoControls();
+  renderEchoFrame();
+}
+
+function onRawEcho(payload) {
+  if (!payload || typeof payload !== "object") return;
+  S.ech.frame = payload;
+  S.ech.gap = false;
+  renderEchoFrame();
+}
+
+/* -- the frame ------------------------------------------------------------- */
+
+function renderEchoFrame() {
+  const box = $("echo-frame");
+  if (!box) return;
+  const f = S.ech.frame;
+
+  if (S.ech.on === null && echoRefusal() !== null) {
+    // Nothing is echoing and nothing can be asked for. The refusal above says why, and
+    // "pick a source" printed under a dead picker would be an instruction that does not
+    // work.
+    box.innerHTML = "";
+    return;
+  }
+  if (S.ech.on === null) {
+    // Off. The one thing this must never do is leave the last frame on screen: an
+    // operator who turned the echo off and still sees a picture is watching a robot
+    // that stopped sending it.
+    box.innerHTML = f
+      ? `<div class="missing">the echo is off, and a frame for
+           <code>${esc(raw(f.source_id))}</code> arrived at seq ${txt(f.seq)} anyway.
+           Another console may have asked for it, or the stop has not taken effect yet.
+           It is not drawn, because it is not this console's echo.</div>`
+      : `<p class="dim" style="margin:7px 0 0">nothing is echoed. Pick a source above
+           and this console asks for it on <code>/monitor/raw_echo_request</code>; the
+           frames come back on <code>/monitor/raw_echo</code>. One source at a time,
+           because a point cloud per frame is not free.</p>`;
+    return;
+  }
+
+  if (!f) {
+    // Requested, and nothing has come. Said as that and not as an error, and with the
+    // two things it could be named rather than one of them guessed at.
+    const gap = S.ech.gap
+      ? `<div class="dim" style="margin-top:4px">The stream reconnected since the
+           request. That gap is a period this page was not watching and the evaluator
+           may have restarted inside it, so the frame it was showing was dropped and the
+           request was not silently re-sent — pick the source again to ask for it.</div>`
+      : "";
+    box.innerHTML =
+      `<div class="missing"><b>${esc(S.ech.on)}</b> was requested${echoSinceText()} and
+         no <code>/monitor/raw_echo</code> frame has arrived. Nothing is drawn in the
+         meantime.
+         <div class="dim" style="margin-top:4px">Either the evaluator is not echoing
+           this source, or the topic is not on this build's stream — it reaches a
+           browser only if <code>api.RAW_ECHO</code> is in the gateway's
+           <code>STREAM_TOPICS</code>. The request was published; that is all this page
+           knows.</div>${gap}</div>`;
+    return;
+  }
+
+  const mismatch = f.source_id === S.ech.on ? "" :
+    `<div class="missing">this console asked for
+       <code>${esc(S.ech.on)}</code> and these frames are
+       <code>${esc(raw(f.source_id))}</code> — the echo is one source at a time for the
+       whole monitor, so another console may have taken it. Shown as what it is.</div>`;
+  box.innerHTML = mismatch +
+    `<div id="echo-body">
+       <div class="dim">source <span class="key">${esc(raw(f.source_id))}</span> ·
+         seq ${txt(f.seq)} · step ${txt(f.step)} · <span id="echo-age"></span></div>
+       ${echoSummary(f.summary)}
+     </div>`;
+  renderEchoAge();
+}
+
+/* Since when, in the unit the wire gives: ticks. Never a wall-clock duration measured
+   here, for the reason `sinceText` gives — this browser's clock is not the monitor's,
+   and under replay it is not even the same rate. */
+function echoSinceText() {
+  const now = latestSeq();
+  if (typeof S.ech.since !== "number" || now === null) return "";
+  const ticks = now - S.ech.since;
+  return ticks >= 0 ? ` ${ticks} tick${ticks === 1 ? "" : "s"} ago` : "";
+}
+
+/* How old the frame on screen is, recomputed every tick against the tick axis. This is
+   the whole of "do not show a stale frame as if it were live": the words say how many
+   ticks, and the `stale` class dims and greys the picture so the answer is visible
+   without reading them. Both, because either alone is a screenshot somebody
+   misreads. */
+function renderEchoAge() {
+  const el = $("echo-age"), body = $("echo-body"), f = S.ech.frame;
+  if (!el || !f) return;
+  const now = latestSeq();
+  if (typeof f.seq !== "number" || now === null) {
+    el.innerHTML = `<span class="warn">age unknown</span>
+      <span class="dim">— no seq on this page to measure the frame against</span>`;
+    if (body) body.classList.add("stale");
+    return;
+  }
+  const ticks = now - f.seq;
+  if (ticks < 0) {
+    el.innerHTML = `<span class="warn">ahead of this page</span>
+      <span class="dim">— seq ${txt(f.seq)} against a newest ${txt(now)}; no age is
+      derived from that</span>`;
+    if (body) body.classList.remove("stale");
+    return;
+  }
+  const stale = ticks > ECHO_LIVE_TICKS;
+  el.innerHTML = stale
+    ? `<span class="warn">${ticks} ticks old</span> <span class="dim">— nothing has
+       arrived since. This is the last frame that came, not what is coming now.</span>`
+    : `<span class="ok">live</span> <span class="dim">— ${ticks} tick${
+        ticks === 1 ? "" : "s"} behind the newest seq</span>`;
+  if (body) body.classList.toggle("stale", stale);
+}
+
+/* -- the summary, by the `kind` the adapter put on it ---------------------- */
+
+function echoSummary(sum) {
+  if (!sum || typeof sum !== "object" || Array.isArray(sum)) {
+    return `<div class="missing">the frame carries no <code>summary</code> object.
+      The envelope was accepted — <code>seq</code>, <code>t</code>, <code>step</code>
+      and <code>source_id</code> are the wire's — but the summary is the adapter's half
+      of it and there is nothing here to render.</div>`;
+  }
+  const kind = sum.kind;
+  if (typeof kind !== "string" || !kind) {
+    return `<div class="missing">the summary carries no <code>kind</code>, so this page
+      cannot tell what it is a summary of. Shown as it arrived rather than guessed
+      at.</div>` + echoJson(sum);
+  }
+  if (kind === "image") return echoImage(sum);
+  if (kind === "fields") return echoFields(sum);
+  if (kind === "image_unavailable") return echoImageUnavailable(sum);
+  // The extension point, and it is a case rather than a fallback. A summary shape this
+  // console has never seen still shows an operator every field it carries; writing a
+  // renderer for it is a page change, and a new sensor type is not.
+  return `<p class="dim" style="margin:7px 0 0">summary kind
+    <span class="key">${esc(kind)}</span> — this console has no renderer for it, so the
+    summary is shown as it arrived. That is the contract working: the shape belongs to
+    the adapter, not to this page.</p>` + echoJson(sum);
+}
+
+/* The readable dump. Clipped, because `summary` is whatever the adapter put there and
+   a per-tick megabyte of it in the DOM would take the console down. */
+const ECHO_JSON_MAX = 20000;
+
+function echoJson(value) {
+  let text;
+  try { text = JSON.stringify(value, null, 2); }
+  catch (e) { text = null; }
+  if (typeof text !== "string") return `<p class="warn">the summary could not be
+    rendered as JSON: ${esc(String(value))}</p>`;
+  const clipped = text.length > ECHO_JSON_MAX;
+  return `<pre>${esc(clipped ? text.slice(0, ECHO_JSON_MAX) : text)}</pre>` + (clipped
+    ? `<p class="dim">clipped at ${ECHO_JSON_MAX} characters of
+       ${text.length}.</p>` : "");
+}
+
+/* What the source cost, beside whatever it produced. This is why the pane shows
+   `samples_this_tick`, the echo rate and `bytes` at all: an operator who turns a camera
+   on over a field link should be able to see what they turned on.
+
+   Rows for fields the summary does not carry are left out rather than printed as a dash.
+   The kinds carry different ones -- a `fields` summary has no `bytes` and nothing is
+   wrong with that -- and a table of dashes reads like a producer that is failing. */
+function echoFacts(sum, extra) {
+  const rows = [["topic", `<span class="key wrap">${txt(sum.topic)}</span>`]]
+    .concat(extra || []);
+  rows.push(["samples this tick", echoSamples(sum)]);
+  const rate = echoRate(sum);
+  if (rate) rows.push(["echo rate", rate]);
+  if (typeof sum.bytes === "number") rows.push(["bytes", echoBytes(sum)]);
+  return `<table class="fixed"><colgroup><col style="width:44%"><col></colgroup>` +
+    rows.map(([k, v]) => `<tr><th class="wrap">${esc(k)}</th>
+      <td class="wrap">${v}</td></tr>`).join("") + `</table>`;
+}
+
+/* Samples, and -- when the echo is striding over ticks -- what that count is *of*. The
+   producer accumulates the samples of the ticks it skipped into the frame it does send,
+   so "14 samples this tick" on a 1-in-5 stride is fourteen messages over five ticks and
+   saying "this tick" alone would be wrong. */
+function echoSamples(sum) {
+  const every = sum.every_n_ticks;
+  return txt(sum.samples_this_tick) + ((typeof every === "number" && every > 1)
+    ? ` <span class="dim">— counted over the ${every} ticks since the last frame,
+        the skipped ones included</span>` : "");
+}
+
+/* The echo's own rate, which is not the tick rate: the producer limits it to a stride of
+   whole ticks and reports both numbers. Shown because it is the difference between "the
+   camera is on" and "the camera is on and costing this much". */
+function echoRate(sum) {
+  const hz = sum.rate_hz, every = sum.every_n_ticks;
+  if (typeof hz !== "number" && typeof every !== "number") return "";
+  const stride = (typeof every === "number" && every > 1)
+    ? ` <span class="dim">— one frame every ${every} ticks</span>`
+    : ` <span class="dim">— one frame a tick</span>`;
+  return (typeof hz === "number" ? `${num(hz, 3)} Hz` : `<span class="dim">not
+    reported</span>`) + stride;
+}
+
+/* The frame's size, and what that is per second at the echo's own rate. The rate is the
+   echo's where it reports one and the adapter's tick rate otherwise, and the line says
+   which -- a cost figure computed against the wrong clock is worse than none. */
+function echoBytes(sum) {
+  const bytes = sum.bytes;
+  const echoHz = sum.rate_hz;
+  const tickHz = (S.adapter || {}).tick_hz;
+  const hz = typeof echoHz === "number" ? echoHz : tickHz;
+  const source = typeof echoHz === "number" ? "the echo's rate"
+    : "the adapter's tick rate";
+  if (typeof hz !== "number" || !(hz > 0)) return `${bytes}`;
+  const per = bytes * hz;
+  // Bytes per second under a kilobyte: "≈ 0 kB/s" beside a 48-byte frame reads as
+  // free, and the whole point of this line is that nothing an echo carries is.
+  const rate = per < 1000 ? `${num(per, 0)} B/s` : `${num(per / 1000, 1)} kB/s`;
+  return `${bytes} <span class="dim">≈ ${rate} at ${num(hz, 3)} Hz, ${source}</span>`;
+}
+
+/* `kind: "image"` — the frame, at its own size, and what it cost beside it. */
+function echoImage(sum) {
+  const shown = echoDims(sum.width, sum.height) ||
+    `<span class="dim">not declared</span>`;
+  const from = echoDims(sum.source_width, sum.source_height);
+  const size = from
+    ? `${shown} <span class="dim">from ${from} ${esc(raw(sum.source_encoding))}</span>`
+    : shown;
+  const facts = echoFacts(sum, [["size", size], ["encoding", txt(sum.encoding)]]);
+  // Never silently smaller. The producer halves a frame that will not fit its data-URI
+  // cap, and a picture quietly shrunk below the box it is drawn in is a small lie about
+  // what the camera sent.
+  const shrunk = sum.downscaled_to_fit === true
+    ? `<p class="warn" style="margin:6px 0 0">this frame was reduced further than the
+       echo's own box to fit the ${txt(sum.cap_bytes)}-byte cap on a data URI. What is
+       drawn is smaller than what the camera sent, and smaller than what the echo
+       normally sends.</p>` : "";
+  const src = imageSrc(sum.data_uri);
+  if (src === null) {
+    return `<div class="missing">the summary says <code>kind: image</code> and its
+        <code>data_uri</code> is not one this page will load. It has to be a
+        <code>data:image/…;base64,…</code> URI under
+        ${Math.round(DATA_URI_MAX / 1024)} kB, and nothing else is ever put in an
+        <code>img</code> src — not a remote URL, not another scheme. Not rendered, and
+        not fetched.
+        <div class="dim" style="margin-top:4px">what arrived:
+          ${esc(String(sum.data_uri).slice(0, 120))}</div></div>` + facts;
+  }
+  return `<div class="frame"><img alt="raw echo frame from ${esc(raw(sum.topic))}"
+      src="${esc(src)}">${facts}</div>` + shrunk;
+}
+
+/* `kind: "image_unavailable"` — the producer had a frame and could not turn it into a
+   picture. Its `reason` is a sentence written for an operator, and it is rendered as
+   one: "encoding '16UC1' is not one this echo can render" is an answer somebody can act
+   on, and the same fact as a JSON blob is not. A depth topic is the first thing anybody
+   clicks, so this is a normal outcome and is not drawn as a fault. */
+function echoImageUnavailable(sum) {
+  const from = echoDims(sum.source_width, sum.source_height);
+  const facts = echoFacts(sum, [
+    ["source", from
+      ? `${from} <span class="dim">${esc(raw(sum.source_encoding))}</span>`
+      : `<span class="dim">${esc(raw(sum.source_encoding))}</span>`],
+    ["source bytes", txt(sum.source_bytes)],
+  ]);
+  const why = typeof sum.reason === "string" && sum.reason
+    ? esc(sum.reason)
+    : `<span class="dim">the summary gives no <code>reason</code>, so this page has
+       none to show.</span>`;
+  return `<div class="missing" style="border-left-color:var(--acc)">
+      <b>no picture from this source.</b> ${why}
+      <div class="dim" style="margin-top:4px">The source is being echoed and its frames
+        are arriving; what cannot be done is turning one into an image. Nothing is drawn
+        rather than something misleading — a frame decoded with the wrong stride or the
+        wrong encoding renders as a plausible picture of nothing.</div>
+    </div>` + facts;
+}
+
+function echoDims(width, height) {
+  return (typeof width === "number" && typeof height === "number")
+    ? `${num(width, 0)} × ${num(height, 0)}` : "";
+}
+
+/* `kind: "fields"` — a value table. Sorted, so the same source reads the same way twice
+   running and a row does not move under the cursor when a key order changes. */
+function echoFields(sum) {
+  const facts = echoFacts(sum);
+  const values = sum.values;
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    return facts + `<div class="missing">the summary says <code>kind: fields</code> and
+      carries no <code>values</code> object.</div>` + echoJson(sum);
+  }
+  const keys = Object.keys(values).sort();
+  if (!keys.length) {
+    return facts + `<p class="dim">the summary's <code>values</code> is empty — the
+      source produced no field this tick.</p>`;
+  }
+  return facts +
+    `<table class="fixed"><colgroup><col style="width:44%"><col></colgroup>
+     <tr><th>field</th><th>value</th></tr>` +
+    keys.map(k => `<tr><td class="key wrap">${esc(k)}</td>
+      <td class="wrap">${esc(echoValue(values[k]))}</td></tr>`).join("") + `</table>`;
+}
+
+/* A field's value may be a nested object — `fmt` would render that "[object Object]",
+   which tells an operator nothing. */
+function echoValue(v) {
+  if (v !== null && typeof v === "object") {
+    try { return JSON.stringify(v); } catch (e) { return String(v); }
+  }
+  return fmt(v);
 }
 
 /* == 4 · plots ============================================================== */
