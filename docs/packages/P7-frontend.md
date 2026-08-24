@@ -3,8 +3,8 @@
 ## Purpose
 
 The window into a running monitor: the data going in, the propositions it is evaluated
-against, the automaton it is driving, the clock driving that, and what the whole thing cost
-to compute. It renders what it is told exists and imports nothing from the monitor — a
+against, the automaton it is driving, the phase machine timing that automaton, the clock
+driving both, and what the whole thing cost to compute. It renders what it is told exists and imports nothing from the monitor — a
 robot with a vocabulary this package has never heard of must render unchanged.
 
 It is a **browser** surface served over the P6 gateway. The Tk panel it is meant to replace
@@ -108,7 +108,7 @@ otherwise specified as if the transport existed.
 
 ## Design
 
-### The eight panes, and what each is actually reading
+### The nine panes, and what each is actually reading
 
 Numbered as the page numbers them, so a heading here and a heading on screen are the same
 heading.
@@ -255,14 +255,87 @@ whole story.** `verdict.failure_modes[]` carries the spec's named modes *and* th
 machine's own faults, synthesised as
 `phase:<phase>:<invariant｜timeout｜progress｜precondition>` — a stable name per
 (phase, kind) precisely so a consumer can key on it.
-Those never appear in `formulas[]` and have no automaton to light up. Each entry carries a
+Those never appear in `formulas[]` and have no automaton to light up — **pane 7 is where
+they come from**, and it is the pane that can say which guard of which phase a
+`phase:<phase>:<invariant>` row is about. Each entry carries a
 `fault_category` from a closed vocabulary (`SAFETY`, `INVARIANT`, `TIMEOUT`, `PROGRESS`),
 and a category the engine could not classify ships as `PROGRESS` rather than as something
 alarming. The surface renders the category as given and does not re-rank it: an
 unclassifiable fault is not thereby a severe one, and the spec that named it was already
 rejected at load if the spelling was unrecognised.
 
-**7 — Clock.** `seq`, `t`, `t0` as a wall time, effective `tick_hz`, `mode`, and
+**7 — The phase machine, with the phase we are in, its budget, and the live truth of its
+guards.** Directly after pane 6 because the two are one subject seen at two levels: the
+Büchi automata answer "is this property still holding", and the layer above them answers
+"which phase are we in, how long has it got, and which of its guards is about to end it".
+Splitting them across the page would have separated the automaton from the thing that
+times it.
+
+**The machine is drawn from `manifest.execution_phases`, which is already latched.** One
+node per phase in the order the spec authored them, each labelled with its index and its
+`timing_bounds.max_steps`, and the transition between two phases labelled with the
+`exit_condition` of the one it leaves — the guard that actually makes that transition, in
+the spec's own words. It is laid out top to bottom rather than left to right: pane 6's
+automata are wide and shallow, and a phase machine is a chain, which in a dashboard column
+has room downwards and none across. Vertical also leaves the whole right-hand side for the
+transition labels, which are the one thing here that must not be truncated to fit. Same
+discipline as pane 6 otherwise — laid out once per manifest, so a verdict costs one
+`classList.toggle` per node and no element is replaced.
+
+**Where we are is carried by shape, not by colour.** The current phase gets a caret
+pointing at it and a second outline inside its box; the colour agrees and never carries the
+distinction alone. Both marks are in the document from the start and hidden with `display`,
+which is what keeps the highlight a class swap. `verdict.phase_index` is the position and
+`verdict.phase` is the name; when they disagree the pane believes the **name**, because that
+is the string the guard block and the `phase:<phase>:<kind>` fault names are keyed on, and
+it says which it used rather than choosing quietly.
+
+**The timing is the reason this is a second pane and not a second Büchi drawing** — it is
+the layer that has any. `step` counts the episode and `max_steps` bounds the phase, so the
+in-phase count is derived as `max_steps` minus `risk.steps_to_timeout` and shown against
+that bound as a bar; a verdict that reports no `steps_to_timeout` leaves nothing to derive
+it from, and the pane says so rather than showing the episode's step against a phase's
+bound. Beside it: `risk.steps_to_timeout`, and `risk.violations_to_fault` against the
+phase's own `progress_violation_limit`, which is what says whether the next progress
+violation is the one that faults. When `risk.severity` is set the pane names it, because a
+graded tick is exactly the one an operator must not have to infer from a colour elsewhere.
+
+**The guards, with their live truth, which is where a fault actually originates.** For the
+current phase, each guard it declares — `precondition`, `enter_condition`, `invariant`,
+`progress_condition`, `exit_condition` — as three columns: the expression as the spec
+authored it, whether it currently holds, and the atomic propositions it reads with their
+values from `observation.ap_values`. Only the guards the phase declares appear: a padded-out
+set would show an invariant for a phase that has none, which is a claim about the spec
+rather than a reading of it.
+
+**`value: null` is rendered as its own thing and never as false.** "We did not check" and
+"it does not hold" are different facts about a phase and one of them is a fault — an
+invariant reading a proposition blinded by a stale sensor has not been broken, it has not
+been evaluated, and a pane that flattens the two turns a dead camera into a safety
+violation. Same rule one level down for the propositions themselves: one named in
+`observation.unknown_aps`, or absent from `ap_values` entirely, renders UNKNOWN and not
+false, exactly as in pane 5.
+
+**The page does not evaluate a guard expression, and that is a rule rather than an
+omission.** `phase_guards[].value` is what the monitor actually acted on; a second evaluator
+in the browser is precisely where this project's `min_range < 0.25` decimal-point bug lived
+three times, and a guard the page decided for itself would be a fault it invented rather
+than one it observed. What the page does do is *name-match* the propositions an expression
+reads against the manifest's declared AP names — string matching, not evaluation, which
+cannot invent a proposition the spec does not declare and says only what the monitor's
+answer was a function of.
+
+**Degrading is per-reason here too.** No `execution_phases` on the manifest is a spec with
+no phase machine at all, and the pane says so with the field name and its owner; an
+`execution_phases` that is present and empty is a spec that runs as one unphased episode,
+which is a different sentence. A `phase_guards` that is *absent* is a build whose producer
+does not report guard truth: the machine and the timing still draw, and the pane names the
+field and refuses to fall back to evaluating it. A `phase_guards` that is present and `null`
+is the machine between phases — no phase active, so no guards to report. A `verdict.phase`
+of null draws the machine with **nothing** highlighted, for the same reason a null `state`
+lights nothing in pane 6.
+
+**8 — Clock.** `seq`, `t`, `t0` as a wall time, effective `tick_hz`, `mode`, and
 `missed_ticks` from the verdict. `seq`/`t`/`t0`/`tick_hz`/`mode` arrive on the monitor
 stream, on `/monitor/tick`, which is why that topic had to join `STREAM_TOPICS`. Until the
 first pulse arrives the pane says it has seen no tick rather than showing a zero, and it
@@ -283,7 +356,7 @@ being written later.
 The effective rate is the one on the wire, never the descriptor's — a CLI override that the
 panel does not reflect makes every seconds-denominated number on the page wrong.
 
-**8 — Cost (the page names it "timing", after the field it wants).** How long the tick took,
+**9 — Cost (the page names it "timing", after the field it wants).** How long the tick took,
 split by stage: fold, AP evaluation, automaton step, verdict publication. Shown as the
 current tick and a rolling distribution, against the tick budget `1/tick_hz` — the number
 that matters is not the mean, it is how close the worst tick came to the budget, because
@@ -306,7 +379,7 @@ of the verdict owes.
 
 ### What this pane set requires from the backend
 
-Six payload fields and four routes or topic constants — and the ownership is not one package
+Five payload asks and four routes or topic constants — and the ownership is not one package
 per row, which was the assumption worth correcting. `api.validate_*` is **closed by
 default**: `_check_fields` reports every unknown field as a problem unless the caller passes
 `closed=False`, and only the manifest does. So a payload field is not a matter of "the
@@ -322,6 +395,7 @@ carry schemas.
 | ask | on | owner | why it cannot be derived client-side |
 |---|---|---|---|
 | `ap_dependencies` — AP name → the sensor keys its rule reads | manifest *(latched)* | **P4 alone** — the manifest is the one payload validated with `closed=False`, because it is passed through as authored | re-parsing rules in the browser forks the validator; one drift and the panel shows a dependency the engine does not agree with |
+| `phase_guards` — the active phase's declared guards, each with the expression the spec authored and the truth the monitor acted on (`true`, `false`, or `null` for *not evaluated this tick*); `null` for the whole block when no phase is active | verdict | **P0** (`_VERDICT_FIELDS`), then P4 | evaluating the expressions in the browser forks the evaluator — the same fork that put `min_range < 0` on the page three times — and it would report a fault the page invented rather than one the monitor acted on |
 | `timing` — per-stage nanoseconds for the tick | observation (fold, AP eval) and verdict (step, publish) | **P0** (`_OBSERVATION_FIELDS`, `_VERDICT_FIELDS`), then P3 and P4 | wall-clock at the browser measures the link, not the computation |
 | `provenance` — declared `real ｜ sim ｜ replay`, descriptor path, publisher | adapter *(latched)* | **P0** (`_ADAPTER_FIELDS`), then P3 | it is a declaration, and declarations belong on the wire beside what they describe |
 | position, goal and next-waypoint keys — the X-Y track | the observation's `sensors`, via the schema | **P12** | they exist in no schema today, and they may only come from odometry and the commanded goals, never from the planner's self-report |
@@ -509,6 +583,34 @@ gates `formulas[].state` on the validator's own answer rather than on a flag —
 field to open, and a mock that emitted it early would be publishing frames the shipped
 validators reject.
 
+**Pane 7's frames** — `test_the_guards_reported_are_the_ones_the_phase_declares` (the
+phase's own guards, in the spec's own words, and no padded-out set);
+`test_a_guard_is_true_of_the_propositions_on_its_own_frame`, which walks a whole episode so
+that a guard the pane shows as true is true of the propositions shown beside it, and which
+asserts that all three truths — true, false and *not evaluated* — really occur, so the pane
+has all three to draw; `test_a_guard_whose_proposition_is_unknown_is_null_and_never_false`,
+the one that matters, because reporting `false` there is how a dropped depth camera becomes
+a broken invariant; `test_a_guard_reads_the_propositions_it_names_and_no_others` (name
+matching, including that a prefix is not a match and that a literal is not a proposition);
+`test_no_active_phase_reports_null_rather_than_an_empty_guard_list`, which pins that "no
+phase is active" and "this phase declares no guards" stay two sentences;
+`test_the_verdicts_phase_and_its_guards_name_the_same_phase`, the join the console
+highlights by; `test_the_bound_the_pane_measures_against_belongs_to_the_phase_it_reports`; and
+`test_the_mock_sends_phase_guards_the_moment_the_contract_admits_it`, which gates the field
+on the validator's own answer for the same reason `formulas[].state` is gated that way.
+
+**Pane 7's degrade paths, read off the page** —
+`test_the_page_names_the_field_and_its_owner_when_there_is_no_phase_machine` (and that an
+absent `execution_phases` and an empty one keep their own sentences);
+`test_the_page_says_no_guard_truth_is_reported_rather_than_evaluating_the_guards`, which
+also asserts that the page contains no `eval(` and no `new Function` at all — the rule is
+worth an assertion rather than a comment;
+`test_the_page_renders_an_unevaluated_guard_as_its_own_thing` (strict `=== true` /
+`=== false`, so anything else falls through to the third rendering rather than to the false
+one); and `test_the_panes_are_numbered_the_way_the_page_lays_them_out`, which pins the
+renumbering against both the page and this document, because a heading here and a heading
+on screen have to be the same heading.
+
 **Still asked for, and not written here yet** —
 `test_every_clock_request_sends_the_csrf_header`, *reads included*. The whole proxied clock
 surface is gated, not only its POSTs, so the rule the page has to obey is "every clock
@@ -526,7 +628,13 @@ second implementation is exactly where the decimal-point bug lived three times b
 
 Pane 6's drawing is in the same bucket, and `tests/test_web_ui.py` says so at the top: the
 frames it renders from are asserted there, and the layout, the shape coding, the class-swap
-highlight and the witnessed-path caption were checked by hand against `--mock`. A runner
+highlight and the witnessed-path caption were checked by hand against `--mock`. Pane 7 is
+the same split and the file says so too — the guard frames are asserted, while the vertical
+chain, the caret-and-second-outline highlight, the in-phase bar and the guard table were
+read in a browser. Its guard half needed one extra step to look at at all: this build's
+contract does not admit `phase_guards`, so the hand check ran against a throwaway launcher
+that patched `_VERDICT_FIELDS` to answer the way P0 will. That launcher is not in the repo,
+which is itself the argument for the runner. A runner
 would also catch the cheapest failure of all — the page is one `<script>`, so a syntax
 error anywhere in it leaves *every* pane blank, and nothing in this repo notices.
 
@@ -540,18 +648,24 @@ already on the ROS graph, and this is defence in depth. Nothing in this repo ass
 
 ## Done when
 
-The eight panes render from a live gateway and from `--mock`; the AP-dependency map is the
+The nine panes render from a live gateway and from `--mock`; the AP-dependency map is the
 validator's own; the automaton lights the current state and claims only the path it
-witnessed; provenance reads as a declaration; a build missing every new backend field still
-renders, naming what it cannot show; and the two panes whose routes do not exist say which
-route they are waiting for rather than failing.
+witnessed; the phase machine draws every phase, marks the one we are in by shape, and shows
+each of its guards with the truth the monitor reported rather than one the page computed;
+provenance reads as a declaration; a build missing every new backend field still renders,
+naming what it cannot show; and the two panes whose routes do not exist say which route
+they are waiting for rather than failing.
 
-**Where this stands.** Seven of the eight panes render from the wire as it is today. The
+**Where this stands.** Eight of the nine panes render from the wire as it is today. The
 automaton draws its graphs from `manifest.automata` and lights the state each verdict row
 reports, showing the path from the tick this page connected and saying so; where a build
 publishes no graph, or a row no state, it says which of those it is and lights nothing.
-Timing is the one pane still short of its field: it has no `verdict.timing` and shows only
-the frame interval this browser measured, labelled as such. The AP map is a second
+The phase machine draws itself and its timing from `manifest.execution_phases` and
+`verdict.risk`, which are both on the wire today; its guard column waits on
+`verdict.phase_guards`, and until that lands it names the field and its owner rather than
+evaluating the expressions in the browser. Timing is the one pane still short of every
+field it needs: it has no `verdict.timing` and shows only the frame interval this browser
+measured, labelled as such. The AP map is a second
 implementation of
 `sensor_keys_in_rule` in JavaScript rather than the validator's own answer off the wire;
 `ap_dependencies` replaces it and deletes that code. Raw payload echo has no gateway

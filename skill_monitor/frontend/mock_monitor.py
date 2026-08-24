@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import threading
 import time
 
@@ -233,6 +234,25 @@ def _initial_states(automata) -> dict:
     return {graph["name"]: graph["initial"] for graph in automata}
 
 
+def _probe_verdict(*, formulas=None, failure_modes=None, **extra) -> dict:
+    """A minimal, otherwise-valid verdict, for asking the validator a question.
+
+    Everything about it is the builders' own, so the only thing a rejection can be
+    about is what the caller put on it.
+    """
+    return api.build_verdict(
+        seq=1, t=0.0, step=0, skill_name="probe", phase=None, phase_index=None,
+        verdict="UNDECIDED",
+        formulas=[api.build_formula(name="probe", status="INCONCLUSIVE")]
+        if formulas is None else formulas,
+        failure_modes=[] if failure_modes is None else failure_modes,
+        risk=api.build_risk(steps_to_timeout=None, seconds_to_timeout=None,
+                            violations_to_fault=None, warn=False,
+                            trigger_confidence=1.0),
+        intervention=api.build_intervention(action="CONTINUE", confidence=1.0),
+    ) | extra
+
+
 def _wire_admits_state() -> bool:
     """Whether this build's verdict contract has room for `formulas[].state`.
 
@@ -245,28 +265,118 @@ def _wire_admits_state() -> bool:
     ponytail: delete this and pass `state=` straight to `api.build_formula` /
     `api.build_failure_mode` once those builders take it.
     """
-    probe = api.build_verdict(
-        seq=1, t=0.0, step=0, skill_name="probe", phase=None, phase_index=None,
-        verdict="UNDECIDED",
+    probe = _probe_verdict(
         formulas=[api.build_formula(name="probe", status="INCONCLUSIVE") | {"state": 0}],
         failure_modes=[api.build_failure_mode(
             name="probe", fault_category="SAFETY", status="INCONCLUSIVE",
             confidence=1.0) | {"state": None}],
-        risk=api.build_risk(steps_to_timeout=None, seconds_to_timeout=None,
-                            violations_to_fault=None, warn=False,
-                            trigger_confidence=1.0),
-        intervention=api.build_intervention(action="CONTINUE", confidence=1.0),
     )
+    return api.validate_verdict(probe) == []
+
+
+def _wire_admits_phase_guards() -> bool:
+    """Whether this build's verdict contract has room for `phase_guards`.
+
+    The same question as `_wire_admits_state`, asked the same way and for the same
+    reason: `_VERDICT_FIELDS` is closed, so P0 opens the field before any producer may
+    send it, and a mock that emitted it early would publish frames the shipped
+    validators reject. Asking the validator itself means `--mock` starts demonstrating
+    pane 7's guard truth the moment P0 lands, with no edit here.
+
+    ponytail: delete this and pass `phase_guards=` straight to `api.build_verdict`
+    once that builder takes it.
+    """
+    probe = _probe_verdict(phase_guards={
+        "phase": "probe",
+        "guards": [{"name": "invariant", "expr": "upright", "value": None}]})
     return api.validate_verdict(probe) == []
 
 
 #: Asked once, at import: the answer cannot change while the process runs.
 WIRE_ADMITS_STATE = _wire_admits_state()
+WIRE_ADMITS_PHASE_GUARDS = _wire_admits_phase_guards()
 
 
 def _with_state(row: dict, state) -> dict:
     """A verdict row carrying its automaton state, where the contract has room."""
     return row | {"state": state} if WIRE_ADMITS_STATE else row
+
+
+# =============================================================================
+# The phase machine pane 7 draws
+#
+# ponytail: this belongs to P4 as well. The real answer comes from whatever steps the
+# phase machine and already knows which guard it acted on this tick; the mock evaluates
+# the spec's own guard text over the AP values it fabricated on the same frame, so a
+# guard the console shows as true is true of the propositions shown beside it.
+# =============================================================================
+
+#: The guards a phase may declare, in the order the pane lists them: what had to be
+#: true to be here at all, what admitted the phase, what has to stay true, what has to
+#: keep being true, and what ends it. A phase that declares none of one is reported
+#: with none -- the wire carries what the spec authored and not a full set padded with
+#: nulls, because "this phase has no invariant" and "its invariant was not evaluated"
+#: are different facts.
+GUARD_KEYS = ("precondition", "enter_condition", "invariant",
+              "progress_condition", "exit_condition")
+
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def guard_aps(expr, ap_names) -> list[str]:
+    """Which declared propositions `expr` reads.
+
+    A word-boundary name match against the names the spec declares -- the same question
+    the console asks of the same string, and deliberately the same answer. It is not a
+    parse and claims not to be: it says this guard is a function of these propositions,
+    which is all either side needs in order to show them beside it. String literals go
+    first, so a `nav_state` value spelled like a proposition is not counted as one.
+    """
+    body = _QUOTED.sub(" ", str(expr or ""))
+    return [n for n in ap_names if re.search(rf"\b{re.escape(n)}\b", body)]
+
+
+def guard_value(expr, ap_values, ap_names):
+    """True, False, or None -- and None is not False.
+
+    A guard reading a proposition this tick could not evaluate has not failed; it was
+    not answered. Reporting False there is how a stale depth camera comes to read as a
+    broken invariant, which is the one thing the pane exists to make impossible.
+    """
+    if any(name not in ap_values for name in guard_aps(expr, ap_names)):
+        return None
+    try:
+        return bool(eval(str(expr), {"__builtins__": {}}, dict(ap_values)))
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def phase_guards(spec: dict, phase_index, ap_values: dict) -> dict | None:
+    """`verdict.phase_guards` -- the active phase's own guards and their live truth.
+
+    None when no phase is active, which is a value the wire carries rather than an
+    empty object: a run between phases has no guards, and an empty `guards` list would
+    say the phase declared none.
+    """
+    phases = spec.get("execution_phases") or []
+    if phase_index is None or not (0 <= phase_index < len(phases)):
+        return None
+    phase = phases[phase_index] if isinstance(phases[phase_index], dict) else {}
+    names = list(spec.get("atomic_propositions") or {})
+    guards = [
+        {"name": key, "expr": phase[key],
+         "value": guard_value(phase[key], ap_values, names)}
+        for key in GUARD_KEYS
+        if isinstance(phase.get(key), str) and phase[key].strip()
+    ]
+    # The same fallback `api.phase_names` uses, so the name here and the name in
+    # `verdict.phase` are one string and the console can match them.
+    return {"phase": phase.get("phase", f"phase{phase_index}"), "guards": guards}
+
+
+def _with_phase_guards(verdict: dict, guards) -> dict:
+    """A verdict carrying its phase's guards, where the contract has room."""
+    return verdict | {"phase_guards": guards} if WIRE_ADMITS_PHASE_GUARDS else verdict
 
 
 class MockBus(MonitorBus):
@@ -578,7 +688,7 @@ class MockBus(MonitorBus):
         violated = any(m["status"] == "VIOLATED" for m in modes)
         action = ("HALT" if violated and confidence > 0.75 else
                   "WARN" if violated or stale else "CONTINUE")
-        return api.build_verdict(
+        return _with_phase_guards(api.build_verdict(
             seq=seq, t=t, step=step,
             skill_name=self.spec.get("skill_name", ""),
             phase=phase, phase_index=phase_index,
@@ -607,7 +717,7 @@ class MockBus(MonitorBus):
                 imminence="now" if violated else None,
                 confidence=confidence),
             missed_ticks=0,
-        )
+        ), phase_guards(self.spec, phase_index, ap_values))
 
 
 def _max_steps(spec, phase_index):
