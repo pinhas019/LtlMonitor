@@ -16,12 +16,63 @@ from __future__ import annotations
 import argparse
 import logging
 import pathlib
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 
 from skill_monitor.backend import gateway as gw
 
 HERE = pathlib.Path(__file__).resolve().parent
+PAGE = HERE / "index.html"
 log = logging.getLogger("skill_monitor.console")
+
+#: The page is one `<script>`. That is deliberate -- no build step, no module graph, one
+#: file to serve -- and it has one consequence worth a guard: a syntax error anywhere in
+#: it stops the *whole* script parsing, so every pane goes blank at once. That has
+#: happened, from a backtick inside an HTML comment inside a template literal, and no
+#: test in this repo could see it: Python cannot parse JavaScript, and the page has no
+#: test runner.
+_SCRIPT = re.compile(r"<script>(.*?)</script>", re.S)
+
+
+def page_syntax_problems(page: pathlib.Path | None = None) -> list[str]:
+    """Problems `node --check` finds in the page's JavaScript. Empty means it parses.
+
+    Returns a problem rather than raising when node is missing, so a caller can decide
+    whether an unavailable checker is a skip or a failure. It is not this function's
+    business to know which.
+    """
+    page = page or PAGE
+    if not page.exists():
+        return [f"{page}: no such file"]
+    node = shutil.which("node") or shutil.which("nodejs")
+    if node is None:
+        return ["node is not installed, so the page's JavaScript was not checked"]
+
+    blocks = _SCRIPT.findall(page.read_text())
+    if not blocks:
+        return [f"{page}: no <script> block to check"]
+
+    problems = []
+    for i, source in enumerate(blocks):
+        # A real file, because `node --check -` reads stdin as CommonJS regardless of
+        # what the source looks like, and the error text is what a reader has to act on.
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(source)
+            scratch = fh.name
+        try:
+            done = subprocess.run([node, "--check", scratch],
+                                  capture_output=True, text=True, timeout=30)
+            if done.returncode != 0:
+                where = "" if len(blocks) == 1 else f" (script block {i + 1})"
+                # node names the scratch file; the reader cares about the page.
+                detail = (done.stderr or done.stdout).replace(scratch, str(page))
+                problems.append(f"{page.name}{where}: {detail.strip()}")
+        finally:
+            pathlib.Path(scratch).unlink(missing_ok=True)
+    return problems
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-host", action="append", default=[], metavar="HOST",
                         help="an extra Host header value, beyond loopback and --host")
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--check", action="store_true",
+                        help="syntax-check the page and exit, without binding a port. "
+                             "Needs node. The page is one script, so one error blanks "
+                             "every pane at once.")
     return parser
 
 
@@ -81,6 +136,16 @@ def main(argv=None) -> int:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    # Before anything is built or bound: a page that does not parse serves a blank
+    # console, and the server would come up looking perfectly healthy while it did.
+    if args.check:
+        problems = page_syntax_problems()
+        for problem in problems:
+            log.error("%s", problem)
+        if not problems:
+            log.info("%s parses", PAGE.name)
+        return 1 if problems else 0
 
     if args.mock:
         from skill_monitor.frontend.mock_monitor import MockBus
