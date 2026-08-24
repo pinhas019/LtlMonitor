@@ -1710,6 +1710,12 @@ SHIPPED_SOURCES = {
                    "pointcloud_xyz", 10, True),
         "status": ("/path_manager/status", "std_msgs/msg/String", "json", 10, True),
         "vision": ("/vision/goal_similarity", "std_msgs/msg/Float32", None, 10, False),
+        # Feeds no schema key at all -- declared so an operator can watch the colour
+        # stream on /monitor/raw_echo. Untracked and not required on purpose: a camera
+        # nobody happens to be watching must not lower the confidence that grades a
+        # collision the depth cloud saw perfectly well.
+        "camera": ("/depth_anything/color_image", "sensor_msgs/msg/Image",
+                   None, 10, False),
     },
     "mujoco": {
         "odom": ("/odom", "nav_msgs/msg/Odometry", None, 10, True),

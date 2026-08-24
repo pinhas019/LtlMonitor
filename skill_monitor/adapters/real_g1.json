@@ -1,9 +1,17 @@
 {
   "name": "real_g1",
   "doc": "The real TRAV-metric-map G1 -- no Nav2, no lidar. Camera-derived range, a JSON path_manager status, T265 odometry for pose and twist, and /next_waypoint for the commanded goal.",
-  "schema": ["pose_schema.json", "nav_schema.json"],
-  "describe": ["min_range", "nav_mode", "nav_state", "dist_to_goal",
-               "image_similarity_to_goal"],
+  "schema": [
+    "pose_schema.json",
+    "nav_schema.json"
+  ],
+  "describe": [
+    "min_range",
+    "nav_mode",
+    "nav_state",
+    "dist_to_goal",
+    "image_similarity_to_goal"
+  ],
   "sources": [
     {
       "id": "odom",
@@ -11,19 +19,64 @@
       "type": "nav_msgs/msg/Odometry",
       "tracked": true,
       "steps": [
-        {"key": "linear_vel", "field": "twist.twist.linear.x", "round": 2},
-        {"key": "angular_vel", "field": "twist.twist.angular.z", "round": 2},
-        {"key": "pos_x", "field": "pose.pose.position.x", "round": 3},
-        {"key": "pos_y", "field": "pose.pose.position.y", "round": 3},
-        {"key": "pos_z", "field": "pose.pose.position.z", "round": 3},
-        {"key": "base_height", "field": "pose.pose.position.z", "round": 3},
-        {"keys": ["base_roll", "base_pitch"], "fn": "quat_to_roll_pitch",
-         "field": "pose.pose.orientation", "round": 3},
-        {"key": "yaw", "fn": "quat_to_yaw",
-         "field": "pose.pose.orientation", "round": 3},
-        {"key": "upright_flag", "fn": "upright",
-         "inputs": ["base_roll", "base_pitch", "base_height"],
-         "args": {"tilt_max": 0.5, "height_min": 0.5}}
+        {
+          "key": "linear_vel",
+          "field": "twist.twist.linear.x",
+          "round": 2
+        },
+        {
+          "key": "angular_vel",
+          "field": "twist.twist.angular.z",
+          "round": 2
+        },
+        {
+          "key": "pos_x",
+          "field": "pose.pose.position.x",
+          "round": 3
+        },
+        {
+          "key": "pos_y",
+          "field": "pose.pose.position.y",
+          "round": 3
+        },
+        {
+          "key": "pos_z",
+          "field": "pose.pose.position.z",
+          "round": 3
+        },
+        {
+          "key": "base_height",
+          "field": "pose.pose.position.z",
+          "round": 3
+        },
+        {
+          "keys": [
+            "base_roll",
+            "base_pitch"
+          ],
+          "fn": "quat_to_roll_pitch",
+          "field": "pose.pose.orientation",
+          "round": 3
+        },
+        {
+          "key": "yaw",
+          "fn": "quat_to_yaw",
+          "field": "pose.pose.orientation",
+          "round": 3
+        },
+        {
+          "key": "upright_flag",
+          "fn": "upright",
+          "inputs": [
+            "base_roll",
+            "base_pitch",
+            "base_height"
+          ],
+          "args": {
+            "tilt_max": 0.5,
+            "height_min": 0.5
+          }
+        }
       ]
     },
     {
@@ -32,10 +85,28 @@
       "type": "geometry_msgs/msg/PointStamped",
       "tracked": false,
       "steps": [
-        {"key": "goal_x", "field": "point.x", "round": 3},
-        {"key": "goal_y", "field": "point.y", "round": 3},
-        {"key": "dist_to_goal", "fn": "planar_distance", "on": "tick",
-         "inputs": ["pos_x", "pos_y", "goal_x", "goal_y"], "round": 3}
+        {
+          "key": "goal_x",
+          "field": "point.x",
+          "round": 3
+        },
+        {
+          "key": "goal_y",
+          "field": "point.y",
+          "round": 3
+        },
+        {
+          "key": "dist_to_goal",
+          "fn": "planar_distance",
+          "on": "tick",
+          "inputs": [
+            "pos_x",
+            "pos_y",
+            "goal_x",
+            "goal_y"
+          ],
+          "round": 3
+        }
       ]
     },
     {
@@ -45,8 +116,17 @@
       "decode": "pointcloud_xyz",
       "tracked": true,
       "steps": [
-        {"key": "min_range", "fn": "min_range_points", "round": 2,
-         "args": {"z_lo": 0.1, "z_hi": 1.5, "default": 10.0, "frame": "optical"}}
+        {
+          "key": "min_range",
+          "fn": "min_range_points",
+          "round": 2,
+          "args": {
+            "z_lo": 0.1,
+            "z_hi": 1.5,
+            "default": 10.0,
+            "frame": "optical"
+          }
+        }
       ]
     },
     {
@@ -56,13 +136,44 @@
       "decode": "json",
       "tracked": true,
       "steps": [
-        {"key": "nav_mode", "field": "mode", "default": "MANUAL"},
-        {"key": "nav_state", "field": "state", "default": "waiting_inputs"},
-        {"key": "mission_finished", "field": "finished", "default": false, "cast": "bool"},
-        {"key": "num_waypoints", "field": "num_waypoints", "default": 0, "cast": "int"},
-        {"key": "current_target_idx", "field": "current_target_idx", "default": 0, "cast": "int"},
-        {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
-         "args": {"threshold": 10}}
+        {
+          "key": "nav_mode",
+          "field": "mode",
+          "default": "MANUAL"
+        },
+        {
+          "key": "nav_state",
+          "field": "state",
+          "default": "waiting_inputs"
+        },
+        {
+          "key": "mission_finished",
+          "field": "finished",
+          "default": false,
+          "cast": "bool"
+        },
+        {
+          "key": "num_waypoints",
+          "field": "num_waypoints",
+          "default": 0,
+          "cast": "int"
+        },
+        {
+          "key": "current_target_idx",
+          "field": "current_target_idx",
+          "default": 0,
+          "cast": "int"
+        },
+        {
+          "key": "nav_stuck",
+          "fn": "stuck_streak",
+          "inputs": [
+            "nav_state"
+          ],
+          "args": {
+            "threshold": 10
+          }
+        }
       ]
     },
     {
@@ -71,8 +182,22 @@
       "type": "std_msgs/msg/Float32",
       "tracked": false,
       "steps": [
-        {"key": "image_similarity_to_goal", "field": "data", "round": 3}
+        {
+          "key": "image_similarity_to_goal",
+          "field": "data",
+          "round": 3
+        }
       ]
+    },
+    {
+      "id": "camera",
+      "topic": "/depth_anything/color_image",
+      "type": "sensor_msgs/msg/Image",
+      "expected_hz": 2.0,
+      "max_age_s": 5.0,
+      "required": false,
+      "tracked": false,
+      "steps": []
     }
   ]
 }
