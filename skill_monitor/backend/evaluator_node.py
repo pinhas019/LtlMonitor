@@ -17,6 +17,7 @@ import importlib
 import inspect
 import re
 import sys
+import time
 import urllib.request
 import argparse
 import queue
@@ -27,7 +28,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 import skill_monitor.core.spec_contract as spec_contract
-from skill_monitor.core import adapter_spec
+from skill_monitor.core import adapter_spec, api
 from std_msgs.msg import String
 
 from skill_monitor.backend.adapters.base import SensorAdapter
@@ -101,6 +102,18 @@ class GenericClientNode(Node):
         self.adapter_pub = self.create_publisher(String, "/ltl/adapter", latched)
         self.adapter_pub.publish(String(data=json.dumps(self.adapter.manifest())))
 
+        # Raw echo: opt-in, one source at a time, off until a console asks. The request
+        # topic is the only thing that can turn it on, and `{"source_id": null}` is the
+        # only thing that has to turn it off -- nothing here starts echoing on its own.
+        self.raw_echo_pub = self.create_publisher(String, api.RAW_ECHO, 10)
+        self.create_subscription(
+            String, api.RAW_ECHO_REQUEST, self.raw_echo_request_callback, 10)
+        #: Echoes published since this process started. NOT the clock's `seq`: this node
+        #: does not consume api.TICK yet (P3's tick migration is what gives it one), so
+        #: the envelope carries the only sequence it honestly has. `step` is null for
+        #: the same reason -- the evaluator tracks no episode.
+        self._raw_echo_seq = 0
+
         # Everything environment-specific lives behind this one call.
         self.adapter.register_subscriptions(self)
 
@@ -162,6 +175,62 @@ class GenericClientNode(Node):
 
         self.state_desc = data
 
+    # ------------------------------------------------------------------ raw echo
+
+    def raw_echo_request_callback(self, msg: String):
+        """Select the one source to echo, or stop echoing.
+
+        Validated with the same `core.api` validator every other consumer uses, so a
+        malformed request is reported here rather than turning into an echo of nothing
+        that an operator would read as a dead camera.
+        """
+        try:
+            payload = json.loads(msg.data)
+        except Exception as e:
+            self.get_logger().error(f"Failed to parse raw echo request: {e}")
+            return
+        problems = api.validate_raw_echo_request(payload)
+        if problems:
+            self.get_logger().error(f"Refusing raw echo request: {'; '.join(problems)}")
+            return
+
+        source_id = payload.get("source_id")
+        if not self.adapter.set_raw_echo(source_id):
+            self.get_logger().error(
+                f"Cannot echo source {source_id!r}: this adapter has no such source. "
+                f"The echo is unchanged."
+            )
+            return
+        self.get_logger().info(
+            "Raw echo stopped." if source_id is None
+            else f"Raw echo now following source {source_id!r}."
+        )
+
+    def _publish_raw_echo(self):
+        """One summary per tick for the selected source, or nothing at all.
+
+        Above the idle early-return in `evaluate_and_publish` on purpose: an operator
+        pointing the console at a camera before arming a skill is the normal case, and
+        an echo that only works while a spec is loaded would be useless exactly then.
+        """
+        taken = self.adapter.take_raw_echo()
+        if taken is None:
+            return
+        source_id, summary = taken
+        payload = api.build_raw_echo(
+            seq=self._raw_echo_seq, t=time.time(), step=None,
+            source_id=source_id, summary=summary,
+        )
+        self._raw_echo_seq += 1
+        problems = api.validate_raw_echo(payload)
+        if problems:
+            # A summary this node built and the contract refuses is this node's bug;
+            # say so and publish nothing rather than putting it on the wire.
+            self.get_logger().error(
+                f"Not publishing raw echo for {source_id!r}: {'; '.join(problems)}")
+            return
+        self.raw_echo_pub.publish(String(data=json.dumps(payload)))
+
     def _query_llm(self, prompt: str) -> dict:
         is_openai = "/v1" in self.api_url or "openai" in self.api_url
         if is_openai:
@@ -212,6 +281,17 @@ class GenericClientNode(Node):
             return {}
 
     def evaluate_and_publish(self):
+        # Before the idle check: the echo is an operator looking at a sensor, which is
+        # not conditional on a spec being armed.
+        #
+        # Guarded because it is the one thing on this timer that touches a raw message:
+        # a camera publishing something the summariser did not anticipate must cost a
+        # logged error and one missing frame, never the evaluation of the tick.
+        try:
+            self._publish_raw_echo()
+        except Exception as e:                                   # noqa: BLE001
+            self.get_logger().error(f"Raw echo failed for this tick: {e!r}")
+
         if self.idle or not self.required_aps:
             return
 

@@ -64,7 +64,7 @@ understand. Nothing here calls a builder from ``core.api``; the only parsing is
   * ``json.loads`` as a well-formedness guard before a payload is embedded in a WS
     frame, so one malformed message from a monitor cannot make the *envelope*
     unparseable and take the drop counter down with it; and
-  * ``core.api.validate_for_topic`` on the two ingress routes, where the gateway is the
+  * ``core.api.validate_for_topic`` on the ingress routes, where the gateway is the
     one publishing onto the ROS graph and a malformed message would be its own fault.
 
 Topic names are never spelled here. They come from ``core.api`` constants, and the REST
@@ -111,10 +111,14 @@ Client-facing API
     GET  /api/monitors/{seg}/manifest       verbatim /monitor/manifest payload
     GET  /api/monitors/{seg}/adapter        verbatim /monitor/adapter payload
     GET  /api/monitors/{seg}/spec_status    verbatim /monitor/spec_status payload
-    WS   /api/monitors/{seg}/stream         observation + verdict frames
+    WS   /api/monitors/{seg}/stream         observation + verdict frames, and the raw
+                                            echo while one is running
     POST /api/monitors/{seg}/command        -> /monitor/command            [header]
     POST /api/monitors/{seg}/spec           -> /monitor/load_spec, replies spec_status
                                                                            [header]
+    POST /api/monitors/{seg}/raw_echo_request
+                                            -> /monitor/raw_echo_request; `source_id`
+                                            selects one source, null stops   [header]
     *    /api/clock*                        proxied to the clock, same paths
                                                                            [header]
 
@@ -125,8 +129,8 @@ work this out -- every entry of ``GET /api/monitors`` carries both ``ns`` and th
 ``path`` segment to use. A segment that is not a legal ROS name is a 400 and one no
 discovery has ever seen is a 404: neither reaches ``create_publisher``.
 
-``[header]`` marks the routes that must carry ``X-Skill-Monitor: 1`` (any value): the two
-POSTs, and *every* clock request including ``GET``. The clock proxy is deliberately
+``[header]`` marks the routes that must carry ``X-Skill-Monitor: 1`` (any value): every
+POST, and *every* clock request including ``GET``. The clock proxy is deliberately
 path- and method-transparent, so this gateway cannot know which of the clock's ``GET``s
 have side effects -- ``GET /api/clock/step`` advances a tick and is reachable from an
 ``<img>`` tag. Treating the whole proxied surface as state-changing is the only policy
@@ -241,13 +245,19 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 # for a change that will not come; the stream is how a page already open learns that
 # *another* operator just paused. Either alone leaves an operator watching a pane that
 # says the robot is monitored while it is not.
-STREAM_TOPICS = (api.TICK, api.OBSERVATION, api.VERDICT, api.MONITOR_STATUS)
+#
+# `raw_echo` is a stream member and not a latched GET because it is per-tick and opt-in:
+# it exists only while a console has asked for it, and a latched copy would replay one
+# frame of a source nobody is watching any more.
+STREAM_TOPICS = (api.TICK, api.OBSERVATION, api.VERDICT, api.MONITOR_STATUS,
+                 api.RAW_ECHO)
 
 # Endpoint name -> topic, for the routes where the client is the publisher. The names
 # are docs/api.md's ("spec", not "load_spec"); the topics come from the constants.
 INGRESS_TOPICS = {
     "command": api.COMMAND,
     "spec": api.LOAD_SPEC,
+    "raw_echo_request": api.RAW_ECHO_REQUEST,
 }
 
 # Latched topics get a GET each, derived rather than listed: `/monitor/manifest` becomes
@@ -1292,6 +1302,13 @@ class Gateway:
         """
         return self._publish_validated(ns, INGRESS_TOPICS["command"], body)
 
+    # -- POST /api/monitors/{ns}/raw_echo_request --------------------------
+
+    def post_raw_echo_request(self, ns: str, body: bytes):
+        """Ask the evaluator to echo one source, or none. Same publish path as
+        ``command``: an ``INGRESS_TOPICS`` entry alone is a table, not a route."""
+        return self._publish_validated(ns, INGRESS_TOPICS["raw_echo_request"], body)
+
     def _publish_validated(self, ns: str, topic: str, body: bytes):
         try:
             payload = json.loads(body.decode("utf-8"))
@@ -1724,7 +1741,8 @@ class _Handler(BaseHTTPRequestHandler):
             # and answering it would be a second, undocumented way to ask for a monitor.
             self._send(404, _error(
                 "a namespace alone is not a resource; ask for "
-                f"{'|'.join(sorted(LATCHED_ROUTES))}, stream, command or spec"
+                f"{'|'.join(sorted(LATCHED_ROUTES))}, stream, or one of "
+                f"{'|'.join(sorted(INGRESS_TOPICS))}"
             ))
             return
 
@@ -1762,6 +1780,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status, text = self.gateway.post_command(ns, body)
             elif verb == "spec":
                 status, text = self.gateway.post_spec(ns, body)
+            elif verb == "raw_echo_request":
+                status, text = self.gateway.post_raw_echo_request(ns, body)
             else:
                 self._send(404, _error(f"no such resource {verb!r}"))
                 return
