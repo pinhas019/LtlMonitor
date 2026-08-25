@@ -99,6 +99,30 @@ watching a moving robot:
   will, since this build's contract has no such topic yet -- that pausing from the strip
   raises the banner, freezes panes 3 to 7, and that the tick count in the banner goes on
   rising while they stay frozen.
+
+The wall band -- tier 1, above the grid -- splits the same way once more, and this time
+the hand-driving was done in headless Chrome over CDP rather than by eye, so the numbers
+quoted in it are measurements:
+
+* asserted, below: that the band is above the grid and renders on the verdict; that the
+  driving row is *chosen* by the monitor's own safety-first rule from rows the verdict
+  already carries and is never graded here; that a verdict with no VIOLATED row says what
+  it rests on instead of naming a cause, and says so even when the verdict word
+  disagrees; that `terminal` takes the band over when non-null, renders nothing when
+  null, and names its field and its owner when the build carries no such field at all;
+  that the rung, the `category` and the `imminence` are rendered and none of them
+  derived; that the automata moved into the band and pane 6 points at them rather than
+  drawing a second copy under the same element ids; that the band reads neither the
+  adapter nor the observation nor the absence of anything; that no wire value reaches
+  innerHTML unescaped; that the page has exactly one literal type size and it is
+  `:root`'s; that every hex is a token in one block; that the 46vh cap is tier 2's alone;
+  that the panes fold and remember which; and that both regex hot spots and the state
+  banner are keyed on the documents they render from rather than recompiled per tick.
+* driven, not asserted: everything quoted in the comment above that section -- the
+  verdict and its cause read together, the automata lit on the same verdict, `terminal`
+  taking the band over and coming back off, a node's text at ~17.8 screen px against ~7px
+  before, the density and the fold surviving a reload, and each degrade path with the
+  field deleted off the live payload.
 """
 
 from __future__ import annotations
@@ -1875,6 +1899,407 @@ def test_the_page_re_reads_the_state_after_a_gap_it_did_not_watch():
     page = _page()
     assert "refreshMonitorStatus()" in _fn(page, "connect")
     assert "await refreshMonitorStatus();" in _fn(page, "boot")
+
+
+# ================================ tier 1: the wall band, read off the page
+#
+# The same split as every other pane, and the same reason: there is no JavaScript test
+# runner in this repo. What is asserted below is the page's source, at the points where
+# a rewrite would quietly turn "what the monitor said" into "what the page worked out".
+#
+# What was instead driven by hand, in headless Chrome over CDP against
+# `python3 -m skill_monitor.frontend.web --mock`, and is recorded here so the next
+# reader knows it was checked rather than assumed:
+#
+#   * the band renders VIOLATED with `collision_imminent` — SAFETY, confidence 1 —
+#     beside it, and the automata light `aut0n4 / aut1n1 / aut2n0` on the same verdict;
+#   * with no VIOLATED row it reads "no row on this verdict is VIOLATED / 3 rows:
+#     2 ACCEPTED · 1 INCONCLUSIVE", and adds the warning line when the verdict says
+#     VIOLATED anyway;
+#   * `terminal` takes the band over — `#wall` gains `.over`, the hero drops from 51px
+#     to 35px, and SUCCESS / FAILURE / an unrecognised word each render their own
+#     sentence; `null` renders nothing and the class comes off;
+#   * a node's text renders at ~17.8 screen px in a 1920-wide band against ~7px before;
+#   * `A+` twice moves `:root` 13px → 17px and the number survives a reload, as does a
+#     pane opened by hand (`skillmon.pane.plots`);
+#   * every degrade path below, with the field deleted off the live payload.
+
+
+def _style(page):
+    """The page's one `<style>` block."""
+    match = re.search(r"<style>(.*?)</style>", page, re.S)
+    assert match
+    return match.group(1)
+
+
+#: The band's own render functions, for the properties that hold across all of them.
+_WALL_FNS = ("renderWall", "renderWallTerminal", "renderWallVerdict", "wallCause",
+             "wallRests", "renderWallAction", "renderWallWhere", "drivingRow")
+
+
+def test_the_wall_is_the_first_thing_on_the_page_and_carries_the_two_readings():
+    """Tier 1 is above the grid and outside it. The two things an operator across a room
+    is reading -- the verdict with why, and the automaton with its live state -- were a
+    fold and two grid columns apart: the header said VIOLATED and the row that drove it
+    was the last thing in pane 6."""
+    page = _page()
+    assert page.index('<section id="wall">') < page.index('<div class="grid">')
+    # The header's banner still comes before both: a paused monitor is read before
+    # anything the paused monitor said.
+    assert page.index('id="mon-banner"') < page.index('<section id="wall">')
+    for cell in ("wall-terminal", "wall-verdict", "wall-why", "wall-act", "wall-where",
+                 "wall-graphs", "wall-rows"):
+        assert f'id="{cell}"' in page, cell
+    # And it is rendered from the verdict, on the verdict.
+    assert "renderHeader(); renderWall(); renderAutomaton();" in page
+
+
+def test_the_band_names_the_row_the_verdict_rests_on_the_way_the_monitor_does():
+    """`breached_mode` scans for a VIOLATED SAFETY mode wherever it sits before falling
+    back, because a de-escalated SAFETY entry still outranks a VIOLATED PROGRESS one
+    that grades above it. The band picks by that rule -- and it *picks*, from rows the
+    verdict already carries. It does not grade: the ladder runs on confidences and
+    imminences this page cannot see, and a second grader in a browser would report a
+    rung the monitor never chose."""
+    page = _page()
+    body = _fn(page, "drivingRow")
+    assert 'r.status === "VIOLATED"' in body
+    assert 'r.fault_category === "SAFETY"' in body
+    # Safety first, then any violated row, and the fallback is the *first* such row.
+    assert body.index("const safety") < body.index("const row = safety || violated[0];")
+    # Nothing violated is null, and never a row chosen anyway.
+    assert "if (!violated.length) return null;" in body
+    # Both row kinds are candidates, and which kind it was is reported.
+    assert "failure_modes" in body and "formulas" in body
+    assert '"failure mode"' in body and '"formula"' in body
+    # No grading here: none of the ladder's inputs is compared against anything.
+    for graded in ("MIN_CONFIDENCE", "confidence >", "confidence <", "grade"):
+        assert graded not in body, graded
+    cause = _fn(page, "wallCause")
+    assert "d.others" in cause and "other VIOLATED" in cause
+
+
+def test_the_band_says_what_the_verdict_rests_on_when_nothing_is_violated():
+    """No VIOLATED row means there is no cause to name, and the band must not invent
+    one. What it prints instead is a count off the rows the verdict carries -- counting
+    is not inferring -- and when the verdict itself says VIOLATED with no VIOLATED row
+    on it, that disagreement is printed rather than resolved."""
+    page = _page()
+    body = _fn(page, "wallRests")
+    assert "no row on this verdict is VIOLATED" in body
+    assert 'v.verdict === "VIOLATED"' in body
+    assert "This band names no cause" in body
+    # A verdict with no rows at all is its own sentence, not a table of nothing.
+    assert "this verdict carries no formula and no failure-mode row at" in body
+    assert "what the verdict rests on, counted off the rows it" in body
+
+
+def test_the_band_shows_the_episode_end_and_only_when_the_wire_says_so():
+    """`verdict.terminal` is the only thing on the wire that says an episode ended, and
+    it appeared nowhere on this page. Non-null takes the band over. `null` is a running
+    episode and renders nothing. An *absent* field is a build that cannot say either
+    way, and gets the placeholder with its owner rather than being read as running."""
+    page = _page()
+    body = _fn(page, "renderWallTerminal")
+    for word in ("SUCCESS", "FAILURE", "ABORTED"):
+        assert f"  {word}: {{" in _block(page, "const TERMINAL = {"), word
+    assert 'missing("verdict.terminal", "P0, then P4"' in body
+    assert '!("terminal" in v)' in body                     # absent is its own case
+    assert "t === null || t === undefined" in body          # and so is null
+    assert 'wall.classList.add("over")' in body
+    assert 'wall.classList.remove("over")' in body
+    # A word this console has no meaning for is still an ended episode, shown as it
+    # arrived. The validator types this field as any string, so this case is reachable.
+    assert "hasOwnProperty.call(TERMINAL, t)" in body
+    assert "has no meaning for" in body
+    # Never colour alone: a glyph and the word EPISODE ENDED, in capitals.
+    assert "EPISODE ENDED" in body
+    assert '#wall.over .big' in _style(page)
+
+
+def test_the_band_shows_the_rung_the_category_and_the_imminence():
+    """`intervention.category` and `intervention.imminence` are on the wire and were
+    rendered nowhere. `imminence` arrives already worded from `manifest._imminence_label`
+    and is printed, never recomputed -- and the rung is placed on the ladder by name, so
+    the band says which rung of how many rather than only which word."""
+    page = _page()
+    assert "const RUNGS = [" + ", ".join(
+        f'"{a}"' for a in api.INTERVENTION_ACTIONS) + "];" in page
+    body = _fn(page, "renderWallAction")
+    assert "i.category" in body and "i.imminence" in body
+    assert "esc(i.category)" in body and "esc(i.imminence)" in body
+    assert "rung ${rung + 1} of ${RUNGS.length}" in body
+    # Both are genuinely nullable and neither null is a fault: no breach graded this
+    # tick is a normal, reportable state.
+    assert body.count("=== null || i.") == 2
+    assert "none reported" in body
+    # A verdict with no intervention block at all names the field and its owner.
+    assert 'missing("verdict.intervention", "P4"' in body
+    # The three confidences on this page are different numbers; this one says which.
+    assert "the intervention's own" in body
+    # And no imminence is derived here from anything.
+    assert "steps_to_timeout" not in body
+
+
+def test_the_automata_are_in_the_band_and_pane_six_points_at_them():
+    """Promoted out of the pane and drawn once. Pane 6 keeps its heading and becomes a
+    pointer, because the highlight is a class on a node found by element id: two copies
+    of one graph would be two elements under `aut0n3`, the wrong one would be lit, and
+    nothing on the page would say so."""
+    page = _page()
+    body = _fn(page, "renderAutomaton")
+    assert 'const box = $("wall-graphs");' in body
+    assert '$("wall-rows").innerHTML = formulaTable(v);' in body
+    assert 'id="automaton"' not in page                     # the pane no longer draws
+    assert "6 · automaton" in page                          # and still says what it is
+    assert 'href="#wall"' in page
+    # The layout is untouched -- the drawing is *sized* from the scale, not re-laid-out.
+    assert "const AUT = { R: 15, COL: 136, ROW: 66, PAD: 34, TOP: 70 };" in page
+    assert 'style="${svgStyle(w)}"' in page
+    assert "width:${w}px" not in page
+
+
+def test_the_band_lights_the_state_the_verdict_reports_and_never_infers_one():
+    """The rule pane 6 was written on, kept where the drawing went. A row whose `state`
+    is null, or no row of that name at all, lights nothing: the initial state is where
+    an automaton *starts*, not where it is."""
+    page = _page()
+    assert "lightAutomata(graphs, v);" in _fn(page, "renderAutomaton")
+    light = _fn(page, "lightAutomata")
+    assert 'typeof row.state === "number" ? row.state : null' in light
+    assert 'el.classList.toggle("cur", at !== null && Number(s.id) === at);' in light
+    assert "nothing is lit" in light
+    # And the two degrade paths that predate the band still fire, in the band.
+    aut = _fn(page, "renderAutomaton")
+    assert 'missing("manifest.automata' in aut
+    assert "if (!Array.isArray(graphs)) {" in aut
+    assert "} else if (!graphs.length) {" in aut
+
+
+def test_the_band_degrades_to_no_verdict_no_manifest_and_no_adapter():
+    """The three silences the band has to survive, none of which is an error. No verdict
+    has reached the page; the manifest declares no phase machine to place a phase in;
+    and the adapter -- which the band never reads -- is not needed for any of it."""
+    page = _page()
+    for name in ("renderWallVerdict", "renderWallAction", "renderWallWhere"):
+        assert "if (!v) {" in _fn(page, name), name
+    # The topic is named from the constant, so a rename fails here rather than in a
+    # browser looking at a sentence about a topic that no longer exists.
+    assert f"no <code>{api.VERDICT}</code> has reached this page yet" in _fn(
+        page, "renderWallVerdict")
+    where = _fn(page, "renderWallWhere")
+    assert "Array.isArray(phases) && phases.length" in where
+    assert "the manifest declares no phase" in where
+    # One phase resolution where there is a machine to resolve against: pane 7's, which
+    # says which of `phase` and `phase_index` it believed and why.
+    assert "currentPhase(phases, v)" in where
+    # The band reads the verdict and the manifest. Not the adapter, not the observation,
+    # and never the *absence* of any of them.
+    for fn in _WALL_FNS:
+        body = _fn(page, fn)
+        for forbidden in ("S.adapter", "S.obs", "S.connected", "S.hist"):
+            assert forbidden not in body, (fn, forbidden)
+
+
+def test_nothing_the_band_takes_off_the_wire_reaches_innerhtml_unescaped():
+    """Same rule as the rest of the page, on the part of it that is largest and most
+    likely to be photographed. A wire field is not markup: no wire object is
+    interpolated directly, and every one of its fields goes through esc/txt/num."""
+    page = _page()
+    for fn in _WALL_FNS:
+        body = _fn(page, fn)
+        # The hazard is a wire value dropped straight in; a ternary *testing* one is
+        # not that, and its branches are esc'd below.
+        raw = re.findall(r"\$\{\s*(?:v|r|i|row|f|sum)\.\w+\s*\}", body)
+        assert raw == [], (fn, raw)
+    cause = _fn(page, "wallCause")
+    assert "txt(r.name)" in cause and "esc(r.fault_category)" in cause
+    assert "num(r.confidence, 2)" in cause
+    assert "txt(v.verdict)" in _fn(page, "renderWallVerdict")
+    assert "txt(v.step)" in _fn(page, "renderWallWhere")
+    assert "txt(t)" in _fn(page, "renderWallTerminal")
+
+
+# ==================================== the type scale, the density control, the fold
+
+
+def test_one_number_decides_the_whole_pages_type():
+    """Seven literal px sizes, from 9 up, are one scale in rem off `:root{font-size}`.
+    Exactly one literal size is left and it is that root -- everything else is a token,
+    so the density control moves one number and the page moves with it."""
+    page = _page()
+    style = _style(page)
+    assert re.findall(r"font(?:-size)?:\s*([0-9.]+)(px|rem|em)", style) == [("13", "px")]
+    assert "font-size:13px;" in style
+    for step in ("--t-xxs:", "--t-xs:", "--t-sm:", "--t-md:", "--t-base:", "--t-lg:",
+                 "--t-xl:"):
+        assert step in style, step
+    # Type drawn inside an SVG viewBox is the marked exception: a `px` there is a user
+    # unit, it is geometry, and it scales with a drawing that is itself sized in rem.
+    for graph in ("--g-name:11px", "--g-edge:10px", "--g-sub:9px"):
+        assert graph in style, graph
+    assert "a `px` is a user unit" in style
+    # Tier 1 has its own multiplier over the top of the same scale, applied by
+    # redefining the scale for its subtree -- one control, not a second set of rules.
+    assert "--wall:1.9;" in style
+    assert "calc(1rem * var(--wall))" in style
+
+
+def test_the_drawings_are_sized_from_the_number_the_stylesheet_declares():
+    """The graph was 682px squeezed into a 430px column, so its node text landed near
+    7px. It is sized in rem now, from `:root`'s own number, so the density control
+    carries the drawing and the type inside it at one ratio -- and `--aut-zoom` is the
+    band's extra multiplier. A base guessed at in the script would be the one thing on
+    the page that did not move with the rest of it."""
+    page = _page()
+    root = re.search(r"font-size:([0-9]+)px;", _style(page))
+    assert root
+    assert f"const REM = {root.group(1)};" in page
+    assert "max-width:100%;height:auto`;" in page          # allowed to shrink, never
+    assert "var(--aut-zoom,1)" in page                     # to stretch
+    assert "#wall .aut-view { --aut-zoom:var(--wall); }" in _style(page)
+
+
+def test_the_density_control_is_one_number_and_is_remembered():
+    """The same page serves a projector across a room and a laptop on a bench. A+/A-
+    moves `:root`'s font-size and nothing else, and the choice is remembered per
+    browser -- a console that is illegible until somebody re-presses a button twice is
+    one nobody presses at all."""
+    page = _page()
+    assert 'id="dens-up"' in page and 'id="dens-down"' in page
+    body = _fn(page, "setDensity")
+    assert 'document.documentElement.style.fontSize = next + "px";' in body
+    assert "STORE.set(DENSITY.key" in body
+    assert "Math.min(DENSITY.max, Math.max(DENSITY.min, px))" in body   # clamped
+    assert 'key: "skillmon.density"' in page
+    # localStorage throws outright where storage is turned off, and a console that
+    # cannot remember a preference still has to render one.
+    store = _block(page, "const STORE = {")
+    assert "catch (e) { return fallback; }" in store
+    assert "localStorage" not in _fn(page, "setDensity")   # only ever through STORE
+
+
+def test_every_tier_two_pane_folds_and_remembers_which():
+    """Nine panes competing with the band is what this layout was. They fold, per pane
+    and per browser, and the three that start closed are the ones an operator consults
+    rather than watches. A default, not a policy: what a pane was last left as wins."""
+    page = _page()
+    panes = re.findall(r'<details class="pane" data-pane="([a-z]+)"( open)?>', page)
+    assert [p[0] for p in panes] == ["spec", "config", "inputs", "plots", "aps",
+                                     "automaton", "phase", "clock", "timing"]
+    closed = {p[0] for p in panes if not p[1]}
+    assert closed == {"plots", "timing", "clock"}
+    assert 'const PANE_CLOSED = ["plots", "timing", "clock"];' in page
+    assert 'STORE.get(paneKey(name)' in page
+    assert 'pane.addEventListener("toggle"' in page
+    # The fold state is a glyph *and* a word, like every other state on this page.
+    assert 'content:"\\25be open"' in page and 'content:"\\25b8 closed"' in page
+    # A control inside a summary must not fold the pane it acts on.
+    assert page.count("ev.stopPropagation();") == 2
+
+
+def test_the_cap_belongs_to_tier_two_alone():
+    """`max-height:46vh` on every pane is what put nine scrollbars on one page. Tier 1
+    is the thing being read across the room and is never a box with its own scrollbar;
+    the panes below it keep a bound so that nine of them cannot push it off the top."""
+    page = _page()
+    style = _style(page)
+    assert "max-height:46vh" not in style
+    assert ".grid > details.pane > .body { overflow:auto; max-height:64vh; }" in style
+    # And the band is outside the grid, so the rule cannot reach it.
+    assert page.index('<section id="wall">') < page.index('<div class="grid">')
+
+
+def test_every_colour_on_the_page_is_a_token_in_one_block():
+    """Eleven hexes were spelled into rules and one into the script, where the canvas
+    could not take a `var()`. A projector or a light theme is one block to change, so
+    every hex is in `:root` and the script reads the ones it needs back out."""
+    page = _page()
+    root = re.search(r"\n  :root \{(.*?)\n  \}", page, re.S)
+    assert root
+    outside = [m.group(0) for m in re.finditer(r"#[0-9a-fA-F]{6}(?![0-9a-zA-Z_-])", page)
+               if not (root.start(1) <= m.start() <= root.end(1))]
+    assert outside == [], outside
+    for name in ("--well:", "--rowline:", "--seen:", "--note:", "--ctl:", "--on-acc:",
+                 "--alarm-bg:", "--unreported-bg:", "--calm-bg:"):
+        assert name in root.group(1), name
+    assert 'g.strokeStyle = token("--acc");' in page
+
+
+# ============================================ the hot path, read off the page
+
+
+def test_the_name_matchers_are_compiled_once_per_spec_and_not_once_per_tick():
+    """`keysInRule` compiled one `RegExp` per schema key per AP **per observation** --
+    168 of them a tick on the mock's own spec -- and `apsInExpr` one per AP name per
+    guard per verdict. Both derive from documents that change only when a spec is
+    pushed, so both are keyed on those documents, the same structural guard
+    `renderAutomaton` and `renderPhases` already use.
+
+    Measured in the live page against the mock's manifest: 0.064 ms → 0.011 ms per
+    observation, and 0.0127 ms → 0.0053 ms per verdict."""
+    page = _page()
+    for hot in ("keysInRule", "apsInExpr"):
+        assert "new RegExp" not in _fn(page, hot), hot
+        assert "rxGuard();" in _fn(page, hot), hot
+    guard = _fn(page, "rxGuard")
+    assert "if (key === RX.key) return;" in guard
+    assert guard.count("new RegExp") == 2
+    assert "S.adapter || {}).schema" in guard
+    assert "S.manifest || {}).atomic_propositions" in guard
+    # A pushed spec throws the memo away rather than leaving it stale.
+    assert "RX.rule = new Map();" in guard and "RX.expr = new Map();" in guard
+    # The escape stays: one metacharacter in a declared key is an exception, and an
+    # exception here is not a bad row, it is no pane.
+    assert "reEsc(k)" in guard and "reEsc(n)" in guard
+
+
+def test_the_state_banner_is_rebuilt_only_when_the_state_changes():
+    """It rebuilt the whole banner -- a fixed multi-sentence paragraph included -- and
+    reassigned `document.title`, every tick, for a string that moves when an operator
+    moves it. Now the structure is keyed on the status and only the duration, which
+    really is per-tick, is written each time.
+
+    Measured in the live page: 0.0073 ms → 0.0033 ms a tick, and 300 title writes per
+    300 ticks → 1."""
+    page = _page()
+    refresh = _fn(page, "refreshStateBanner")
+    assert "S.mon.sig" in refresh
+    assert "renderStateBanner();" in refresh
+    assert '$("mon-since")' in refresh and "sinceText()" in refresh
+    # The tick calls the guarded one, and nothing calls the rebuild on a tick.
+    assert "renderClock(); refreshStateBanner(); renderEchoAge();" in page
+    assert "sinceText()" not in _fn(page, "renderStateBanner")
+    title = _fn(page, "setTitleMark")
+    assert "if (document.title !== next) document.title = next;" in title
+
+
+def test_the_wire_carries_every_field_the_band_reads(bus):
+    """The band reads six fields off the verdict. Three of them were rendered nowhere
+    before, so this asserts they are really on the wire and really validate -- a band
+    built against a field the producer does not publish would degrade for ever and
+    nobody would notice."""
+    page = _page()
+    for read in ('"terminal" in v', "i.category", "i.imminence",
+                 "r.fault_category", "r.confidence", "txt(v.step)"):
+        assert read in page, read
+    seen = frames(bus)
+    verdict = seen[api.VERDICT]
+    assert api.validate_for_topic(api.VERDICT, verdict) == []
+    assert "terminal" in verdict                       # nullable, and present regardless
+    intervention = verdict["intervention"]
+    assert set(intervention) == {"action", "category", "imminence", "confidence"}
+    assert intervention["action"] in api.INTERVENTION_ACTIONS
+    assert intervention["category"] is None or \
+        intervention["category"] in api.FAULT_CATEGORIES
+    assert intervention["imminence"] is None or isinstance(intervention["imminence"], str)
+    for row in verdict["failure_modes"]:
+        assert row["fault_category"] in api.FAULT_CATEGORIES
+        assert 0.0 <= row["confidence"] <= 1.0
+    # `--mock` never ends an episode, so the absent/`null` terminal path is the one the
+    # fixture demonstrates and the takeover was driven by hand. Said here rather than
+    # left as a gap somebody rediscovers.
+    assert verdict["terminal"] is None
 
 
 # =============================================================================

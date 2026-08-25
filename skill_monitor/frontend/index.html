@@ -16,60 +16,116 @@
 <meta charset="utf-8">
 <title>skill monitor — console</title>
 <style>
+  /* One scale, one control.
+
+     Every size on this page is a `rem` off `:root{font-size}` -- there is no literal px
+     type left in a rule -- so the density buttons in the header move ONE number and the
+     whole console moves with it. The same page is read across a room off a projector
+     and on a laptop on a bench, and the choice is remembered per browser.
+
+     Two deliberate exceptions, both marked. `--g-*` is type drawn *inside* an SVG
+     viewBox, where a `px` is a user unit and not a screen pixel: it is geometry, it
+     scales with the drawing, and the drawing is sized in `rem` (see `svgStyle`). And
+     `--wall` is tier 1's own multiplier over the top of the scale, which is what makes
+     the band legible at distance without making the detail panes shout. */
   :root {
+    font-size:13px;                 /* the one control. `REM` in the script is this. */
     --bg:#12141a; --panel:#1a1d26; --line:#2b3040; --ink:#dfe3ee; --dim:#7f889e;
     --ok:#4ec9a0; --warn:#e0b25a; --bad:#e2626b; --acc:#6aa9ff; --unknown:#8b7fd0;
+    /* The surfaces. Every hex on this page is in this block and nowhere else -- the
+       script reads the ones it needs through `token()` -- so a projector or a light
+       theme is one block to change rather than a search through eleven rules. */
+    --well:#0e1016;      /* the sunken face: textarea, canvas, node fill, a JSON dump */
+    --rowline:#232734;   /* the rule under a table row */
+    --seen:#232a3c;      /* a node this page has watched an automaton pass through */
+    --note:#20222c;      /* the .missing well */
+    --ctl:#242938;       /* a button or a select face */
+    --on-acc:#12141a;    /* ink on an accent fill: the lit node, the mock badge */
+    --alarm-bg:#2b1a1e; --unreported-bg:#26221a; --calm-bg:#171a22;
+    /* The type scale. Seven steps, because the page had seven literal px sizes. */
+    --t-xxs:.70rem; --t-xs:.77rem; --t-sm:.85rem; --t-md:.92rem;
+    --t-base:1rem; --t-lg:1.08rem; --t-xl:1.15rem;
+    /* Type drawn inside an SVG viewBox. User units; see above. */
+    --g-name:11px; --g-edge:10px; --g-sub:9px;
+    --wall:1.9;          /* tier 1's multiplier */
+    --aut-zoom:1;        /* and what it does to a drawing; see `svgStyle` */
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink);
-         font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+         font:var(--t-base)/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
   header { position:sticky; top:0; z-index:5; background:var(--panel);
            border-bottom:1px solid var(--line); padding:8px 14px;
            display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
-  header .k { color:var(--dim); font-size:11px; text-transform:uppercase;
+  header .k { color:var(--dim); font-size:var(--t-sm); text-transform:uppercase;
               letter-spacing:.06em; display:block; }
-  header .v { font-size:15px; }
+  header .v { font-size:var(--t-xl); }
   .grid { display:grid; gap:12px; padding:12px;
           grid-template-columns:repeat(auto-fit,minmax(430px,1fr)); align-items:start; }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:6px; }
-  section > h2 { margin:0; padding:8px 12px; font-size:12px; font-weight:600;
+  section, details.pane { background:var(--panel); border:1px solid var(--line);
+                          border-radius:6px; }
+  section > h2, details.pane > summary {
+                 margin:0; padding:8px 12px; font-size:var(--t-md); font-weight:600;
                  letter-spacing:.08em; text-transform:uppercase; color:var(--dim);
                  border-bottom:1px solid var(--line); display:flex;
                  justify-content:space-between; align-items:center; gap:8px; }
-  section > .body { padding:10px 12px; overflow:auto; max-height:46vh; }
+  section > .body, details.pane > .body { padding:10px 12px; }
+  /* The cap is tier 2's alone. Tier 1 is the thing being read across the room and is
+     never a box with its own scrollbar; the panes below it keep a bound so that nine of
+     them cannot push the band off the top of the screen. */
+  .grid > details.pane > .body { overflow:auto; max-height:64vh; }
   table { border-collapse:collapse; width:100%; }
   th,td { text-align:left; padding:3px 8px 3px 0; vertical-align:top;
-          border-bottom:1px solid #232734; white-space:nowrap; }
-  th { color:var(--dim); font-weight:500; font-size:11px; }
+          border-bottom:1px solid var(--rowline); white-space:nowrap; }
+  th { color:var(--dim); font-weight:500; font-size:var(--t-sm); }
   td.wrap, th.wrap { white-space:normal; overflow-wrap:anywhere; }
   /* Fixed layout so a long rule wraps inside its column instead of widening the table
      past the pane -- `width:100%` alone loses to a cell's min-content width. */
   table.fixed { table-layout:fixed; }
-  .pill { border-radius:10px; padding:1px 8px; font-size:11px; display:inline-block;
-          border:1px solid currentColor; }
+  .pill { border-radius:10px; padding:1px 8px; font-size:var(--t-sm);
+          display:inline-block; border:1px solid currentColor; }
   .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
   .dim{color:var(--dim)} .acc{color:var(--acc)} .unk{color:var(--unknown)}
   .missing { color:var(--dim); border-left:2px solid var(--warn); padding:6px 10px;
-             background:#20222c; border-radius:0 4px 4px 0; }
+             background:var(--note); border-radius:0 4px 4px 0; }
   .missing code { color:var(--warn); }
-  textarea { width:100%; min-height:230px; background:#0e1016; color:var(--ink);
+  textarea { width:100%; min-height:230px; background:var(--well); color:var(--ink);
              border:1px solid var(--line); border-radius:4px; padding:8px;
-             font:12px/1.5 ui-monospace,monospace; resize:vertical; }
-  button { background:#242938; color:var(--ink); border:1px solid var(--line);
+             font:var(--t-md)/1.5 ui-monospace,monospace; resize:vertical; }
+  button { background:var(--ctl); color:var(--ink); border:1px solid var(--line);
            border-radius:4px; padding:4px 10px; cursor:pointer; font:inherit; }
-  button:hover { border-color:var(--acc); color:var(--acc); }
+  button:hover:enabled { border-color:var(--acc); color:var(--acc); }
   button:disabled { opacity:.4; cursor:default; }
-  canvas { display:block; width:100%; height:34px; background:#0e1016;
+  canvas { display:block; width:100%; height:34px; background:var(--well);
            border:1px solid var(--line); border-radius:3px; }
   .plot { margin-bottom:7px; }
-  .plot .lbl { display:flex; justify-content:space-between; font-size:11px;
+  .plot .lbl { display:flex; justify-content:space-between; font-size:var(--t-sm);
                color:var(--dim); padding-bottom:1px; }
-  .bar { height:7px; background:#0e1016; border-radius:3px; overflow:hidden; }
+  .bar { height:7px; background:var(--well); border-radius:3px; overflow:hidden; }
   .bar > i { display:block; height:100%; background:var(--acc); }
   .rule { color:var(--dim); white-space:normal; }
   .key { color:var(--acc); }
-  .mock { color:#12141a; background:var(--warn); font-weight:700; padding:2px 8px;
+  .mock { color:var(--on-acc); background:var(--warn); font-weight:700; padding:2px 8px;
           border-radius:3px; letter-spacing:.08em; }
+
+  /* The density control, and the fold.
+
+     Both are in the header beside the state banner, because both are about being able
+     to read the page at all: an operator standing back from a projector reaches for
+     `A+` before anything else, and a laptop at a bench wants the other end of it. The
+     buttons carry the number they will produce, so the control says what it does rather
+     than only that it does something. */
+  .dens { display:flex; gap:6px; align-items:center; }
+  .dens .lead { color:var(--dim); font-size:var(--t-sm); text-transform:uppercase;
+                letter-spacing:.06em; }
+  details.pane > summary { cursor:pointer; list-style:none; }
+  details.pane > summary::-webkit-details-marker { display:none; }
+  details.pane:not([open]) > summary { border-bottom:none; }
+  /* The fold state in a glyph AND in a word, never in either alone: a folded pane says
+     `closed` on a monochrome screen, in a photograph of one, and to a reader who cannot
+     tell the caret apart from the one above it. */
+  details.pane > summary .fold::before { content:"\25be open"; }
+  details.pane:not([open]) > summary .fold::before { content:"\25b8 closed"; }
+  details.pane > summary .fold { color:var(--dim); font-weight:500; }
 
   /* pane 3's echo half. One picker, because the echo is one source at a time, and a
      frame drawn at its own size: a 160x120 camera frame stretched to the pane's width
@@ -78,7 +134,7 @@
      frame is not redrawn for it -- and it exists so that the last frame which arrived
      cannot go on looking like the one arriving now. It dims and greys, which is a
      second signal beside the words above it and not a substitute for them. */
-  select { background:#242938; color:var(--ink); border:1px solid var(--line);
+  select { background:var(--ctl); color:var(--ink); border:1px solid var(--line);
            border-radius:4px; padding:3px 6px; font:inherit; max-width:100%; }
   select:hover:enabled { border-color:var(--acc); }
   select:disabled { opacity:.4; cursor:default; }
@@ -87,12 +143,12 @@
   #echo .frame { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
   #echo .frame > table { width:auto; min-width:190px; flex:1 1 190px; }
   #echo img { display:block; width:auto; height:auto; max-width:320px;
-              image-rendering:pixelated; background:#0e1016;
+              image-rendering:pixelated; background:var(--well);
               border:1px solid var(--line); border-radius:3px; }
-  #echo pre { margin:5px 0 0; padding:7px 9px; background:#0e1016; color:var(--ink);
+  #echo pre { margin:5px 0 0; padding:7px 9px; background:var(--well); color:var(--ink);
               border:1px solid var(--line); border-radius:3px; max-height:210px;
               overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere;
-              font:12px/1.45 ui-monospace,monospace; }
+              font:var(--t-md)/1.45 ui-monospace,monospace; }
   #echo .missing { margin-top:7px; }
   #echo-body { margin-top:6px; }
   #echo-body.stale img { opacity:.28; filter:grayscale(1); }
@@ -109,45 +165,50 @@
   header .row { flex:1 0 100%; }
   .strip { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
            border-top:1px solid var(--line); padding-top:6px; margin-top:3px; }
-  .strip .lead { color:var(--dim); font-size:11px; text-transform:uppercase;
+  .strip .lead { color:var(--dim); font-size:var(--t-sm); text-transform:uppercase;
                  letter-spacing:.06em; }
   .banner { display:flex; gap:12px; align-items:flex-start; border-radius:4px;
             padding:7px 11px; margin-top:4px; }
-  .banner .mark { font-weight:700; font-size:14px; letter-spacing:.07em;
+  .banner .mark { font-weight:700; font-size:var(--t-lg); letter-spacing:.07em;
                   white-space:nowrap; }
   .banner .missing { margin:0; }
   .banner b { color:var(--ink); }
-  .banner.alarm { color:var(--bad); background:#2b1a1e; border:1px solid var(--bad);
-                  border-left:12px solid var(--bad); }
-  .banner.unreported { color:var(--warn); background:#26221a;
+  .banner.alarm { color:var(--bad); background:var(--alarm-bg);
+                  border:1px solid var(--bad); border-left:12px solid var(--bad); }
+  .banner.unreported { color:var(--warn); background:var(--unreported-bg);
                        border:1px solid var(--warn);
                        border-left:12px solid var(--warn); }
-  .banner.calm { color:var(--dim); background:#171a22; border:1px solid var(--line);
-                 border-left:12px solid var(--ok); padding:3px 11px; }
+  .banner.calm { color:var(--dim); background:var(--calm-bg);
+                 border:1px solid var(--line); border-left:12px solid var(--ok);
+                 padding:3px 11px; }
 
-  /* pane 6. The *shape* carries the kind -- a second outline for accepting, a square
-     for an absorbing sink -- so the three are told apart on a monochrome screen, by a
+  /* The automata, which live in the wall band above rather than in a pane -- the
+     selectors are keyed on the view's class and not on a pane id, because *where* they
+     are drawn is a layout decision and their vocabulary is not.
+
+     The *shape* carries the kind -- a second outline for accepting, a square for an
+     absorbing sink -- so the three are told apart on a monochrome screen, by a
      colour-blind operator, and in a printed screenshot. Colour only agrees with it.
      Everything here is a class on a node that is already in the document: a verdict
      arrives at the tick rate, and re-laying-out three graphs at that rate would fight
      the same pulse that feeds panes 3 to 5. */
-  #automaton .aut { border-bottom:1px solid #232734; margin-bottom:8px; }
-  #automaton .aut .lbl { display:flex; gap:12px; justify-content:space-between;
-                         font-size:11px; padding:2px 0; }
-  #automaton .e { fill:none; stroke:var(--line); stroke-width:1.3; }
-  #automaton .head { fill:var(--line); stroke:none; }
-  #automaton .elab { fill:var(--dim); font-size:10px; }
-  #automaton .n .shape { fill:#0e1016; stroke:var(--dim); stroke-width:1.5; }
-  #automaton .n .inner { fill:none; stroke:var(--dim); stroke-width:1.2; }
-  #automaton .n text { fill:var(--ink); font-size:11px; }
+  .aut-view .aut { border-bottom:1px solid var(--rowline); margin-bottom:8px; }
+  .aut-view .aut .lbl { display:flex; gap:12px; justify-content:space-between;
+                        font-size:var(--t-sm); padding:2px 0; }
+  .aut-view .e { fill:none; stroke:var(--line); stroke-width:1.3; }
+  .aut-view .head { fill:var(--line); stroke:none; }
+  .aut-view .elab { fill:var(--dim); font-size:var(--g-edge); }
+  .aut-view .n .shape { fill:var(--well); stroke:var(--dim); stroke-width:1.5; }
+  .aut-view .n .inner { fill:none; stroke:var(--dim); stroke-width:1.2; }
+  .aut-view .n text { fill:var(--ink); font-size:var(--g-name); }
   /* Sink first so accepting wins when a state is both: an accepting absorbing state is
      the good end of a run and must not be painted in the colour of the bad one. The
      square already says "nothing after this changes it". */
-  #automaton .n.sink .shape, #automaton .n.sink .inner { stroke:var(--bad); }
-  #automaton .n.acpt .shape, #automaton .n.acpt .inner { stroke:var(--ok); }
-  #automaton .n.seen .shape { fill:#232a3c; }
-  #automaton .n.cur  .shape { fill:var(--acc); stroke:var(--ink); stroke-width:2.5; }
-  #automaton .n.cur  text   { fill:#12141a; font-weight:700; }
+  .aut-view .n.sink .shape, .aut-view .n.sink .inner { stroke:var(--bad); }
+  .aut-view .n.acpt .shape, .aut-view .n.acpt .inner { stroke:var(--ok); }
+  .aut-view .n.seen .shape { fill:var(--seen); }
+  .aut-view .n.cur  .shape { fill:var(--acc); stroke:var(--ink); stroke-width:2.5; }
+  .aut-view .n.cur  text   { fill:var(--on-acc); font-weight:700; }
 
   /* pane 7. Same discipline as pane 6 and for the same reasons: the geometry is laid
      out once per manifest and a verdict only toggles a class, and *where we are* is
@@ -157,16 +218,64 @@
      class swap rather than a redraw. */
   #phase .e { fill:none; stroke:var(--line); stroke-width:1.3; }
   #phase .head { fill:var(--line); stroke:none; }
-  #phase .elab { fill:var(--dim); font-size:10px; }
-  #phase .n .shape { fill:#0e1016; stroke:var(--dim); stroke-width:1.5; }
+  #phase .elab { fill:var(--dim); font-size:var(--g-edge); }
+  #phase .n .shape { fill:var(--well); stroke:var(--dim); stroke-width:1.5; }
   #phase .n .inner, #phase .n .mark { display:none; }
-  #phase .n .name { fill:var(--ink); font-size:11px; }
-  #phase .n .sub  { fill:var(--dim); font-size:9px; }
+  #phase .n .name { fill:var(--ink); font-size:var(--g-name); }
+  #phase .n .sub  { fill:var(--dim); font-size:var(--g-sub); }
   #phase .n.cur .inner, #phase .n.cur .mark { display:inline; }
-  #phase .n.cur .shape { fill:#232a3c; stroke:var(--acc); stroke-width:2.5; }
+  #phase .n.cur .shape { fill:var(--seen); stroke:var(--acc); stroke-width:2.5; }
   #phase .n.cur .inner { fill:none; stroke:var(--acc); stroke-width:1.2; }
   #phase .n.cur .mark  { fill:var(--acc); stroke:none; }
   #phase .n.cur .name  { font-weight:700; }
+
+  /* == tier 1 · the wall band ==============================================
+
+     The page is projected and read across a room while the robot runs, and two things
+     have to dominate it: the automaton with its live state, and the verdict with *why*
+     it is that verdict. Both were below a fold and two grid columns apart -- the header
+     said VIOLATED and the row that drove it was the last thing in pane 6.
+
+     The band redefines the type scale **for its own subtree**, so every rule already
+     asking for `var(--t-sm)` gets tier 1's larger one by inheritance. One multiplier,
+     no second set of selectors, and the density control still moves both tiers at
+     once. */
+  #wall { margin:12px 12px 0;
+    --t-xxs:calc(.70rem * var(--wall)); --t-xs:calc(.77rem * var(--wall));
+    --t-sm:calc(.85rem * var(--wall));  --t-md:calc(.92rem * var(--wall));
+    --t-base:calc(1rem * var(--wall));  --t-lg:calc(1.08rem * var(--wall));
+    --t-xl:calc(1.15rem * var(--wall));
+    font-size:var(--t-base); }
+  #wall .lead { display:block; color:var(--dim); font-size:var(--t-xs);
+                text-transform:uppercase; letter-spacing:.06em; }
+  #wall .small { font-size:var(--t-xs); }
+  /* The largest thing on the page, and it is a word rather than a colour. */
+  #wall .big { display:block; font-size:calc(var(--t-xl) * 1.8); font-weight:700;
+               letter-spacing:.03em; line-height:1.12; }
+  #wall .head { display:grid; gap:14px; align-items:start;
+                grid-template-columns:repeat(auto-fit,minmax(17rem,1fr)); }
+  #wall .stage { display:grid; gap:14px; margin-top:12px;
+                 grid-template-columns:minmax(0,3fr) minmax(0,2fr); }
+  @media (max-width:1100px) { #wall .stage { grid-template-columns:minmax(0,1fr); } }
+  /* The drawings, at the band's scale. `--aut-zoom` is the only thing that changes:
+     the layout is `AUT`'s, unchanged, and the SVG is sized in rem so the graph and the
+     type inside it move together. */
+  #wall .aut-view { --aut-zoom:var(--wall); }
+  #wall .cell > div { margin-top:3px; }
+  #wall .name { font-size:var(--t-lg); font-weight:700; overflow-wrap:anywhere; }
+  /* `terminal` is the only field on the wire that says the episode ended, and when it
+     is non-null it takes the band over: full width, above everything, and the verdict
+     hero shrinks under it, because "this is the last verdict of this episode" outranks
+     what the verdict was. */
+  #wall .ended { display:flex; gap:14px; align-items:baseline; flex-wrap:wrap;
+                 border-radius:4px; padding:10px 14px; margin-bottom:12px;
+                 border:1px solid currentColor; border-left:14px solid currentColor; }
+  #wall .ended .mark { font-size:calc(var(--t-xl) * 1.8); font-weight:700;
+                       letter-spacing:.03em; }
+  #wall.over .big { font-size:var(--t-lg); }
+  #wall .ended.ok { background:var(--calm-bg); }
+  #wall .ended.bad { background:var(--alarm-bg); }
+  #wall .ended.warn { background:var(--unreported-bg); }
 </style>
 </head>
 <body>
@@ -179,6 +288,15 @@
   <div><span class="k">step / max</span><span class="v" id="h-step">—</span></div>
   <div><span class="k">tick</span><span class="v" id="h-tick">—</span></div>
   <div style="margin-left:auto" id="h-badges"></div>
+
+  <!-- One number for the whole page. Markup rather than generated, like the command
+       strip and for the same reason: nothing from the wire ever reaches it. -->
+  <div class="dens" id="density">
+    <span class="lead">density</span>
+    <button id="dens-down" title="smaller type, denser page">A−</button>
+    <span id="dens-now" class="dim"></span>
+    <button id="dens-up" title="larger type, for reading across a room">A+</button>
+  </div>
 
   <!-- Pane 0, in everything but the numbering: what the monitor's own state is, and
        the four commands that change it. In the header because the banner must be read
@@ -197,24 +315,55 @@
   </div>
 </header>
 
+<!-- Tier 1. The band this page is read by from across the room: the verdict and the row
+     it rests on, the rung and how close it is, where the episode is, and the automata
+     with the state the last verdict reported. Above the grid and outside it, so the
+     tier-2 cap cannot put a scrollbar on it.
+
+     Nothing here is derived. Every field is off the verdict the monitor published, the
+     driving row is *chosen* from rows that verdict already carries, and a field the wire
+     does not carry says so and names its owner rather than being inferred. -->
+<section id="wall">
+  <div class="body">
+    <div id="wall-terminal"></div>
+    <div class="head">
+      <div class="cell" id="wall-verdict"></div>
+      <div class="cell" id="wall-why"></div>
+      <div class="cell" id="wall-act"></div>
+      <div class="cell" id="wall-where"></div>
+    </div>
+    <div class="stage">
+      <div id="wall-graphs" class="aut-view"></div>
+      <div id="wall-rows"></div>
+    </div>
+  </div>
+</section>
+
+<!-- Tier 2. The detail, in nine panes that fold. Each remembers whether it was left
+     open, per pane and per browser; the three that start closed are the ones an
+     operator consults rather than watches, and closing them is what leaves the band
+     above room to be large. -->
 <div class="grid">
 
-  <section>
-    <h2>1 · description and spec <span><button id="reload">apply · restarts the episode</button></span></h2>
+  <details class="pane" data-pane="spec" open>
+    <summary><span>1 · description and spec</span>
+      <span><button id="reload">apply · restarts the episode</button></span>
+      <span class="fold"></span></summary>
     <div class="body">
       <p id="spec-desc" class="dim wrap" style="margin:0 0 8px"></p>
       <textarea id="spec-text" spellcheck="false"></textarea>
       <div style="margin-top:6px" id="spec-status"></div>
     </div>
-  </section>
+  </details>
 
-  <section>
-    <h2>2 · loaded config</h2>
+  <details class="pane" data-pane="config" open>
+    <summary><span>2 · loaded config</span><span class="fold"></span></summary>
     <div class="body" id="config"></div>
-  </section>
+  </details>
 
-  <section>
-    <h2>3 · input data <span class="dim" id="in-note"></span></h2>
+  <details class="pane" data-pane="inputs" open>
+    <summary><span>3 · input data <span class="dim" id="in-note"></span></span>
+      <span class="fold"></span></summary>
     <div class="body">
       <div id="inputs"></div>
       <!-- The echo half. Built by renderEcho() from the adapter's own sources, so the
@@ -222,37 +371,53 @@
            about any particular robot. -->
       <div id="echo"></div>
     </div>
-  </section>
+  </details>
 
-  <section>
-    <h2>4 · plots <span class="dim">last 180 ticks</span></h2>
+  <details class="pane" data-pane="plots">
+    <summary><span>4 · plots <span class="dim">last 180 ticks</span></span>
+      <span class="fold"></span></summary>
     <div class="body" id="plots"></div>
-  </section>
+  </details>
 
-  <section>
-    <h2>5 · atomic propositions <span class="dim">rule → keys → value</span></h2>
+  <details class="pane" data-pane="aps" open>
+    <summary><span>5 · atomic propositions <span class="dim">rule → keys → value</span></span>
+      <span class="fold"></span></summary>
     <div class="body" id="aps"></div>
-  </section>
+  </details>
 
-  <section>
-    <h2>6 · automaton</h2>
-    <div class="body" id="automaton"></div>
-  </section>
+  <details class="pane" data-pane="automaton" open>
+    <summary><span>6 · automaton</span><span class="fold"></span></summary>
+    <!-- A pointer, and deliberately not a second copy. The highlight is a class swap on
+         nodes found by element id (`aut0n3`), so drawing the same graph twice would put
+         two elements under one id in one document and light whichever the browser found
+         first. One drawing, in the band where it can be read. -->
+    <div class="body">
+      <p style="margin:0">the automata are drawn in the <a href="#wall" class="key">wall
+        band</a> at the top of this page, at reading size, with every formula's status
+        beside them.</p>
+      <p class="dim" style="margin:8px 0 0">They are not repeated here. The lit node is a
+        class on a node that is already in the document, found by element id, and two
+        copies of one graph would be two elements under one id — the wrong one would be
+        lit, and nothing on the page would say so.</p>
+    </div>
+  </details>
 
-  <section>
-    <h2>7 · phase machine <span class="dim">state · timing · guards</span></h2>
+  <details class="pane" data-pane="phase" open>
+    <summary><span>7 · phase machine <span class="dim">state · timing · guards</span></span>
+      <span class="fold"></span></summary>
     <div class="body" id="phase"></div>
-  </section>
+  </details>
 
-  <section>
-    <h2>8 · clock <span><button id="step">step</button></span></h2>
+  <details class="pane" data-pane="clock">
+    <summary><span>8 · clock</span><span><button id="step">step</button></span>
+      <span class="fold"></span></summary>
     <div class="body"><div id="clock"></div><div id="step-note"></div></div>
-  </section>
+  </details>
 
-  <section>
-    <h2>9 · timing</h2>
+  <details class="pane" data-pane="timing">
+    <summary><span>9 · timing</span><span class="fold"></span></summary>
     <div class="body" id="timing"></div>
-  </section>
+  </details>
 
 </div>
 
@@ -283,7 +448,10 @@ const S = {
   // renderStateBanner. `route` is whether this build has a status route at all, `post`
   // is whether it has a command route, and `why` is what the last GET said, so the
   // degrade banner can name which silence this is.
-  mon: { status: null, route: null, post: null, postStatus: null, busy: false,
+  // `sig` is what the banner was last built from: the state changes when an operator
+  // changes it, and the banner used to be rebuilt at the tick rate for a fixed
+  // paragraph that had not moved. See renderStateBanner.
+  mon: { status: null, route: null, post: null, postStatus: null, busy: false, sig: null,
          why: "this console has not asked yet." },
   // Pane 3's echo half. `on` is the source this console last *successfully* asked for
   // and null is off, which is what it is until somebody picks one -- a request that was
@@ -323,6 +491,86 @@ async function api(path, opts) {
   return { status: r.status, body: parsed, text: body };
 }
 
+/* == the scale, the density control, and the fold ===========================
+
+   Every size on the page is a rem off `:root{font-size}`, so one number decides whether
+   this console is read across a room off a projector or on a laptop at a bench. `REM` is
+   that number as the stylesheet declares it; tests/test_web_ui.py pins the two together,
+   because a drawing sized in rem against a base this file guessed at would be the one
+   thing on the page that did not move with the rest of it. */
+const REM = 13;
+
+/* An SVG's own rendered width. The drawing is laid out in user units by `AUT` / `PH` --
+   untouched -- and it is *sized* here, in rem, so the root font-size carries the graph
+   and the type inside it together at one ratio. `--aut-zoom` is tier 1's extra
+   multiplier: one `drawGraph` renders the wall's copy to be read across a room and
+   pane 7's chain at desk size, with no second geometry and no second layout. `max-width`
+   still wins, so a drawing is allowed to shrink into its column and never to stretch. */
+const svgStyle = w =>
+  `width:calc(${(w / REM).toFixed(3)}rem * var(--aut-zoom,1));max-width:100%;height:auto`;
+
+/* A colour token, read from the stylesheet rather than spelled a second time here. The
+   canvas needs a real colour string -- it cannot take a `var()` -- and a hex copied into
+   the script is the one that survives a theme change and reads wrong. Memoised, because
+   `getComputedStyle` per plot per tick is a layout read on the hot path. */
+const TOKENS = {};
+function token(name) {
+  if (!(name in TOKENS)) {
+    TOKENS[name] = getComputedStyle(document.documentElement)
+      .getPropertyValue(name).trim();
+  }
+  return TOKENS[name];
+}
+
+/* localStorage throws outright in a browser with storage turned off, and a console that
+   cannot remember a preference must still render one. Every access goes through here. */
+const STORE = {
+  get(key, fallback) {
+    try {
+      const v = window.localStorage.getItem(key);
+      return v === null ? fallback : v;
+    } catch (e) { return fallback; }
+  },
+  set(key, value) {
+    try { window.localStorage.setItem(key, value); } catch (e) { /* not fatal */ }
+  },
+};
+
+const DENSITY = { key: "skillmon.density", min: 9, max: 30, step: 2, base: REM };
+
+function density() {
+  const px = Number(STORE.get(DENSITY.key, DENSITY.base));
+  return (isFinite(px) && px >= DENSITY.min && px <= DENSITY.max) ? px : DENSITY.base;
+}
+
+function setDensity(px) {
+  const next = Math.min(DENSITY.max, Math.max(DENSITY.min, px));
+  document.documentElement.style.fontSize = next + "px";
+  STORE.set(DENSITY.key, String(next));
+  $("dens-now").textContent = next + "px";
+  $("dens-down").disabled = next <= DENSITY.min;
+  $("dens-up").disabled = next >= DENSITY.max;
+}
+
+$("dens-down").onclick = () => setDensity(density() - DENSITY.step);
+$("dens-up").onclick = () => setDensity(density() + DENSITY.step);
+setDensity(density());
+
+/* Which tier-2 panes start closed: the three an operator consults rather than watches.
+   A default and not a policy -- every pane remembers what it was last left as, per pane
+   and per browser, so the same page serves the operator who wants the plots up. */
+const PANE_CLOSED = ["plots", "timing", "clock"];
+const paneKey = name => "skillmon.pane." + name;
+
+for (const pane of document.querySelectorAll("details.pane")) {
+  const name = pane.dataset.pane;
+  if (!name) continue;
+  pane.open = STORE.get(paneKey(name),
+                        PANE_CLOSED.indexOf(name) >= 0 ? "0" : "1") === "1";
+  pane.addEventListener("toggle",
+                        () => STORE.set(paneKey(name), pane.open ? "1" : "0"));
+}
+
 /* -- a field nobody publishes yet is named, with its owner ------------------ */
 function missing(field, owner, why) {
   return `<div class="missing">no <code>${esc(field)}</code> on the wire.
@@ -335,6 +583,7 @@ function missing(field, owner, why) {
 async function boot() {
   renderMonitor();                 // disabled, and saying why, before anything is known
   renderEcho();                    // and the same for the echo picker
+  renderWall(); renderAutomaton(); // and the band, saying it has no verdict yet
   const health = await api("/api/health");
   const monitors = await api("/api/monitors");
   const list = (monitors.body && monitors.body.monitors) || [];
@@ -359,7 +608,7 @@ async function refreshLatched() {
     S[slot] = r.status === 200 ? r.body : null;
   }
   renderSpec(); renderConfig(); renderStatus(); renderAutomaton(); renderPhases();
-  renderEcho();
+  renderEcho(); renderWall();
 }
 
 function connect() {
@@ -394,7 +643,7 @@ function connect() {
       // The echo's age is measured in ticks, so the clock is what moves it -- and it
       // has to go on moving while the monitor is paused, which is exactly when a stale
       // frame would otherwise sit there looking live.
-      S.tick = p; renderClock(); renderStateBanner(); renderEchoAge();
+      S.tick = p; renderClock(); refreshStateBanner(); renderEchoAge();
     }
     else if (frame.topic.endsWith("/observation")) { S.obs = p; onObservation(p); }
     else if (frame.topic.endsWith("/verdict")) { S.verdict = p; onVerdict(p); }
@@ -426,7 +675,7 @@ function onVerdict(v) {
   // Pane 7 renders here and not on the observation, so the guard truth it shows and the
   // proposition values it shows beside it are read off the same pulse. They are two
   // payloads and could be one tick apart; the pane says so when they are.
-  renderHeader(); renderAutomaton(); renderPhases(); renderTiming();
+  renderHeader(); renderWall(); renderAutomaton(); renderPhases(); renderTiming();
 }
 
 /* == header ================================================================= */
@@ -447,17 +696,28 @@ function renderHeader() {
     `<span class="${ACTION_CLASS[a] || "dim"}">${txt(a)}</span>` +
     ` <span class="dim">conf ${num((v.intervention || {}).confidence, 2)}</span>`;
   $("h-phase").textContent = `${raw(v.phase)}${v.phase_index === null ? "" : ` [${raw(v.phase_index)}]`}`;
-  const max = phaseMaxSteps(v.phase_index);
-  const left = (v.risk || {}).steps_to_timeout;
-  // `step` counts the episode; `max_steps` bounds the *phase*. Comparing them directly
-  // reads as "72 / 120" when the phase is 42 ticks old, so the in-phase count is
-  // derived from the bound the monitor is actually measuring against.
-  const inPhase = (max === null || typeof left !== "number") ? null : max - left;
+  const { max, left, inPhase } = stepFacts(v);
   $("h-step").innerHTML = max === null
     ? `${txt(v.step)} <span class="dim">/ unbounded</span>`
     : `${txt(inPhase)}<span class="dim">/${max} in phase · ${txt(left)} left ·
        ${txt(v.step)} this episode</span>`;
   renderBadges();
+}
+
+/* `step` counts the episode; `max_steps` bounds the *phase*. Comparing them directly
+   reads as "72 / 120" when the phase is 42 ticks old, so the in-phase count is derived
+   from the bound the monitor is actually measuring against -- and it is null when the
+   verdict reports no `steps_to_timeout`, because there is then nothing to derive it
+   from. One implementation, read by the header strip and by the wall band: two of them
+   is how two lines on one page come to disagree about one tick. */
+function stepFacts(v) {
+  const max = phaseMaxSteps((v || {}).phase_index);
+  const left = ((v || {}).risk || {}).steps_to_timeout;
+  return {
+    max: max,
+    left: typeof left === "number" ? left : null,
+    inPhase: (max === null || typeof left !== "number") ? null : max - left,
+  };
 }
 
 function phaseMaxSteps(i) {
@@ -479,6 +739,270 @@ function renderBadges(health) {
     bits.push(`<span class="pill warn">${S.verdict.missed_ticks} missed ticks</span>`);
   }
   $("h-badges").innerHTML = bits.join(" ");
+}
+
+/* == tier 1 · the wall band =================================================
+
+   What this page is read by from across a room: the verdict and the row it rests on,
+   the rung and how close it is, where the episode is, and -- when the wire carries one
+   -- the fact that the episode ended at all.
+
+   **Nothing here derives a cause.** The driving row is *chosen* from rows the verdict
+   already carries and is never re-graded here: the page cannot see what the ladder was
+   applied to, and a second grader in a browser would report a rung the monitor never
+   chose. Where no row is VIOLATED the band says what the verdict rests on instead of
+   naming a cause it does not have, and a field the wire does not carry gets the same
+   placeholder every other unreported field on this page gets.
+
+   Everything below goes from the wire into innerHTML through `esc`/`txt`/`num`, like
+   everywhere else: a `skill_name` of `<img onerror=...>` renders as those characters. */
+
+/* A glyph beside every word, and the word is never dropped. The band is the part of
+   this page most likely to be photographed and sent to somebody, and a photograph
+   carries neither the hue nor the legend that explained it. */
+const VERDICT_MARK = { SATISFIED: "✔", VIOLATED: "✖", UNDECIDED: "…",
+                       INCONCLUSIVE_NO_DATA: "∅" };
+
+/* `api.INTERVENTION_ACTIONS`, in the ladder's own order, so the band can say *which
+   rung of how many* and not only which word. Pinned against the constant by
+   tests/test_web_ui.py: a rung added to the contract and not to this list would be
+   reported at the wrong height. */
+const RUNGS = ["CONTINUE", "WARN", "SLOW", "REPLAN", "HALT", "ABORT"];
+
+/* `verdict.terminal` -- the only field on the wire that says the episode ended, and it
+   appeared nowhere on this page. Non-null means one checkable thing: this is the last
+   verdict of this episode, and the monitor publishes nothing further until arm or
+   reset. The set is closed and the validator does not close it, so a word this console
+   has no meaning for is rendered as an ended episode whose word is shown as it arrived
+   -- never as a running one. */
+const TERMINAL = {
+  SUCCESS: { cls: "ok", glyph: "■",
+             says: "the episode ended, and it ended the way the spec says success " +
+                   "looks." },
+  FAILURE: { cls: "bad", glyph: "■",
+             says: "the episode ended on a fault the monitor observed. That is not " +
+                   "the same claim as “the skill failed at its task”." },
+  ABORTED: { cls: "warn", glyph: "■",
+             says: "the episode ended without the monitor observing either — it was " +
+                   "stopped from outside, or for a reason that is not about the " +
+                   "skill." },
+};
+
+function renderWall() {
+  const v = S.verdict || null;
+  renderWallTerminal(v);
+  renderWallVerdict(v);
+  renderWallAction(v);
+  renderWallWhere(v);
+}
+
+/* The band's top line when the episode is over. It takes the band over rather than
+   sitting in it: `#wall.over` shrinks the verdict hero underneath, because "this is the
+   last verdict of this episode" outranks what that verdict was. */
+function renderWallTerminal(v) {
+  const box = $("wall-terminal"), wall = $("wall");
+  if (!v || !("terminal" in v)) {
+    wall.classList.remove("over");
+    box.innerHTML = !v ? "" : missing("verdict.terminal", "P0, then P4",
+      "this verdict carries no terminal field at all, and it is the only thing on the " +
+      "wire that says an episode ended — so this band cannot tell a running episode " +
+      "from a finished one, and does not guess which.");
+    return;
+  }
+  const t = v.terminal;
+  if (t === null || t === undefined) {
+    // Running: what the field says on every verdict but the last one.
+    wall.classList.remove("over");
+    box.innerHTML = "";
+    return;
+  }
+  const known = Object.prototype.hasOwnProperty.call(TERMINAL, t) ? TERMINAL[t] : null;
+  wall.classList.add("over");
+  box.innerHTML =
+    `<div class="ended ${known ? known.cls : "warn"}">
+       <span class="mark">${known ? known.glyph : "■"} EPISODE ENDED · ${txt(t)}</span>
+       <span>${known ? esc(known.says)
+         : `the verdict reports a terminal this console has no meaning for. The episode
+            ended; the word is shown as it arrived rather than translated.`}
+         <div class="dim small">This is the last verdict of this episode. The monitor
+           publishes nothing further until <b>arm</b> or <b>reset</b>.</div></span>
+     </div>`;
+}
+
+function renderWallVerdict(v) {
+  const box = $("wall-verdict"), why = $("wall-why");
+  if (!v) {
+    box.innerHTML = `<span class="lead">verdict</span>
+      <span class="big dim">— NO VERDICT</span>`;
+    why.innerHTML = `<span class="lead">why</span>
+      <div class="dim">no <code>/monitor/verdict</code> has reached this page yet, so
+        there is no verdict and nothing it rests on. Nothing is read from the quiet: a
+        paused monitor publishes none and a dead one publishes none either.</div>`;
+    return;
+  }
+  box.innerHTML = `<span class="lead">verdict</span>
+    <span class="big ${verdictClass(v.verdict)}">${VERDICT_MARK[v.verdict] || "•"}
+      ${txt(v.verdict)}</span>`;
+  why.innerHTML = `<span class="lead">why</span>` + wallCause(v);
+}
+
+/* The row the verdict rests on, or null when no row on it is VIOLATED.
+
+   The order is the monitor's own: `manifest.breached_mode` scans for a VIOLATED SAFETY
+   mode wherever it sits before falling back, because a de-escalated SAFETY entry still
+   outranks a VIOLATED PROGRESS one that grades above it. This is a *selection* from
+   rows the verdict already carries and it is not the ladder: the monitor grades on
+   confidences and imminences this page cannot see, so the band names the row and says
+   how many others are VIOLATED beside it rather than claiming to be the choice the
+   monitor made. */
+function drivingRow(v) {
+  const modes = ((v || {}).failure_modes) || [];
+  const formulas = ((v || {}).formulas) || [];
+  const isViolated = r =>
+    r !== null && typeof r === "object" && r.status === "VIOLATED";
+  const violated = modes.filter(isViolated).concat(formulas.filter(isViolated));
+  if (!violated.length) return null;
+  const safety = modes.find(r => isViolated(r) && r.fault_category === "SAFETY");
+  const row = safety || violated[0];
+  return {
+    row: row,
+    kind: modes.indexOf(row) >= 0 ? "failure mode" : "formula",
+    rule: safety
+      ? "a VIOLATED SAFETY mode, which the monitor's own rule takes first"
+      : "the first VIOLATED row this verdict carries",
+    others: violated.length - 1,
+  };
+}
+
+function wallCause(v) {
+  const d = drivingRow(v);
+  if (d === null) return wallRests(v);
+  const r = d.row;
+  // A formula row has no `fault_category` and no `confidence` -- its field set is not
+  // the failure mode's -- and that is said as what it is rather than printed as a dash,
+  // which reads like a producer that is failing.
+  const cat = typeof r.fault_category === "string"
+    ? `<span class="warn">${esc(r.fault_category)}</span>`
+    : `<span class="dim">no fault_category on this row</span>`;
+  const conf = typeof r.confidence === "number"
+    ? `${num(r.confidence, 2)}`
+    : `<span class="dim">not reported on this row</span>`;
+  const also = d.others > 0
+    ? `<div class="dim small">and ${d.others} other VIOLATED
+        row${d.others === 1 ? "" : "s"} on this verdict — the table beside the automata
+        has every one of them.</div>`
+    : "";
+  return `<div class="name bad">✖ ${txt(r.name)}</div>
+    <div><span class="dim">${esc(d.kind)}</span> · ${cat}
+      <span class="dim">· its own confidence</span> ${conf}</div>
+    <div class="dim small">${esc(d.rule)}. Chosen from the rows this verdict carries,
+      and not graded here.</div>${also}`;
+}
+
+/* No row is VIOLATED, so there is no cause to name and the band does not invent one.
+   What it says instead is what the verdict *rests on*: the rows it carries, counted by
+   the status each of them reported. Counting is not inferring — every number here is on
+   the verdict. */
+function wallRests(v) {
+  const rows = ((v || {}).formulas || []).concat((v || {}).failure_modes || []);
+  const clash = v.verdict === "VIOLATED"
+    ? `<div class="warn small">and the verdict says VIOLATED. This band names no cause
+        it cannot find on the wire.</div>`
+    : "";
+  if (!rows.length) {
+    return `<div class="dim">this verdict carries no formula and no failure-mode row at
+      all, so there is nothing on it that says why. <b>${txt(v.verdict)}</b> is the whole
+      of what the monitor reported.</div>` + clash;
+  }
+  const tally = {};
+  for (const r of rows) {
+    const s = (r && typeof r.status === "string") ? r.status : "no status";
+    tally[s] = (tally[s] || 0) + 1;
+  }
+  const counted = Object.keys(tally).sort()
+    .map(s => `${tally[s]} <span class="dim">${esc(s)}</span>`).join(" · ");
+  return `<div>no row on this verdict is VIOLATED</div>
+    <div class="small">${rows.length} row${rows.length === 1 ? "" : "s"}: ${counted}
+      </div>
+    <div class="dim small">what the verdict rests on, counted off the rows it
+      carries.</div>` + clash;
+}
+
+/* The rung, and the two fields that say what it is about and how soon. Both are on the
+   wire -- `intervention.category` and `intervention.imminence` -- and neither was
+   rendered anywhere on this page. `imminence` arrives already worded ("now",
+   "3 steps"), from `manifest._imminence_label`; it is printed and never recomputed. */
+function renderWallAction(v) {
+  const box = $("wall-act");
+  if (!v) {
+    box.innerHTML = `<span class="lead">intervention</span>
+      <span class="dim">no verdict yet</span>`;
+    return;
+  }
+  const i = v.intervention;
+  if (!i || typeof i !== "object" || Array.isArray(i)) {
+    box.innerHTML = `<span class="lead">intervention</span>` +
+      missing("verdict.intervention", "P4",
+        "this verdict carries no intervention block, so there is no rung to show, no " +
+        "category it was chosen for and no imminence beside it.");
+    return;
+  }
+  const a = i.action;
+  const rung = RUNGS.indexOf(a);
+  box.innerHTML = `<span class="lead">intervention</span>
+    <span class="big ${ACTION_CLASS[a] || "dim"}">${txt(a)}</span>
+    <div class="dim small">${rung >= 0
+      ? `rung ${rung + 1} of ${RUNGS.length} on the ladder`
+      : `a rung this console has no place on its ladder for — shown as it arrived`}</div>
+    <div><span class="dim">category</span> ${i.category === null || i.category === undefined
+      ? `<span class="dim">none reported — nothing was graded this tick</span>`
+      : `<span class="warn">${esc(i.category)}</span>`}</div>
+    <div><span class="dim">imminence</span> ${i.imminence === null || i.imminence === undefined
+      ? `<span class="dim">none reported</span>`
+      : `<b>${esc(i.imminence)}</b>`}</div>
+    <div class="dim small">confidence ${num(i.confidence, 2)} — the intervention's own,
+      which is neither the observation's nor a formula's.</div>`;
+}
+
+/* Where the episode is. The phase is reconciled by pane 7's `currentPhase` when the
+   manifest declares a machine to place it in -- `phase_index` and `phase` can name
+   different phases, and the answer that says which of them it used is the one worth
+   reading across a room. With no machine on the manifest there is nothing to reconcile
+   against, and the band says the verdict's own word and that there is nothing to place
+   it in. */
+function renderWallWhere(v) {
+  const box = $("wall-where");
+  if (!v) {
+    box.innerHTML = `<span class="lead">phase and step</span>
+      <span class="dim">no verdict yet</span>`;
+    return;
+  }
+  const phases = (S.manifest || {}).execution_phases;
+  let where;
+  if (Array.isArray(phases) && phases.length) {
+    const here = currentPhase(phases, v);
+    where = here.i === null
+      ? `<span class="dim">${esc(here.why)}</span>`
+      : `<b>${esc(phaseName(phases, here.i))}</b> <span class="dim">[${here.i}]${
+          here.why ? " — " + esc(here.why) : ""}</span>`;
+  } else if (v.phase === null || v.phase === undefined) {
+    where = `<span class="dim">the verdict reports no active phase</span>`;
+  } else {
+    where = `<b>${txt(v.phase)}</b> <span class="dim">— the manifest declares no phase
+      machine to place it in</span>`;
+  }
+  const { max, left, inPhase } = stepFacts(v);
+  const budget = max === null
+    ? `<span class="dim">this phase declares no max_steps — unbounded</span>`
+    : inPhase === null
+      ? `<span class="dim">? / ${max} — the verdict reports no steps_to_timeout to
+          derive the in-phase count from</span>`
+      : `${inPhase}<span class="dim">/${max} in phase</span>
+         <span class="${left <= 0 ? "bad" : "dim"}">· ${left} left</span>`;
+  box.innerHTML = `<span class="lead">phase and step</span>
+    <div class="name">${where}</div>
+    <div>${budget}</div>
+    <div class="dim small">step ${txt(v.step)} this episode</div>`;
 }
 
 /* == 0 · the monitor's state, and the controls that change it ===============
@@ -545,10 +1069,14 @@ const MON_STATES = {
    a pause is legible from the tab strip, without the tab having to be looked at. */
 const TITLE = document.title;
 function setTitleMark(mark) {
-  document.title = mark ? `⚠ ${mark} — ${TITLE}` : TITLE;
+  const next = mark ? `⚠ ${mark} — ${TITLE}` : TITLE;
+  // Assigned only when it changes. This ran on every tick for a string that moves when
+  // an operator moves it, and a title reassigned at the tick rate is a tab strip that
+  // flickers for nothing.
+  if (document.title !== next) document.title = next;
 }
 
-function renderMonitor() { renderStateBanner(); updateControls(); }
+function renderMonitor() { refreshStateBanner(); updateControls(); }
 
 /* The latched read. 200 is a state; a 404 is one of two different silences and the
    banner says which, because "this build has no such route" and "this monitor has never
@@ -589,6 +1117,29 @@ function onMonitorStatus(payload) {
 
 /* -- the banner ------------------------------------------------------------ */
 
+/* What the tick calls. Everything in the banner but the duration is a function of the
+   status and of nothing else, and a status moves when an operator moves it -- not at the
+   tick rate, which is what the whole banner was rebuilt at: a fixed multi-sentence
+   paragraph re-parsed as HTML and `document.title` reassigned, several times a second,
+   for a string that had not changed since the last pause. The signature is the whole of
+   what the structure is rendered from, so a rebuild happens exactly when one is owed and
+   the one thing that really does move every tick is written on its own. */
+function refreshStateBanner() {
+  const s = S.mon.status;
+  const sig = JSON.stringify(s
+    ? [s.state === undefined ? null : s.state,
+       s.reason === undefined ? null : s.reason,
+       s.since_seq === undefined ? null : s.since_seq]
+    : [null, S.mon.why]);
+  if (sig !== S.mon.sig) {
+    S.mon.sig = sig;
+    renderStateBanner();
+  }
+  // How long this state has held, against the newest seq that has reached this page.
+  const held = $("mon-since");
+  if (held) held.innerHTML = sinceText();
+}
+
 function renderStateBanner() {
   const box = $("mon-banner"), s = S.mon.status;
 
@@ -625,7 +1176,7 @@ function renderStateBanner() {
   box.className = "row banner " + (alarm ? "alarm" : "calm");
   box.innerHTML =
     `<div class="mark">${alarm ? "⚠ " : ""}${esc(mark)}</div>
-     <div><b>monitor ${esc(raw(s.state).toUpperCase())}</b> — ${sinceText()}.
+     <div><b>monitor ${esc(raw(s.state).toUpperCase())}</b> — <span id="mon-since"></span>.
        <span class="dim">reason:</span> ${s.reason === null || s.reason === undefined
          ? `<span class="dim">none given</span>` : esc(String(s.reason))}
        <div class="dim" style="margin-top:3px">${says}</div></div>`;
@@ -793,7 +1344,11 @@ function renderStatus() {
       problems.map(p => `<li class="bad">${esc(p)}</li>`).join("") + `</ul>`;
 }
 
-$("reload").onclick = async () => {
+/* The two controls that sit in a pane's summary rather than in its body stop the click
+   there. A `summary`'s activation behaviour is to fold the pane, and a click that
+   reached it would apply a spec *and* close the pane it was applied from. */
+$("reload").onclick = async (ev) => {
+  ev.stopPropagation();
   const btn = $("reload"); btn.disabled = true;
   let spec;
   try { spec = JSON.parse($("spec-text").value); }
@@ -1409,7 +1964,10 @@ function drawSpark(canvas, series) {
     const y = h - 2 - ((v - lo) / (hi - lo)) * (h - 4);
     i ? g.lineTo(x, y) : g.moveTo(x, y);
   });
-  g.strokeStyle = "#6aa9ff"; g.lineWidth = 1; g.stroke();
+  // The stylesheet's own accent and not a second copy of it: a canvas cannot take a
+  // `var()`, and a hex spelled in here is the one that survives a theme change and
+  // reads wrong.
+  g.strokeStyle = token("--acc"); g.lineWidth = 1; g.stroke();
 }
 
 /* == 5 · atomic propositions ================================================ */
@@ -1434,10 +1992,42 @@ function ruleOf(description) {
    which is not a bad row in the AP pane, it is no AP pane at all. */
 const reEsc = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/* Both name matchers -- schema keys against an AP's rule, AP names against a guard's
+   expression -- derive from the latched adapter and manifest and change only when a
+   spec is pushed. Compiled per call they were this page's two hot spots: one `RegExp`
+   per schema key per AP *per observation*, and one per AP name per guard *per verdict*,
+   at the tick rate, for patterns that had not changed since boot.
+
+   So they are built once and keyed on the documents they come from -- the same
+   structural guard `renderAutomaton` and `renderPhases` already use with `S.aut.key`
+   and `S.ph.key` -- and the answers are memoised beside them, because the rules and the
+   expressions are the manifest's too and there are only ever a few dozen. A pushed spec
+   changes the key, and everything under it is thrown away rather than left stale. */
+const RX = { key: null, keys: [], aps: [], rule: null, expr: null };
+
+function rxGuard() {
+  const schema = Object.keys((S.adapter || {}).schema || {});
+  const aps = Object.keys((S.manifest || {}).atomic_propositions || {});
+  // Separators no identifier can contain, so two key sets cannot collide into one cache
+  // key and go on being answered with the other one's regexes.
+  const key = schema.join("\u0000") + "\u0001" + aps.join("\u0000");
+  if (key === RX.key) return;
+  RX.key = key;
+  RX.keys = schema.map(k => [k, new RegExp(`\\b${reEsc(k)}\\b`)]);
+  RX.aps = aps.map(n => [n, new RegExp(`\\b${reEsc(n)}\\b`)]);
+  RX.rule = new Map();
+  RX.expr = new Map();
+}
+
 function keysInRule(description) {
+  rxGuard();
   const body = ruleOf(description).replace(/'[^']*'|"[^"]*"/g, " ");
-  return Object.keys((S.adapter || {}).schema || {})
-    .filter(k => new RegExp(`\\b${reEsc(k)}\\b`).test(body));
+  let hit = RX.rule.get(body);
+  if (hit === undefined) {
+    hit = RX.keys.filter(pair => pair[1].test(body)).map(pair => pair[0]);
+    RX.rule.set(body, hit);
+  }
+  return hit;
 }
 
 function renderAps() {
@@ -1483,7 +2073,7 @@ const AUT = { R: 15, COL: 136, ROW: 66, PAD: 34, TOP: 70 };
 function renderAutomaton() {
   const v = S.verdict || null;
   const graphs = (S.manifest || {}).automata;
-  const box = $("automaton");
+  const box = $("wall-graphs");
   if (!Array.isArray(graphs)) {
     // Absent, which is how a build that cannot report automata at all says so. Not the
     // same as the empty list below, which is a build that can and has none to give.
@@ -1491,31 +2081,29 @@ function renderAutomaton() {
     box.innerHTML =
       missing("manifest.automata / formulas[].state", "P4",
         "the monitor publishes each formula's status but not the automaton it " +
-        "stepped, so there is no graph to draw and no current state to light.") +
-      `<div id="aut-rows">${formulaTable(v)}</div>`;
-    return;
-  }
-  if (!graphs.length) {
+        "stepped, so there is no graph to draw and no current state to light.");
+  } else if (!graphs.length) {
     S.aut.key = null;
     box.innerHTML =
       `<div class="missing">the manifest reports <code>automata</code> and declares
-        none: no formula in this spec compiled to a graph. The statuses below are the
-        whole of what the monitor has to say about it.</div>
-       <div id="aut-rows">${formulaTable(v)}</div>`;
-    return;
+        none: no formula in this spec compiled to a graph. The statuses beside this are
+        the whole of what the monitor has to say about it.</div>`;
+  } else {
+    const key = JSON.stringify(graphs);
+    if (key !== S.aut.key) {
+      S.aut = { key: key, trace: graphs.map(() => []), from: null, last: null };
+      box.innerHTML = graphs.map(drawGraph).join("") +
+        `<p class="dim small" id="aut-witness" style="margin:2px 0 0"></p>
+         <p class="dim small" style="margin:4px 0 0">◯ ordinary · ◎ accepting · ▢
+           absorbing sink · ▣ accepting and absorbing. The filled node is the state the
+           last verdict reported; shaded nodes are the ones this page has seen it
+           in.</p>`;
+    }
+    lightAutomata(graphs, v);
   }
-  const key = JSON.stringify(graphs);
-  if (key !== S.aut.key) {
-    S.aut = { key: key, trace: graphs.map(() => []), from: null, last: null };
-    box.innerHTML = graphs.map(drawGraph).join("") +
-      `<p class="dim" id="aut-witness" style="margin:2px 0 0"></p>
-       <p class="dim" style="margin:4px 0 0">◯ ordinary · ◎ accepting · ▢ absorbing
-         sink · ▣ accepting and absorbing. The filled node is the state the last verdict
-         reported; shaded nodes are the ones this page has seen it in.</p>
-       <div id="aut-rows"></div>`;
-  }
-  lightAutomata(graphs, v);
-  $("aut-rows").innerHTML = formulaTable(v);
+  // Beside the drawings and never below them: the status of a graph and the graph are
+  // one reading, and they were four hundred pixels and a fold apart.
+  $("wall-rows").innerHTML = formulaTable(v);
 }
 
 /* The only thing that runs per verdict: a class swap per node, and two captions written
@@ -1639,9 +2227,9 @@ function drawGraph(g, gi) {
   return `<div class="aut">
     <div class="lbl"><span class="key">${esc(g.name)}</span>
       <span class="dim wrap" style="text-align:right">${esc(g.formula || "")}</span></div>
-    <svg viewBox="0 0 ${w} ${h}" style="width:${w}px;max-width:100%;height:auto"
+    <svg viewBox="0 0 ${w} ${h}" style="${svgStyle(w)}"
       role="img">${wire}${node}</svg>
-    <p class="dim" id="aut${gi}c" style="margin:0 0 8px"></p></div>`;
+    <p class="dim small" id="aut${gi}c" style="margin:0 0 8px"></p></div>`;
 }
 
 /* A label is wire data -- an operator-supplied spec's own text -- so it is escaped
@@ -1707,7 +2295,7 @@ function link(x1, y1, x2, y2, back, label, w) {
     edgeLabel(mx, my + (back ? 15 : -7), label, w);
 }
 
-/* The statuses, and which of them has a graph above. `phase:<phase>:<kind>` faults come
+/* The statuses, and which of them has a graph beside it. `phase:<phase>:<kind>` faults come
    from the phase machine rather than from an automaton and never have one -- the
    column says so rather than leaving a blank that reads like a missing value. */
 function formulaTable(v) {
@@ -1861,7 +2449,7 @@ ${esc((p || {}).description || "")}</title>
       <text class="sub" text-anchor="middle" y="13">${i} · ${esc(bound)}</text></g>`;
   }).join("");
 
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:${w}px;max-width:100%;height:auto"
+  return `<svg viewBox="0 0 ${w} ${h}" style="${svgStyle(w)}"
     role="img">${wire}${node}</svg>`;
 }
 
@@ -1985,10 +2573,15 @@ function phaseGuards(phases, i, v) {
    reason `keysInRule` escapes a schema key: one metacharacter in wire data makes
    `new RegExp` throw, and an exception here is not a bad row, it is no pane. */
 function apsInExpr(expr) {
+  rxGuard();
   const body = String(expr === null || expr === undefined ? "" : expr)
     .replace(/'[^']*'|"[^"]*"/g, " ");
-  return Object.keys((S.manifest || {}).atomic_propositions || {})
-    .filter(n => new RegExp(`\\b${reEsc(n)}\\b`).test(body)).sort();
+  let hit = RX.expr.get(body);
+  if (hit === undefined) {
+    hit = RX.aps.filter(pair => pair[1].test(body)).map(pair => pair[0]).sort();
+    RX.expr.set(body, hit);
+  }
+  return hit;
 }
 
 /* One proposition's live value, from the observation and from nowhere else. Absent from
@@ -2036,7 +2629,8 @@ function missingInline(f) { return `<span class="dim">no ${esc(f)}</span>`; }
 
 // Outside #clock on purpose: renderClock rewrites that element on the next pulse, and
 // a refusal that vanishes within a tick is a refusal the operator never reads.
-$("step").onclick = async () => {
+$("step").onclick = async (ev) => {
+  ev.stopPropagation();                 // see $("reload") -- it is in a pane's summary
   const r = await api("/api/clock/step", { method: "POST", body: "{}" });
   $("step-note").innerHTML = r.status < 400
     ? `<p class="ok">stepped</p>`
