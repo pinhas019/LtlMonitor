@@ -2131,8 +2131,9 @@ def test_the_band_shows_the_rung_the_category_and_the_imminence():
     assert "none reported" in body
     # A verdict with no intervention block at all names the field and its owner.
     assert 'missing("verdict.intervention", "P4"' in body
-    # The three confidences on this page are different numbers; this one says which.
-    assert "the intervention's own" in body
+    # The three confidences on this page are different numbers; this one says which,
+    # on `title` rather than as a line of the band -- it is the same sentence every tick.
+    assert "The intervention's own confidence" in body
     # And no imminence is derived here from anything.
     assert "steps_to_timeout" not in body
 
@@ -2253,10 +2254,10 @@ def test_the_drawings_are_sized_from_the_number_the_stylesheet_declares():
     assert f"const REM = {root.group(1)};" in page
     assert "max-width:100%;height:auto`;" in page          # allowed to shrink, never
     assert "var(--aut-zoom,1)" in page                     # to stretch
-    # Past the band's own multiplier: panel 1 is the main panel and the graph fills its
-    # column at any width. `max-width:100%` above still caps it, so it shrinks in and
-    # never stretches out.
-    assert "#wall .aut-view { --aut-zoom:calc(var(--wall) * 1.5); }" in _style(page)
+    # The band's multiplier and no more. Going past it made the widest graph fill the
+    # column and blew a two-state safety automaton up to 781x377 -- size on a dashboard
+    # reads as importance, and `drawGraph` sizes per graph precisely so it does not.
+    assert "#wall .aut-view { --aut-zoom:var(--wall); }" in _style(page)
     assert "grid-template-columns:minmax(0,7fr) minmax(0,5fr)" in _style(page)
 
 
@@ -2277,6 +2278,56 @@ def test_the_density_control_is_one_number_and_is_remembered():
     store = _block(page, "const STORE = {")
     assert "catch (e) { return fallback; }" in store
     assert "localStorage" not in _fn(page, "setDensity")   # only ever through STORE
+
+
+def test_the_band_panels_are_boxes_like_every_other_panel():
+    """Panels 1 and 2 were bare `<div>`s with a caption on the page background, while 3,
+    4 and 5 were bordered boxes with a header. So the top half of the console read as
+    loose text beside a diagram and the bottom half read as panels, and "what is where"
+    had no answer above the fold. One vocabulary for all five."""
+    page = _page()
+    band = page.split('<div class="grid">')[0]
+    panes = re.findall(r'<section class="pane">\s*<h2>(.*?)</h2>', band, re.S)
+    assert len(panes) == 2
+    for head in panes:
+        assert 'class="num"' in head and 'class="ttl"' in head and 'class="sub"' in head
+    # The same rule that styles a pane's summary styles these, so they cannot drift.
+    assert "section > h2, details.pane > summary {" in _style(page)
+
+
+def test_the_verdict_is_four_labelled_rows_in_one_column():
+    """It was an `auto-fit` grid: three columns of 213px inside a 666px rail, cells 255,
+    309, 568 and 276px tall, and `where` wrapping onto a second row *under* `verdict`.
+    Four things scattered rather than four things in order.
+
+    One column, a fixed label column, a rule between rows. Every row the same shape,
+    which is the whole of what makes a block of text scannable by somebody who did not
+    write it."""
+    page = _page()
+    style = _style(page)
+    assert "#wall .cell { display:grid; grid-template-columns:9.5rem minmax(0,1fr);" in style
+    assert "repeat(auto-fit,minmax(15rem,1fr))" not in style
+    # Row 1 of column 1 and nothing else. `span 99` made the grid HAVE 99 rows, and 98
+    # empty ones at a 4px gap added 392px of nothing to every cell.
+    assert "#wall .cell > .lead { grid-column:1; grid-row:1;" in style
+    assert "grid-row:1 / span" not in style
+    # And the hero fits its column: at 1.8 it was 51px, and `✖ VIOLATED` needed 258px
+    # of a 213px column and ran out over the cell beside it.
+    assert "font-size:calc(var(--t-xl) * 1.25); font-weight:700;" in style
+    assert "overflow-wrap:anywhere" in style.split("#wall .big")[1].split("}")[0]
+
+
+def test_the_header_does_not_repeat_the_panel_under_it():
+    """It carried verdict, intervention, phase, step and tick as well -- all of which
+    panels 2 and 5 say, larger and with their evidence beside them. Two places showing
+    `VIOLATED` is not twice as clear: it is a reader wondering which one is real."""
+    page = _page()
+    head = page.split("<header>")[1].split("</header>")[0]
+    for gone in ("h-verdict", "h-action", "h-phase", "h-step"):
+        assert gone not in page, gone
+    assert 'id="h-skill"' in head and 'id="h-tick"' in head
+    body = _fn(page, "renderHeader")
+    assert "verdictClass" not in body and "intervention" not in body
 
 
 def test_the_page_is_five_things_and_the_rest_is_behind_one_fold():
@@ -2479,7 +2530,7 @@ def test_the_band_says_which_sources_went_quiet_beside_the_verdict():
     assert "risk.stale_sources" in body
     assert "Array.isArray(stale)" in body                  # a non-array is its own case
     assert "if (!stale.length) {" in body                  # and so is empty
-    assert "no stale\n      source" in body
+    assert "every source\n      fresh" in body
     assert 'absent("verdict.risk.stale_sources"' in body
     # The names come off the wire and are escaped like everything else.
     assert "stale.map(s => `<b>${txt(s)}</b>`)" in body
@@ -2698,8 +2749,9 @@ def test_the_three_confidences_are_each_labelled_as_whose():
     assert "mode conf" in table
     assert "conf</th>" not in table.replace("mode conf</th>", "")
     assert "neither the intervention's confidence above nor the" in table
-    # The band's was labelled in pass 1 and stays labelled.
-    assert "the intervention's own" in _fn(page, "renderWallAction")
+    # The band's was labelled in pass 1 and stays labelled, on `title` rather than as a
+    # line of the band -- it is the same sentence every tick.
+    assert "The intervention's own confidence" in _fn(page, "renderWallAction")
 
 
 def test_severity_is_graded_and_not_always_painted_the_same_red():

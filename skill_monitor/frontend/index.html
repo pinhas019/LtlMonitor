@@ -298,35 +298,62 @@
      asking for `var(--t-sm)` gets tier 1's larger one by inheritance. One multiplier,
      no second set of selectors, and the density control still moves both tiers at
      once. */
-  #wall { margin:12px 12px 0;
+  #wall { margin:12px 12px 0; display:block;
     --t-xxs:calc(.70rem * var(--wall)); --t-xs:calc(.77rem * var(--wall));
     --t-sm:calc(.85rem * var(--wall));  --t-md:calc(.92rem * var(--wall));
     --t-base:calc(1rem * var(--wall));  --t-lg:calc(1.08rem * var(--wall));
     --t-xl:calc(1.15rem * var(--wall));
-    font-size:var(--t-base); }
-  #wall .lead { display:block; color:var(--dim); font-size:var(--t-xs);
-                text-transform:uppercase; letter-spacing:.06em; }
+    font-size:var(--t-base); background:none; border:none; }
   #wall .small { font-size:var(--t-xs); }
-  /* The largest thing on the page, and it is a word rather than a colour. */
-  #wall .big { display:block; font-size:calc(var(--t-xl) * 1.8); font-weight:700;
-               letter-spacing:.03em; line-height:1.12; }
-  #wall .head { display:grid; gap:14px; align-items:start;
-                grid-template-columns:repeat(auto-fit,minmax(15rem,1fr)); }
+  /* The largest thing on the page, and it is a word rather than a colour.
+     1.25 and not 1.8: at 1.8 it was 51px, `✖ VIOLATED` needed 258px of a 213px column
+     and the word ran out over the cell beside it. Wrapping is allowed for the same
+     reason -- a verdict word this console has never seen is rendered as it arrived, and
+     an unknown word of any length must land inside its own row. */
+  #wall .big { display:block; font-size:calc(var(--t-xl) * 1.25); font-weight:700;
+               letter-spacing:.03em; line-height:1.15; overflow-wrap:anywhere; }
+  /* The four things the verdict says, as four labelled rows in ONE column, separated by
+     a rule. Label left at a fixed width, value right, and every row the same shape --
+     which is the whole of what makes a block of text scannable by somebody who did not
+     write it. The `.lead` spans the row's full height so a three-line value keeps its
+     label beside its first line rather than floating in the middle of it. */
+  #wall .rows { display:block; }
+  #wall .cell { display:grid; grid-template-columns:9.5rem minmax(0,1fr); gap:4px 12px;
+                align-items:baseline; padding:9px 0;
+                border-top:1px solid var(--rowline); }
+  #wall .cell:first-child { border-top:none; padding-top:2px; }
+  /* Row 1 of column 1, and nothing else. NOT `span 99`, which is what it said first:
+     spanning 99 rows makes the grid *have* 99 rows, and 98 empty ones at a 4px row gap
+     added 392px of nothing to every cell. Measured at 471-565px per cell before, 60-90
+     after. The auto-placed children fill column 2 from row 1 down. */
+  #wall .cell > .lead { grid-column:1; grid-row:1; color:var(--dim);
+                        font-size:var(--t-xs); text-transform:uppercase;
+                        letter-spacing:.06em; align-self:start; }
+  #wall .cell > :not(.lead) { grid-column:2; min-width:0; }
   /* The automaton is the main panel and the verdict is the rail beside it.
      Seven twelfths against five: the graphs get the width, because a Buchi graph whose
-     node text cannot be read is a decoration, whereas the verdict is four short words
+     node text cannot be read is a decoration, whereas the verdict is four labelled rows
      and reads at any width. Both stack on a narrow window, automaton first. */
-  #wall .stage { display:grid; gap:16px; margin-top:4px;
+  #wall .stage { display:grid; gap:12px; align-items:start;
                  grid-template-columns:minmax(0,7fr) minmax(0,5fr); }
   @media (max-width:1100px) { #wall .stage { grid-template-columns:minmax(0,1fr); } }
-  #wall .stage > div { min-width:0; }
+  #wall .stage > .pane { min-width:0; }
+  #wall .stage > .pane > .body { overflow:auto; max-height:72vh; }
   /* The drawings, at the band's scale. `--aut-zoom` is the only thing that changes:
      the layout is `AUT`'s, unchanged, and the SVG is sized in rem so the graph and the
-     type inside it move together. Past the band's own multiplier here, so the graph
-     fills the main column at any window width -- `max-width:100%` in `svgStyle` still
-     wins, so it shrinks into the column and never stretches past it. */
-  #wall .aut-view { --aut-zoom:calc(var(--wall) * 1.5); }
-  #wall .cell > div { margin-top:3px; }
+     type inside it move together.
+
+     The band's own multiplier and no more. `* 1.5` made the widest graph fill the column
+     -- and blew a TWO-state safety automaton up to 781px and 377px tall, which is the
+     exact thing `drawGraph` sizes per graph to avoid: size on a dashboard reads as
+     importance, and `fell_over` is not more important than the navigation sequence
+     because it has fewer states. Measured: 377px per small graph at 1.5, 197px at 1.0. */
+  #wall .aut-view { --aut-zoom:var(--wall); }
+  /* The name, the formula and the "seen" caption are metadata about a drawing, not the
+     drawing. At the band's base size they cost 141px per graph against 139px of actual
+     SVG -- so the third automaton fell below the fold behind the labels of the first
+     two. The drawing keeps the band's scale; the words around it drop a step. */
+  #wall .aut-view .lbl, #wall .aut-view p { font-size:var(--t-xxs); }
   /* Five columns at the band's type size in two fifths of the width: a long formula
      name can be wider than the box. It scrolls *inside its own box* rather than putting
      a horizontal scrollbar on the whole page, which would move the graphs and the
@@ -338,9 +365,10 @@
      hero shrinks under it, because "this is the last verdict of this episode" outranks
      what the verdict was. */
   #wall .ended { display:flex; gap:14px; align-items:baseline; flex-wrap:wrap;
-                 border-radius:4px; padding:10px 14px; margin-bottom:12px;
+                 border-radius:6px; padding:10px 14px; margin-bottom:12px;
+                 background:var(--panel);
                  border:1px solid currentColor; border-left:14px solid currentColor; }
-  #wall .ended .mark { font-size:calc(var(--t-xl) * 1.8); font-weight:700;
+  #wall .ended .mark { font-size:calc(var(--t-xl) * 1.5); font-weight:700;
                        letter-spacing:.03em; }
   #wall.over .big { font-size:var(--t-lg); }
   #wall .ended.ok { background:var(--calm-bg); }
@@ -350,12 +378,14 @@
 </head>
 <body>
 
+<!-- The skill, whether the monitor is watching it, and the controls. Nothing else.
+
+     It used to carry verdict, intervention, phase, step and tick as well -- all five of
+     which panels 2 and 5 now say, larger and with their evidence beside them. Two places
+     showing `VIOLATED` is not twice as clear; it is a reader wondering which one is the
+     real one, and one more thing to scan before reaching the page. -->
 <header>
   <div><span class="k">skill</span><span class="v" id="h-skill">—</span></div>
-  <div><span class="k">verdict</span><span class="v" id="h-verdict">—</span></div>
-  <div><span class="k">intervention</span><span class="v" id="h-action">—</span></div>
-  <div><span class="k">phase</span><span class="v" id="h-phase">—</span></div>
-  <div><span class="k">step / max</span><span class="v" id="h-step">—</span></div>
   <div><span class="k">tick</span><span class="v" id="h-tick">—</span></div>
   <div style="margin-left:auto" id="h-badges"></div>
 
@@ -394,32 +424,43 @@
      driving row is *chosen* from rows that verdict already carries, and a field the wire
      does not carry says so and names its owner rather than being inferred. -->
 <section id="wall">
-  <div class="body">
-    <div id="wall-terminal"></div>
-    <div class="stage">
+  <div id="wall-terminal"></div>
+  <div class="stage">
 
-      <!-- Panel 1, and the main one. The spec IS this machine; every other panel on the
-           page explains one input to it or one consequence of it, so it gets the width
-           and everything else is read around it. -->
-      <div>
-        <div class="cap"><span class="num">1</span><span class="ttl">automaton</span>
-          <span class="sub" title="The specification, drawn as a machine. The lit node is
-            the state the last verdict reported — never one this page inferred — and an
-            edge is taken when its label is true of that tick.">the spec as a machine ⓘ
-          </span></div>
-        <div id="wall-graphs" class="aut-view"></div>
-      </div>
+    <!-- Panel 1, and the main one. The spec IS this machine; every other panel on the
+         page explains one input to it or one consequence of it, so it gets the width
+         and everything else is read around it.
 
-      <!-- Panel 2. The conclusion and its evidence, in the rail beside the machine that
-           produced it: the driving row names itself here, and the table under it is
-           every row that verdict carried. -->
-      <div>
-        <div class="cap"><span class="num">2</span><span class="ttl">verdict</span>
-          <span class="sub" title="What the monitor concluded this tick, the row that
-            conclusion rests on, and the rung it is asking for. Nothing here is graded on
-            this page: the driving row is selected from rows the verdict already
-            carries.">and why ⓘ</span></div>
-        <div class="head">
+         A bordered box with a header, exactly like panels 3, 4 and 5. It used to be a
+         bare `<div>` with a caption on the page background, which made the top half of
+         the console look like loose text beside a diagram while the bottom half looked
+         like panels -- so "what is where" had no answer above the fold. One vocabulary
+         for all five. -->
+    <section class="pane">
+      <h2><span class="num">1</span><span class="ttl">automaton</span>
+        <span class="sub" title="The specification, drawn as a machine. The lit node is
+          the state the last verdict reported — never one this page inferred — and an
+          edge is taken when its label is true of that tick.">the spec as a machine ⓘ</span></h2>
+      <div class="body"><div id="wall-graphs" class="aut-view"></div></div>
+    </section>
+
+    <!-- Panel 2. The conclusion and its evidence, in the rail beside the machine that
+         produced it: the driving row names itself here, and the table under it is
+         every row that verdict carried.
+
+         Four labelled rows in ONE column, not an auto-fit grid. The grid gave three
+         columns of 213px inside a 666px rail, with cells 255, 309, 568 and 276px tall
+         and `where` wrapping onto a second row under `verdict` -- so the four things
+         were scattered rather than ordered, and `✖ VIOLATED` at 51px needed 258px of a
+         213px column and spilled into the cell beside it. Measured, not guessed. -->
+    <section class="pane">
+      <h2><span class="num">2</span><span class="ttl">verdict</span>
+        <span class="sub" title="What the monitor concluded this tick, the row that
+          conclusion rests on, and the rung it is asking for. Nothing here is graded on
+          this page: the driving row is selected from rows the verdict already
+          carries.">and why ⓘ</span></h2>
+      <div class="body">
+        <div class="rows">
           <div class="cell" id="wall-verdict"></div>
           <div class="cell" id="wall-why"></div>
           <div class="cell" id="wall-act"></div>
@@ -427,8 +468,8 @@
         </div>
         <div id="wall-rows"></div>
       </div>
+    </section>
 
-    </div>
   </div>
 </section>
 
@@ -1020,20 +1061,13 @@ function verdictClass(v) {
 const ACTION_CLASS = { CONTINUE: "ok", WARN: "warn", SLOW: "warn",
                        REPLAN: "warn", HALT: "bad", ABORT: "bad" };
 
+/* Which skill, and the service badges. The verdict, the rung, the phase and the step
+   left this strip: panel 2 says all four, larger, with the row they rest on beside them.
+   A header that repeats the panel under it is not redundancy, it is a second place to
+   check and a question about which one is authoritative. */
 function renderHeader() {
   const v = S.verdict; if (!v) return;
   $("h-skill").textContent = v.skill_name || "—";
-  $("h-verdict").innerHTML = `<span class="${verdictClass(v.verdict)}">${esc(v.verdict)}</span>`;
-  const a = (v.intervention || {}).action;
-  $("h-action").innerHTML =
-    `<span class="${ACTION_CLASS[a] || "dim"}">${txt(a)}</span>` +
-    ` <span class="dim">conf ${num((v.intervention || {}).confidence, 2)}</span>`;
-  $("h-phase").textContent = `${raw(v.phase)}${v.phase_index === null ? "" : ` [${raw(v.phase_index)}]`}`;
-  const { max, left, inPhase } = stepFacts(v);
-  $("h-step").innerHTML = max === null
-    ? `${txt(v.step)} <span class="dim">/ unbounded</span>`
-    : `${txt(inPhase)}<span class="dim">/${max} in phase · ${txt(left)} left ·
-       ${txt(v.step)} this episode</span>`;
   renderBadges();
 }
 
@@ -1205,16 +1239,17 @@ function wallStale(v) {
   }
   if (!stale.length) {
     return `<div class="dim small" title="Every source feeding this verdict reported
-      fresh, so no failure mode's confidence was lowered for staleness.">no stale
-      source — nothing was de-escalated for staleness.</div>`;
+      fresh, so no failure mode's confidence was lowered for staleness.">every source
+      fresh ⓘ</div>`;
   }
-  return `<div class="warn small">⚠ ${stale.length} stale
+  // The explanation is on `title`, not on screen. It is the same sentence every tick and
+  // it is four lines of the band -- and the band is the part read across a room.
+  return `<div class="warn small" title="A failure mode is graded on the freshness of the
+    sources feeding its own propositions, so a quiet source lowers that mode's confidence
+    and the ladder answers a lower rung than it otherwise would. This is the monitor's own
+    list, not a judgement made on this page.">⚠ ${stale.length} stale
     source${stale.length === 1 ? "" : "s"}:
-    ${stale.map(s => `<b>${txt(s)}</b>`).join(", ")}
-    <div class="dim">a failure mode is graded on the freshness of the sources feeding
-      its own propositions, so a quiet source lowers that mode's confidence and the
-      ladder answers a lower rung than it otherwise would. This is the monitor's own
-      list, not a judgement made here.</div></div>`;
+    ${stale.map(s => `<b>${txt(s)}</b>`).join(", ")} ⓘ</div>`;
 }
 
 /* The row the verdict rests on, or null when no row on it is VIOLATED.
@@ -1259,16 +1294,16 @@ function wallCause(v) {
     ? `${num(r.confidence, 2)}`
     : `<span class="dim">not reported on this row</span>`;
   const also = d.others > 0
-    ? `<div class="dim small">and ${d.others} other VIOLATED
-        row${d.others === 1 ? "" : "s"} on this verdict — the table beside the automata
-        has every one of them.</div>`
+    ? `<div class="dim small" title="The table under these rows has every one of them.">and
+        ${d.others} other VIOLATED row${d.others === 1 ? "" : "s"}</div>`
     : "";
   return `<div class="name bad">✖ ${txt(r.name)}</div>
     <div><span class="dim">${esc(d.kind)}</span> · ${cat}
-      <span class="dim">· its own confidence</span> ${conf}</div>
+      <span class="dim">· conf</span> ${conf}</div>
     ${declaredAs(r.name)}
-    <div class="dim small">${esc(d.rule)}. Chosen from the rows this verdict carries,
-      and not graded here.</div>${also}`;
+    <div class="dim small" title="${esc(d.rule)}. Chosen from the rows this verdict
+      carries, and not graded on this page — the monitor grades on confidences and
+      imminences this page cannot see.">chosen, not graded ⓘ</div>${also}`;
 }
 
 /* What the spec says this row *is*: `named_failure_modes[].description` in the author's
@@ -1355,13 +1390,13 @@ function renderWallAction(v) {
       ? `rung ${rung + 1} of ${RUNGS.length} on the ladder`
       : `a rung this console has no place on its ladder for — shown as it arrived`}</div>
     <div><span class="dim">category</span> ${i.category === null || i.category === undefined
-      ? `<span class="dim">none reported — nothing was graded this tick</span>`
-      : `<span class="warn">${esc(i.category)}</span>`}</div>
-    <div><span class="dim">imminence</span> ${i.imminence === null || i.imminence === undefined
       ? `<span class="dim">none reported</span>`
-      : `<b>${esc(i.imminence)}</b>`}</div>
-    <div class="dim small">confidence ${num(i.confidence, 2)} — the intervention's own,
-      which is neither the observation's nor a formula's.</div>`;
+      : `<span class="warn">${esc(i.category)}</span>`}
+      <span class="dim">· in</span> ${i.imminence === null || i.imminence === undefined
+      ? `<span class="dim">not reported</span>`
+      : `<b>${esc(i.imminence)}</b>`}
+      <span class="dim" title="The intervention's own confidence, which is neither the
+        observation's nor any formula's.">· conf</span> ${num(i.confidence, 2)}</div>`;
 }
 
 /* Where the episode is. The phase is reconciled by panel 6's `currentPhase` when the
@@ -3629,8 +3664,7 @@ function renderReplay() {
     `<tr><th>${esc(what)}</th><td class="wrap"><code class="key">${esc(line)}</code>
       <div class="dim small">${why}</div></td></tr>`;
   $("replay").innerHTML =
-    `<div class="cap" style="margin-top:11px"><span class="ttl">replay</span>
-       <span class="sub">this clock is ${says}</span></div>
+    `<p class="dim small" style="margin:6px 0 8px">this clock is ${says}</p>
      <table class="fixed"><colgroup><col style="width:5.5rem"><col></colgroup>
      ${cmd("record", `${REPLAY_CMD} record run.jsonl`,
            `every /monitor/* frame, as JSON Lines, while the robot runs.`)}
