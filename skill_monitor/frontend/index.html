@@ -65,9 +65,37 @@
                           border-radius:6px; }
   section > h2, details.pane > summary {
                  margin:0; padding:8px 12px; font-size:var(--t-md); font-weight:600;
-                 letter-spacing:.08em; text-transform:uppercase; color:var(--dim);
-                 border-bottom:1px solid var(--line); display:flex;
-                 justify-content:space-between; align-items:center; gap:8px; }
+                 color:var(--dim); border-bottom:1px solid var(--line); display:flex;
+                 align-items:baseline; gap:9px; flex-wrap:wrap; }
+
+  /* == which panel this is =================================================
+
+     Every panel carries the same three marks in the same order: the **number** it is
+     called by, its **name**, and one line saying **what it shows**. Before this, a
+     summary was a bare lowercase word and the page was a wall of them -- "look at the
+     third one" was the only way to point at anything, and it meant a different pane
+     depending on how wide the reader's window was, because the grid reflows.
+     A number does not reflow.
+
+     The numbering is ONE numbering. `/* == 4 · propositions */` in the script below is
+     the panel labelled `4` on screen, so a number said across a room, written in a
+     commit and grepped for in this file all land on the same thing. */
+  .cap { display:flex; gap:9px; align-items:baseline; flex-wrap:wrap;
+         padding-bottom:7px; margin-bottom:9px; border-bottom:1px solid var(--line); }
+  .num { flex:none; border-radius:4px; background:var(--ctl); color:var(--acc);
+         border:1px solid var(--line); font-weight:700; padding:0 .5em;
+         font-variant-numeric:tabular-nums; }
+  .ttl { font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+         color:var(--ink); }
+  /* The one line that says what the panel is for. It wraps and it is never dropped:
+     the panel names are jargon (`propositions`, `automaton`) and the whole reason the
+     console is hard to read cold is that the jargon was all there was. */
+  .sub { color:var(--dim); font-size:var(--t-sm); font-weight:400; flex:1 1 16rem;
+         letter-spacing:0; text-transform:none; }
+  /* A control in a summary, and the fold, both to the right. The first `auto` eats the
+     free space, so a summary with a button keeps the button and the fold together. */
+  details.pane > summary .act { margin-left:auto; }
+  details.pane > summary .fold { margin-left:auto; }
   section > .body, details.pane > .body { padding:10px 12px; }
   /* The cap is tier 2's alone. Tier 1 is the thing being read across the room and is
      never a box with its own scrollbar; the panes below it keep a bound so that nine of
@@ -117,7 +145,7 @@
      The mark differs in the GLYPH and not in the hue: `ⓘ` is a key the descriptor
      documents and `?` is one it does not, so the difference survives a monochrome
      screen and a photograph. The full text is in the title, and spelled out under
-     pane 3's table where it can be read without hovering anything. */
+     panel 9 where it can be read without hovering anything. */
   .doc { color:var(--dim); cursor:help; padding-left:2px; }
   .doc.nodoc { color:var(--warn); }
   .skey { border-bottom:1px solid var(--rowline); padding:5px 0; }
@@ -147,7 +175,7 @@
   details.pane:not([open]) > summary .fold::before { content:"\25b8 closed"; }
   details.pane > summary .fold { color:var(--dim); font-weight:500; }
 
-  /* pane 3's echo half. One picker, because the echo is one source at a time, and a
+  /* panel 5's echo half. One picker, because the echo is one source at a time, and a
      frame drawn at its own size: a 160x120 camera frame stretched to the pane's width
      is a picture of the pane and not of what the robot sees. `stale` is a class on a
      block that is already in the document -- the age is recomputed every tick and the
@@ -211,7 +239,7 @@
      colour-blind operator, and in a printed screenshot. Colour only agrees with it.
      Everything here is a class on a node that is already in the document: a verdict
      arrives at the tick rate, and re-laying-out three graphs at that rate would fight
-     the same pulse that feeds panes 3 to 5. */
+     the same pulse that feeds panels 4 and 5. */
   .aut-view .aut { border-bottom:1px solid var(--rowline); margin-bottom:8px; }
   .aut-view .aut .lbl { display:flex; gap:12px; justify-content:space-between;
                         font-size:var(--t-sm); padding:2px 0; }
@@ -230,7 +258,7 @@
   .aut-view .n.cur  .shape { fill:var(--acc); stroke:var(--ink); stroke-width:2.5; }
   .aut-view .n.cur  text   { fill:var(--on-acc); font-weight:700; }
 
-  /* pane 7. Same discipline as pane 6 and for the same reasons: the geometry is laid
+  /* Panel 3. Same discipline as panel 1 and for the same reasons: the geometry is laid
      out once per manifest and a verdict only toggles a class, and *where we are* is
      carried by shape -- a second outline and a caret pointing at the box -- so it
      survives a monochrome screen and a colour-blind reader. Both extra marks are in
@@ -254,7 +282,7 @@
      The page is projected and read across a room while the robot runs, and two things
      have to dominate it: the automaton with its live state, and the verdict with *why*
      it is that verdict. Both were below a fold and two grid columns apart -- the header
-     said VIOLATED and the row that drove it was the last thing in pane 6.
+     said VIOLATED and the row that drove it was the last thing in the automaton pane.
 
      The band redefines the type scale **for its own subtree**, so every rule already
      asking for `var(--t-sm)` gets tier 1's larger one by inheritance. One multiplier,
@@ -273,14 +301,21 @@
   #wall .big { display:block; font-size:calc(var(--t-xl) * 1.8); font-weight:700;
                letter-spacing:.03em; line-height:1.12; }
   #wall .head { display:grid; gap:14px; align-items:start;
-                grid-template-columns:repeat(auto-fit,minmax(17rem,1fr)); }
-  #wall .stage { display:grid; gap:14px; margin-top:12px;
-                 grid-template-columns:minmax(0,3fr) minmax(0,2fr); }
+                grid-template-columns:repeat(auto-fit,minmax(15rem,1fr)); }
+  /* The automaton is the main panel and the verdict is the rail beside it.
+     Seven twelfths against five: the graphs get the width, because a Buchi graph whose
+     node text cannot be read is a decoration, whereas the verdict is four short words
+     and reads at any width. Both stack on a narrow window, automaton first. */
+  #wall .stage { display:grid; gap:16px; margin-top:4px;
+                 grid-template-columns:minmax(0,7fr) minmax(0,5fr); }
   @media (max-width:1100px) { #wall .stage { grid-template-columns:minmax(0,1fr); } }
+  #wall .stage > div { min-width:0; }
   /* The drawings, at the band's scale. `--aut-zoom` is the only thing that changes:
      the layout is `AUT`'s, unchanged, and the SVG is sized in rem so the graph and the
-     type inside it move together. */
-  #wall .aut-view { --aut-zoom:var(--wall); }
+     type inside it move together. Past the band's own multiplier here, so the graph
+     fills the main column at any window width -- `max-width:100%` in `svgStyle` still
+     wins, so it shrinks into the column and never stretches past it. */
+  #wall .aut-view { --aut-zoom:calc(var(--wall) * 1.5); }
   #wall .cell > div { margin-top:3px; }
   /* Five columns at the band's type size in two fifths of the width: a long formula
      name can be wider than the box. It scrolls *inside its own box* rather than putting
@@ -351,15 +386,35 @@
 <section id="wall">
   <div class="body">
     <div id="wall-terminal"></div>
-    <div class="head">
-      <div class="cell" id="wall-verdict"></div>
-      <div class="cell" id="wall-why"></div>
-      <div class="cell" id="wall-act"></div>
-      <div class="cell" id="wall-where"></div>
-    </div>
     <div class="stage">
-      <div id="wall-graphs" class="aut-view"></div>
-      <div id="wall-rows"></div>
+
+      <!-- Panel 1, and the main one. The spec IS this machine; every other panel on the
+           page explains one input to it or one consequence of it, so it gets the width
+           and everything else is read around it. -->
+      <div>
+        <div class="cap"><span class="num">1</span><span class="ttl">automaton</span>
+          <span class="sub">the specification drawn as a machine — the <b>lit</b> node is
+            the state the last verdict reported, and an edge is taken when its label is
+            true of that tick</span></div>
+        <div id="wall-graphs" class="aut-view"></div>
+      </div>
+
+      <!-- Panel 2. The conclusion and its evidence, in the rail beside the machine that
+           produced it: the driving row names itself here, and the table under it is
+           every row that verdict carried. -->
+      <div>
+        <div class="cap"><span class="num">2</span><span class="ttl">verdict</span>
+          <span class="sub">what the monitor concluded this tick, why, and what it is
+            asking be done about it</span></div>
+        <div class="head">
+          <div class="cell" id="wall-verdict"></div>
+          <div class="cell" id="wall-why"></div>
+          <div class="cell" id="wall-act"></div>
+          <div class="cell" id="wall-where"></div>
+        </div>
+        <div id="wall-rows"></div>
+      </div>
+
     </div>
   </div>
 </section>
@@ -374,20 +429,26 @@
        machine seen at two heights. The graphs are drawn in the band where they are big
        enough to read; the phase half and both highlights live here. -->
   <details class="pane" data-pane="machine" open>
-    <summary><span>state machine</span>
-      <span class="dim small"><a href="#wall" class="key">automata in the band ↑</a></span>
+    <summary><span class="num">3</span><span class="ttl">phase machine</span>
+      <span class="sub">the same run one level up: the skill's phases in order, with the
+        one the verdict names marked — the Büchi graphs are
+        <a href="#wall" class="key">panel 1, in the band ↑</a></span>
       <span class="fold"></span></summary>
     <div class="body" id="phase"></div>
   </details>
 
   <details class="pane" data-pane="aps" open>
-    <summary><span>propositions <span class="dim">rule → keys → value</span></span>
+    <summary><span class="num">4</span><span class="ttl">propositions</span>
+      <span class="sub">the letters panel 1's edges are labelled with: each AP's rule,
+        the schema keys it reads, and whether it is true of this tick</span>
       <span class="fold"></span></summary>
     <div class="body" id="aps"></div>
   </details>
 
   <details class="pane" data-pane="inputs" open>
-    <summary><span>input <span class="dim" id="in-note"></span></span>
+    <summary><span class="num">5</span><span class="ttl">input</span>
+      <span class="sub">what the monitor was fed — every source this robot declares, how
+        old its last message is, and one raw frame on demand <span class="dim" id="in-note"></span></span>
       <span class="fold"></span></summary>
     <div class="body">
       <div id="inputs"></div>
@@ -400,9 +461,13 @@
   </details>
 
   <details class="pane" data-pane="clock" open>
-    <summary><span>clock</span><span><button id="step">step</button></span>
+    <summary><span class="num">6</span><span class="ttl">clock &amp; replay</span>
+      <span class="sub">the tick everything above advances on — and how to write this
+        episode down and run the monitor over it again</span>
+      <span class="act"><button id="step">step</button></span>
       <span class="fold"></span></summary>
-    <div class="body"><div id="clock"></div><div id="step-note"></div></div>
+    <div class="body"><div id="clock"></div><div id="step-note"></div>
+      <div id="replay"></div></div>
   </details>
 
 </div>
@@ -411,31 +476,41 @@
      deleted: `adapter.warnings` is what surfaced the `min_range` fold gap, and a warning
      that is gone is worse than one that is a click away. -->
 <details id="more" data-pane="more">
-  <summary><span>everything else</span>
-    <span class="dim small">adapter warnings · config · schema · spec · plots · timing</span>
+  <summary><span class="num">7–12</span><span class="ttl">everything else</span>
+    <span class="sub">consulted, not watched: adapter warnings · loaded config · schema ·
+      spec · plots · timing</span>
     <span class="fold"></span></summary>
   <div class="grid">
 
     <details class="pane" data-pane="warnings" open>
-      <summary><span>adapter warnings <span class="dim" id="warn-note"></span></span>
+      <summary><span class="num">7</span><span class="ttl">adapter warnings</span>
+        <span class="sub">where this robot's descriptor does not do what the spec asked
+          for <span class="dim" id="warn-note"></span></span>
         <span class="fold"></span></summary>
       <div class="body" id="warnings"></div>
     </details>
 
     <details class="pane" data-pane="config" open>
-      <summary><span>loaded config</span><span class="fold"></span></summary>
+      <summary><span class="num">8</span><span class="ttl">loaded config</span>
+        <span class="sub">which spec and which adapter this monitor is actually running
+          — and where each came from</span>
+        <span class="fold"></span></summary>
       <div class="body" id="config"></div>
     </details>
 
     <details class="pane" data-pane="schema" open>
-      <summary><span>schema <span class="dim">what each key means</span></span>
+      <summary><span class="num">9</span><span class="ttl">schema</span>
+        <span class="sub">what each key in panel 5 means, in what units, and what the
+          descriptor warns about it</span>
         <span class="fold"></span></summary>
       <div class="body" id="schema"></div>
     </details>
 
     <details class="pane" data-pane="spec">
-      <summary><span>description and spec</span>
-        <span><button id="reload">apply · restarts the episode</button></span>
+      <summary><span class="num">10</span><span class="ttl">description and spec</span>
+        <span class="sub">the LTL this whole page is a rendering of — editable, and
+          pushed to the monitor from here</span>
+        <span class="act"><button id="reload">apply · restarts the episode</button></span>
         <span class="fold"></span></summary>
       <div class="body">
         <p id="spec-desc" class="dim wrap" style="margin:0 0 8px"></p>
@@ -446,13 +521,18 @@
     </details>
 
     <details class="pane" data-pane="plots">
-      <summary><span>plots <span class="dim">last 180 ticks</span></span>
+      <summary><span class="num">11</span><span class="ttl">plots</span>
+        <span class="sub">each numeric key's shape over the last 180 ticks — a gap is a
+          tick with no value, not a zero</span>
         <span class="fold"></span></summary>
       <div class="body" id="plots"></div>
     </details>
 
     <details class="pane" data-pane="timing">
-      <summary><span>timing</span><span class="fold"></span></summary>
+      <summary><span class="num">12</span><span class="ttl">timing</span>
+        <span class="sub">where a tick's time went, and whether the pulse is keeping up
+          with its own declared rate</span>
+        <span class="fold"></span></summary>
       <div class="body" id="timing"></div>
     </details>
 
@@ -542,7 +622,7 @@ const REM = 13;
    untouched -- and it is *sized* here, in rem, so the root font-size carries the graph
    and the type inside it together at one ratio. `--aut-zoom` is tier 1's extra
    multiplier: one `drawGraph` renders the wall's copy to be read across a room and
-   pane 7's chain at desk size, with no second geometry and no second layout. `max-width`
+   panel 3's chain at desk size, with no second geometry and no second layout. `max-width`
    still wins, so a drawing is allowed to shrink into its column and never to stretch. */
 const svgStyle = w =>
   `width:calc(${(w / REM).toFixed(3)}rem * var(--aut-zoom,1));max-width:100%;height:auto`;
@@ -665,7 +745,7 @@ function adapterStruct() {
   for (const s of ((S.adapter || {}).sources || [])) {
     if (!s || typeof s.id !== "string") continue;
     STRUCT.src[s.id] = s;
-    // The declared bound pane 3 prints beside the measured age. Built here rather than
+    // The declared bound panel 5 prints beside the measured age. Built here rather than
     // per tick: it is the descriptor's number and it does not move.
     STRUCT.age[s.id] = typeof s.max_age_s === "number"
       ? `<span class="dim">/ ${num(s.max_age_s, 2)} s max_age_s</span>`
@@ -702,7 +782,7 @@ function schemaMark(k, entry) {
     >${doc ? "ⓘ" : "?"}</span>`;
 }
 
-/* And the spelled-out form, for pane 3's key list. `yaw` says it WRAPS and
+/* And the spelled-out form, for panel 9's key list. `yaw` says it WRAPS and
    `dist_to_goal` says 0.0 is the odometry origin; both of those are sentences an
    operator has to be able to read, not hover. */
 function schemaNote(k, entry) {
@@ -772,7 +852,7 @@ async function refreshLatched() {
   renderEcho(); renderSchema(); renderWarnings(); renderWall();
 }
 
-/* == 10 · adapter warnings ==================================================
+/* == 7 · adapter warnings ===================================================
 
    `adapter.warnings` is what the descriptor's own load-time checks found, and
    `_build_warnings` says why it is on the wire at all: "so they are visible on the wire
@@ -781,7 +861,7 @@ async function refreshLatched() {
 
    For `real_g1` today the list is not empty. It includes the one that says a key folded
    `last` from a 10 Hz source against a 1 Hz tick discards nine samples in ten, so a
-   transient value can be missed entirely — which is the same fact pane 2 now shows as a
+   transient value can be missed entirely — which is the same fact panel 8 now shows as a
    fold policy, said here as the consequence.
 
    Absent, empty and non-empty are three different things and get three different
@@ -831,7 +911,7 @@ function connect() {
   const ws = new WebSocket(`${proto}//${location.host}/api/monitors/${S.seg}/stream`);
   ws.onopen = () => {
     S.connected = true;
-    // A reconnect is a gap: the verdicts in it were not witnessed, so the path pane 6
+    // A reconnect is a gap: the verdicts in it were not witnessed, so the path panel 1
     // claims restarts here rather than joining across the hole.
     S.aut.key = null;
     renderBadges();
@@ -1247,7 +1327,7 @@ function renderWallAction(v) {
       which is neither the observation's nor a formula's.</div>`;
 }
 
-/* Where the episode is. The phase is reconciled by pane 7's `currentPhase` when the
+/* Where the episode is. The phase is reconciled by panel 3's `currentPhase` when the
    manifest declares a machine to place it in -- `phase_index` and `phase` can name
    different phases, and the answer that says which of them it used is the one worth
    reading across a room. With no machine on the manifest there is nothing to reconcile
@@ -1595,7 +1675,7 @@ async function command(cmd) {
 
 for (const c of COMMANDS) $("cmd-" + c).onclick = () => command(c);
 
-/* == 1 · description and spec =============================================== */
+/* == 10 · description and spec ============================================== */
 
 /* What the spec says the two ends of a run are. `verdict.terminal` says an episode
    ended and which end it reached -- pass 1 put that in the band -- and until now nothing
@@ -1605,7 +1685,7 @@ for (const c of COMMANDS) $("cmd-" + c).onclick = () => command(c);
 
    These are the **criteria**, not a live truth. Whether either holds this tick is the
    monitor's answer and arrives as `verdict.terminal`; nothing here evaluates a
-   condition, for the same reason pane 7 does not evaluate a guard. */
+   condition, for the same reason panel 3 does not evaluate a guard. */
 const TERMINAL_SPEC = [
   ["terminal_success", "success", "ok", "■", "the run reached the end the spec calls " +
    "success"],
@@ -1666,7 +1746,7 @@ function renderSpec() {
 }
 
 /* `spec_status` carries ok, problems and skill_name and nothing else -- the field set
-   is closed. Which spec is loaded is the manifest's `source`, rendered in pane 2; a
+   is closed. Which spec is loaded is the manifest's `source`, rendered in panel 8; a
    `via` here would read `via —` against every real monitor on the wire. */
 function renderStatus() {
   const s = S.status;
@@ -1703,7 +1783,7 @@ $("reload").onclick = async (ev) => {
   btn.disabled = false;
 };
 
-/* == 2 · loaded config ====================================================== */
+/* == 8 · loaded config ====================================================== */
 
 function renderConfig() {
   const a = S.adapter, m = S.manifest, svc = (S.services || {});
@@ -1802,7 +1882,7 @@ function sourceSteps(s) {
   }).join("<br>");
 }
 
-/* == 3 · input data ========================================================= */
+/* == 5 · input data ========================================================= */
 
 /* Off the structural index rather than a `find` over the source list: this is called
    once per source per observation, and the answer changes only when the adapter does. */
@@ -1907,7 +1987,7 @@ function fmt(v) {
   return String(v);
 }
 
-/* == 3b · the echo half =====================================================
+/* == 5b · the echo half =====================================================
 
    The row table above is `data_health` off the observation: every source, every tick,
    free. This is the zoom: one source's actual frames, asked for on
@@ -2397,7 +2477,7 @@ function echoValue(v) {
   return fmt(v);
 }
 
-/* == 4 · plots ==============================================================
+/* == 11 · plots =============================================================
 
    Three things were wrong with this pane and all three were quiet.
 
@@ -2475,7 +2555,7 @@ function renderPlots() {
       `<p class="dim" style="margin:0">no declared key has carried a number yet, so
          there is nothing to plot. This is not an empty pane: it is a pane whose
          history is empty.</p>`;
-    // The key's own documentation under its shape over time -- the same block pane 3
+    // The key's own documentation under its shape over time -- the same block panel 9
     // spells out, read from the cache rather than built a second time. This is the
     // only place on the page where what a number means sits beside how it has moved.
     const notes = adapterStruct().note;
@@ -2579,7 +2659,7 @@ function drawSpark(canvas, series) {
   return { lo: lo, hi: hi, flat: flat };
 }
 
-/* == 5 · atomic propositions ================================================ */
+/* == 4 · atomic propositions ================================================ */
 
 /* The executable half of "True when <expr>. <prose>". The terminator is a
    sentence-ending period -- one followed by whitespace or the end -- and never any
@@ -2681,13 +2761,13 @@ function renderAps() {
        </p>`;
 }
 
-/* == 6 · automaton ==========================================================
+/* == 1 · automaton ==========================================================
 
    `manifest.automata` is the structure and it is latched: it changes only when a spec
    is pushed. `formulas[].state` / `failure_modes[].state` is the position and it
    changes every verdict. So the SVG is laid out once per manifest and every verdict
    after that toggles two classes per node -- rebuilding three graphs at the tick rate
-   would fight the same pulse that drives panes 3 to 5, and would throw away the one
+   would fight the same pulse that drives panels 4 and 5, and would throw away the one
    thing this pane accumulates.
 
    A graph is matched to a row by `name`, and by nothing else. No row, or a row whose
@@ -2940,20 +3020,20 @@ function formulaTable(v) {
      (says ? `<tr><td colspan="5" class="wrap">${says}</td></tr>` : "");
   }).join("");
   // `mode conf` and not `conf`. Three numbers on this page are called confidence: the
-  // intervention's, in the band; the observation's, in pane 5; and this one, which is
+  // intervention's, in the band; the observation's, in panel 4; and this one, which is
   // this row's own and is on a failure-mode row only. A formula row has no such field
   // and its cell is empty rather than zero. The long form of the distinction is in
-  // pane 5, where all three are named together; here it is one line, for the same
+  // panel 4, where all three are named together; here it is one line, for the same
   // reason the prose is on its own row.
   return `<table style="margin-top:8px">
     <tr><th class="wrap">formula</th><th>status</th>
       <th>category</th><th title="This row's own confidence: a named
         failure mode graded on the freshness of the sources feeding its own
         propositions. It is neither the intervention's confidence above nor the
-        observation's in pane 5.">mode conf</th><th>state</th></tr>
+        observation's in panel 4.">mode conf</th><th>state</th></tr>
     ${rows}</table>
     <p class="dim small" style="margin:3px 0 0"><code>mode conf</code> is this row's own —
-      not the intervention's above, and not the observation's in pane 5.</p>`;
+      not the intervention's above, and not the observation's in panel 4.</p>`;
 }
 
 /* What the spec declared a row as, on a row of its own under it. One line, clipped, with
@@ -2984,9 +3064,9 @@ function rowDeclared(name) {
   return `<div class="dim small wrap" title="${esc(full)}">${esc(shown)}</div>`;
 }
 
-/* == 7 · phase machine ======================================================
+/* == 3 · phase machine ======================================================
 
-   The timing layer above pane 6's Büchi automata. Same three sources and the same
+   The timing layer above panel 1's Büchi automata. Same three sources and the same
    division of labour: `manifest.execution_phases` is the structure and is latched, so
    the SVG is laid out once per spec; the verdict carries where we are, how close the
    phase is to its bounds, and -- when the build reports it -- the live truth of the
@@ -3090,7 +3170,7 @@ function drawPhases(phases) {
   const w = PH.PAD * 2 + PH.W + PH.LBL * 6.2 + 12;
   const h = PH.TOP + phases.length * PH.H + (phases.length - 1) * PH.GAPY + PH.PAD;
 
-  // The stub the first phase gets for the same reason pane 6's initial state gets one:
+  // The stub the first phase gets for the same reason panel 1's initial state gets one:
   // "this is where the machine starts" belongs on the drawing.
   let wire = `<path class="e" d="M${cx} ${PH.TOP - 22} L${cx} ${PH.TOP - 5}"/>` +
     arrowHead(cx, PH.TOP, 0, 1);
@@ -3436,7 +3516,7 @@ function apsInExpr(expr) {
 
 /* One proposition's live value, from the observation and from nowhere else. Absent from
    `ap_values`, listed in `unknown_aps`, or no observation at all: all three are UNKNOWN
-   rather than false, which is the same rule pane 5 renders by. */
+   rather than false, which is the same rule panel 4 renders by. */
 function apValue(name) {
   const o = S.obs;
   const known = o && o.ap_values && Object.prototype.hasOwnProperty.call(o.ap_values, name)
@@ -3446,7 +3526,7 @@ function apValue(name) {
     : `<span class="unk">UNKNOWN</span>`;
 }
 
-/* == 8 · clock ============================================================== */
+/* == 6 · clock and replay =================================================== */
 
 function renderClock() {
   const t = S.tick, o = S.obs, a = S.adapter;
@@ -3473,6 +3553,62 @@ function renderClock() {
     `<table>${rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td class="wrap">${v}</td></tr>`).join("")}</table>` +
     (t ? "" : `<p class="dim" style="margin:8px 0 0">no /monitor/tick seen on this
        namespace yet; seq and t above are the observation's own.</p>`);
+  renderReplay();
+}
+
+/* Recording an episode and running the monitor over it again.
+ *
+ * The console cannot start a recording itself and deliberately does not try: a POST
+ * that names a path on the machine serving this page is a file write chosen by whoever
+ * can reach the port, and no amount of validation makes that a good idea on a robot.
+ * What it can do is say the exact three lines, and say which of them applies to what --
+ * which is the part that was actually missing, because `replay_node` is discoverable
+ * only by someone who already knew it existed.
+ *
+ * Rebuilt only when the clock's mode changes, not per tick: it is four lines of text
+ * and the rest of this pane already rewrites a table every pulse.
+ */
+const REPLAY_CMD = "python3 -m skill_monitor.backend.replay_node";
+const CLOCK_MODE = {
+  wall:   ["live", "advancing on real time. This is the mode an episode is recorded in."],
+  replay: ["driven", "advanced by a replayer, not by real time — so replay speed cannot " +
+                     "change the tick count."],
+  manual: ["stepped", "advancing only when something steps it, which is what the button " +
+                      "above does."],
+};
+
+function renderReplay() {
+  const mode = (S.tick || {}).mode;
+  const key = String(mode);
+  if (renderReplay.key === key) return;
+  renderReplay.key = key;
+  const known = Object.prototype.hasOwnProperty.call(CLOCK_MODE, key) ? CLOCK_MODE[key] : null;
+  const says = mode === undefined || mode === null
+    ? missingInline("tick.mode") + " — no tick has said which clock is running."
+    : (known ? `<span class="key">${esc(key)}</span> — ${esc(known[0])}, ${esc(known[1])}`
+             : `<span class="warn">${esc(key)}</span> — a mode this console has no
+                meaning for. Shown as it arrived rather than translated.`);
+  const cmd = (what, line, why) =>
+    `<tr><th>${esc(what)}</th><td class="wrap"><code class="key">${esc(line)}</code>
+      <div class="dim small">${why}</div></td></tr>`;
+  $("replay").innerHTML =
+    `<div class="cap" style="margin-top:11px"><span class="ttl">replay</span>
+       <span class="sub">this clock is ${says}</span></div>
+     <table class="fixed"><colgroup><col style="width:5.5rem"><col></colgroup>
+     ${cmd("record", `${REPLAY_CMD} record run.jsonl`,
+           `every /monitor/* frame, as JSON Lines, while the robot runs.`)}
+     ${cmd("re-run", `${REPLAY_CMD} play run.jsonl --diff`,
+           `republishes the recorded <b>inputs</b> and compares the verdicts the monitor
+            answers with the ones it answered live. Exits non-zero on any difference.`)}
+     ${cmd("geometry", `ros2 bag record -o run.bag $(${REPLAY_CMD} topics run.jsonl)`,
+           `the cloud, the map and the paths — for rviz2 and Isaac. The topic list comes
+            off this robot's own adapter, so it is this robot's list and not a fixed one.`)}
+     </table>
+     <p class="dim small" style="margin:7px 0 0">A replay publishes the recorded ticks,
+       so <b>no clock runs during one</b> and the tick count cannot depend on how fast the
+       replay went. Stop the clock and the evaluator first — both are input producers,
+       and two producers on <code>/monitor/tick</code> interleave into a stream that is
+       neither run.</p>`;
 }
 
 function missingInline(f) { return `<span class="dim">no ${esc(f)}</span>`; }
@@ -3487,7 +3623,7 @@ $("step").onclick = async (ev) => {
     : `<p class="bad">step refused (${r.status}): ${esc(r.text.slice(0, 300))}</p>`;
 };
 
-/* == 9 · timing ============================================================= */
+/* == 12 · timing ============================================================ */
 
 function renderTiming() {
   const v = S.verdict, o = S.obs;

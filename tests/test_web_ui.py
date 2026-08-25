@@ -861,19 +861,76 @@ def test_the_page_renders_an_unevaluated_guard_as_its_own_thing():
     assert "unknown_aps" in page and "hasOwnProperty.call(o.ap_values, name)" in page
 
 
-def test_the_panes_are_numbered_the_way_the_page_lays_them_out():
-    """The two automaton views belong together, so the phase machine is pane 7 and the
-    clock and timing moved down. A heading here and a heading on screen are the same
-    heading, and `docs/packages/P7-frontend.md` numbers them the same way."""
+#: The panels, in the order the page lays them out.
+#:
+#: One number has to mean one thing in three places -- the badge on screen, the section
+#: marker in `index.html`'s script, and the entry heading in P7's doc -- so that a number
+#: said across a room, written in a commit and grepped for all land on the same panel.
+#: Two panels have no section marker of their own and say so here rather than being
+#: quietly skipped: the verdict rail is rendered by the band's own `renderWall*`, and the
+#: schema list is built by panel 5's code because it documents panel 5's keys.
+PANELS = [
+    (1,  "automaton",            "1 · automaton"),
+    (2,  "verdict",              None),
+    (3,  "phase machine",        "3 · phase machine"),
+    (4,  "propositions",         "4 · atomic propositions"),
+    (5,  "input",                "5 · input data"),
+    (6,  "clock &amp; replay",   "6 · clock and replay"),
+    (7,  "adapter warnings",     "7 · adapter warnings"),
+    (8,  "loaded config",        "8 · loaded config"),
+    (9,  "schema",               None),
+    (10, "description and spec", "10 · description and spec"),
+    (11, "plots",                "11 · plots"),
+    (12, "timing",               "12 · timing"),
+]
+
+
+def test_every_panel_says_which_number_it_is():
+    """A number does not reflow. "The third one" meant a different pane depending on how
+    wide the reader's window was, because the grid is `auto-fit` -- and the names are
+    jargon, so there was nothing else to point at anything with."""
     page = _page()
-    for heading in ("6 · automaton", "7 · phase machine", "8 · clock", "9 · timing"):
-        assert heading in page, heading
-    assert "8 · timing" not in page
-    assert "7 · clock" not in page
+    for number, title, _ in PANELS:
+        assert f'<span class="num">{number}</span>' in page, number
+        assert f'<span class="ttl">{title}</span>' in page, title
+
+
+def test_the_number_on_screen_is_the_number_in_the_script_and_in_the_doc():
+    """The regression this replaces: the script's section markers were the ORIGINAL pane
+    order and the page had been re-laid-out twice under them, so `/* == 6 · automaton */`
+    described the panel a reader would have called the first one."""
+    page = _page()
     doc = (web.HERE.parents[1] / "docs" / "packages" / "P7-frontend.md").read_text(
         encoding="utf-8")
-    assert "**7 — The phase machine" in doc
-    assert "**8 — Clock.**" in doc
+    for number, title, marker in PANELS:
+        if marker is not None:
+            assert f"/* == {marker} " in page, marker
+        assert f"**{number} — " in doc, f"{number} — {title} is not in P7's doc"
+
+
+def test_no_panel_is_numbered_twice_or_left_out():
+    """The failure mode of a hand-kept list: two panels labelled `5` reads as one panel
+    that moved, and nothing on the page says otherwise."""
+    numbers = [n for n, _, _ in PANELS]
+    assert numbers == sorted(numbers) == list(range(1, 13))
+    page = _page()
+    for number in numbers:
+        assert page.count(f'<span class="num">{number}</span>') == 1, number
+
+
+def test_every_pane_says_what_it_is_for_and_not_only_what_it_is_called():
+    """`propositions` and `automaton` are jargon. The one-line subtitle is what makes the
+    page readable to somebody who did not write it, so it is structural and not
+    decorative: a pane may not ship without one."""
+    page = _page()
+    summaries = re.findall(r"<summary>(.*?)</summary>", page, re.S)
+    # The ten panes, plus the one fold six of them sit behind. Panels 1 and 2 are the
+    # band and carry the same three marks as a `.cap` rather than as a summary.
+    assert len(summaries) == 11
+    for summary in summaries:
+        assert 'class="num"' in summary, summary[:80]
+        assert 'class="ttl"' in summary, summary[:80]
+        assert 'class="sub"' in summary, summary[:80]
 
 
 # ================================================= pane 3's raw echo, from the mock's end
@@ -2076,17 +2133,17 @@ def test_the_band_shows_the_rung_the_category_and_the_imminence():
     assert "steps_to_timeout" not in body
 
 
-def test_the_automata_are_in_the_band_and_pane_six_points_at_them():
-    """Promoted out of the pane and drawn once. Pane 6 keeps its heading and becomes a
-    pointer, because the highlight is a class on a node found by element id: two copies
-    of one graph would be two elements under `aut0n3`, the wrong one would be lit, and
-    nothing on the page would say so."""
+def test_the_automata_are_the_main_panel_and_are_drawn_once():
+    """Drawn in the band and nowhere else. The highlight is a class on a node found by
+    element id: two copies of one graph would be two elements under `aut0n3`, the wrong
+    one would be lit, and nothing on the page would say so. So panel 1 IS the band, and
+    panel 3 points at it rather than redrawing anything."""
     page = _page()
     body = _fn(page, "renderAutomaton")
     assert 'const box = $("wall-graphs");' in body
     assert '$("wall-rows").innerHTML = formulaTable(v);' in body
-    assert 'id="automaton"' not in page                     # the pane no longer draws
-    assert "6 · automaton" in page                          # and still says what it is
+    assert 'id="automaton"' not in page                     # no pane draws it
+    assert "1 · automaton" in page                          # and it says what it is
     assert 'href="#wall"' in page
     # The layout is untouched -- the drawing is *sized* from the scale, not re-laid-out.
     assert "const AUT = { R: 15, COL: 136, ROW: 66, PAD: 34, TOP: 70 };" in page
@@ -2192,7 +2249,11 @@ def test_the_drawings_are_sized_from_the_number_the_stylesheet_declares():
     assert f"const REM = {root.group(1)};" in page
     assert "max-width:100%;height:auto`;" in page          # allowed to shrink, never
     assert "var(--aut-zoom,1)" in page                     # to stretch
-    assert "#wall .aut-view { --aut-zoom:var(--wall); }" in _style(page)
+    # Past the band's own multiplier: panel 1 is the main panel and the graph fills its
+    # column at any width. `max-width:100%` above still caps it, so it shrinks in and
+    # never stretches out.
+    assert "#wall .aut-view { --aut-zoom:calc(var(--wall) * 1.5); }" in _style(page)
+    assert "grid-template-columns:minmax(0,7fr) minmax(0,5fr)" in _style(page)
 
 
 def test_the_density_control_is_one_number_and_is_remembered():

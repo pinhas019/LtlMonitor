@@ -49,7 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="mode", required=True)
 
-    rec = sub.add_parser("record", help="subscribe to /monitor/* and append JSON Lines")
+    rec = sub.add_parser("record",
+                         help="subscribe to every recorded topic and append JSON Lines")
     rec.add_argument("path")
     rec.add_argument("--append", action="store_true",
                      help="add to an existing file instead of truncating it")
