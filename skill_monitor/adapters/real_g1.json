@@ -77,7 +77,8 @@
             "height_min": 0.5
           }
         }
-      ]
+      ],
+      "expected_hz": 10.0
     },
     {
       "id": "goal",
@@ -127,7 +128,8 @@
             "frame": "optical"
           }
         }
-      ]
+      ],
+      "expected_hz": 10.0
     },
     {
       "id": "status",
@@ -174,7 +176,8 @@
             "threshold": 10
           }
         }
-      ]
+      ],
+      "expected_hz": 5.0
     },
     {
       "id": "vision",
@@ -187,13 +190,14 @@
           "field": "data",
           "round": 3
         }
-      ]
+      ],
+      "expected_hz": 1.0
     },
     {
       "id": "camera",
       "topic": "/depth_anything/color_image",
       "type": "sensor_msgs/msg/Image",
-      "expected_hz": 2.0,
+      "expected_hz": 10.0,
       "max_age_s": 5.0,
       "required": false,
       "tracked": false,
