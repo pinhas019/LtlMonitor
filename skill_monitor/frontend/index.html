@@ -107,6 +107,26 @@
   .mock { color:var(--on-acc); background:var(--warn); font-weight:700; padding:2px 8px;
           border-radius:3px; letter-spacing:.08em; }
 
+  /* Where the units live.
+
+     `adapter.schema[k]` carries a `doc`, a `default` and -- when the descriptor
+     declared a duration -- the `debounce_ticks` it resolved to. None of it reached this
+     page, so `yaw`'s warning that it WRAPS and `dist_to_goal`'s warning that 0.0 is the
+     odometry origin and not "no goal" were on the wire and invisible.
+
+     The mark differs in the GLYPH and not in the hue: `ⓘ` is a key the descriptor
+     documents and `?` is one it does not, so the difference survives a monochrome
+     screen and a photograph. The full text is in the title, and spelled out under
+     pane 3's table where it can be read without hovering anything. */
+  .doc { color:var(--dim); cursor:help; padding-left:2px; }
+  .doc.nodoc { color:var(--warn); }
+  .skey { border-bottom:1px solid var(--rowline); padding:5px 0; }
+  .skey .missing { margin-top:3px; }
+  #schema { border-top:1px solid var(--line); margin-top:9px; padding-top:8px; }
+  /* A plot's floor and ceiling. There is no y-axis on a 34px sparkline, so without
+     these a 0.001 wobble and a forty-metre swing draw the same line. */
+  .plot .lbl .span { color:var(--dim); }
+
   /* The density control, and the fold.
 
      Both are in the header beside the state banner, because both are about being able
@@ -262,6 +282,11 @@
      type inside it move together. */
   #wall .aut-view { --aut-zoom:var(--wall); }
   #wall .cell > div { margin-top:3px; }
+  /* Five columns at the band's type size in two fifths of the width: a long formula
+     name can be wider than the box. It scrolls *inside its own box* rather than putting
+     a horizontal scrollbar on the whole page, which would move the graphs and the
+     verdict along with it. */
+  #wall-rows { overflow-x:auto; }
   #wall .name { font-size:var(--t-lg); font-weight:700; overflow-wrap:anywhere; }
   /* `terminal` is the only field on the wire that says the episode ended, and when it
      is non-null it takes the band over: full width, above everything, and the verdict
@@ -351,6 +376,7 @@
       <span class="fold"></span></summary>
     <div class="body">
       <p id="spec-desc" class="dim wrap" style="margin:0 0 8px"></p>
+      <div id="spec-terminal"></div>
       <textarea id="spec-text" spellcheck="false"></textarea>
       <div style="margin-top:6px" id="spec-status"></div>
     </div>
@@ -366,6 +392,10 @@
       <span class="fold"></span></summary>
     <div class="body">
       <div id="inputs"></div>
+      <!-- Every declared key, with what the descriptor says it means. Built once per
+           adapter by renderSchema() -- it is structure, not a tick -- and it is the one
+           place on this page where the units are spelled out rather than hovered. -->
+      <div id="schema"></div>
       <!-- The echo half. Built by renderEcho() from the adapter's own sources, so the
            picker offers exactly what this robot declares and nothing this page knows
            about any particular robot. -->
@@ -417,6 +447,18 @@
   <details class="pane" data-pane="timing">
     <summary><span>9 · timing</span><span class="fold"></span></summary>
     <div class="body" id="timing"></div>
+  </details>
+
+  <!-- `adapter.warnings` is published so that what the descriptor's own checks found is
+       "visible on the wire rather than only in a log nobody reads" -- `_build_warnings`'
+       own words -- and this console dropped every one of them. For `real_g1` today the
+       list is not empty: it includes the `min_range` fold warning, which is the one that
+       says a transient obstacle can be missed entirely. Open by default, because a
+       warning behind a fold is a warning in a log nobody reads. -->
+  <details class="pane" data-pane="warnings" open>
+    <summary><span>10 · adapter warnings <span class="dim" id="warn-note"></span></span>
+      <span class="fold"></span></summary>
+    <div class="body" id="warnings"></div>
   </details>
 
 </div>
@@ -567,8 +609,14 @@ for (const pane of document.querySelectorAll("details.pane")) {
   if (!name) continue;
   pane.open = STORE.get(paneKey(name),
                         PANE_CLOSED.indexOf(name) >= 0 ? "0" : "1") === "1";
-  pane.addEventListener("toggle",
-                        () => STORE.set(paneKey(name), pane.open ? "1" : "0"));
+  pane.addEventListener("toggle", () => {
+    STORE.set(paneKey(name), pane.open ? "1" : "0");
+    // A canvas inside a shut `<details>` has no width, so the plots are not drawn while
+    // the pane is closed -- the samples are still kept, but nothing is painted into a
+    // zero-width box. Opening it must not leave an operator looking at blank canvases
+    // until the next observation arrives, which on a 1 Hz robot is a second of nothing.
+    if (name === "plots" && pane.open) renderPlots();
+  });
 }
 
 /* -- a field nobody publishes yet is named, with its owner ------------------ */
@@ -578,11 +626,128 @@ function missing(field, owner, why) {
     the moment it does. Nothing here is inferred in the meantime.</span></div>`;
 }
 
+/* The same thing where a whole box will not fit -- inside a table cell, beside a value.
+   Same rule: the field is named, and nothing is inferred in its place. */
+function absent(field, why) {
+  return `<span class="warn" title="${esc(field + " — " + why)}">⚠ no
+    <code>${esc(field)}</code></span>`;
+}
+
+/* == structure, cached against the documents it comes from ==================
+
+   Panes 2 to 7 now render a great deal that is *structural*: what a schema key means,
+   what a source's bounds are, how a source folds its samples, what a named failure mode
+   was declared as. All of it comes off the latched `/monitor/adapter` and
+   `/monitor/manifest`, both of which change only when a spec or a descriptor is pushed
+   -- and three of the panes that read it are rebuilt at the tick rate.
+
+   So it is built once and hung off the document it came from, which is the same
+   structural guard `renderAutomaton`, `renderPhases` and `rxGuard` already use. The key
+   is the payload's **identity**: `refreshLatched` replaces `S.adapter` and `S.manifest`
+   wholesale on every latched read, so a new object *is* a new document, and comparing
+   identity is free where re-serialising a twenty-key schema every tick would not be.
+
+   Nothing here decides anything. Every string below is either the wire's own text or a
+   sentence naming a field the wire did not carry. */
+const STRUCT = { a: undefined, m: undefined,
+                 mark: {}, note: {}, src: {}, age: {}, mode: {}, keys: [] };
+
+function adapterStruct() {
+  if (S.adapter === STRUCT.a) return STRUCT;
+  STRUCT.a = S.adapter;
+  const schema = (S.adapter || {}).schema || {};
+  STRUCT.keys = Object.keys(schema);
+  STRUCT.mark = {};
+  STRUCT.note = {};
+  for (const k of STRUCT.keys) {
+    const entry = (schema[k] && typeof schema[k] === "object") ? schema[k] : {};
+    STRUCT.mark[k] = schemaMark(k, entry);
+    STRUCT.note[k] = schemaNote(k, entry);
+  }
+  STRUCT.src = {};
+  STRUCT.age = {};
+  for (const s of ((S.adapter || {}).sources || [])) {
+    if (!s || typeof s.id !== "string") continue;
+    STRUCT.src[s.id] = s;
+    // The declared bound pane 3 prints beside the measured age. Built here rather than
+    // per tick: it is the descriptor's number and it does not move.
+    STRUCT.age[s.id] = typeof s.max_age_s === "number"
+      ? `<span class="dim">/ ${num(s.max_age_s, 2)} s max_age_s</span>`
+      : absent("adapter.sources[].max_age_s",
+          "this source declares no age bound, so the age beside it is a number with " +
+          "nothing to be read against.");
+  }
+  return STRUCT;
+}
+
+/* What the descriptor says a key is, as the facts that fit on one line. Everything the
+   contract declares for a schema entry, and each absence said as its own thing: a key
+   with no `default` and a key with no `debounce_ticks` are different facts about the
+   descriptor, and neither is a zero. */
+function schemaFacts(entry) {
+  const facts = [];
+  facts.push(Object.prototype.hasOwnProperty.call(entry, "default")
+    ? `default ${fmt(entry.default)}`
+    : "no declared default");
+  facts.push(typeof entry.debounce_ticks === "number"
+    ? `debounced: ${entry.debounce_ticks} consecutive ticks before it counts`
+    : "no debounce_ticks — the descriptor resolved no duration for this key");
+  return facts;
+}
+
+/* The inline mark, for a value in a table. The glyph carries whether the key is
+   documented; the colour only agrees with it. */
+function schemaMark(k, entry) {
+  const doc = (typeof entry.doc === "string" && entry.doc) ? entry.doc : null;
+  const title = (doc || `no adapter.schema.${k}.doc — the descriptor documents this ` +
+    `key nowhere, so this console has no units for it and invents none.`) +
+    "\n\n" + schemaFacts(entry).join("\n");
+  return `<span class="doc${doc ? "" : " nodoc"}" title="${esc(title)}"
+    >${doc ? "ⓘ" : "?"}</span>`;
+}
+
+/* And the spelled-out form, for pane 3's key list. `yaw` says it WRAPS and
+   `dist_to_goal` says 0.0 is the odometry origin; both of those are sentences an
+   operator has to be able to read, not hover. */
+function schemaNote(k, entry) {
+  const doc = (typeof entry.doc === "string" && entry.doc) ? entry.doc : null;
+  return `<div class="skey"><span class="key">${esc(k)}</span>
+    <span class="dim">${esc(schemaFacts(entry).join(" · "))}</span>` +
+    (doc ? `<div class="dim wrap">${esc(doc)}</div>`
+         : missing(`adapter.schema.${k}.doc`, "P3",
+             "the descriptor documents this key nowhere, so this console cannot say " +
+             "what its units are or what a value of it means.")) + `</div>`;
+}
+
+/* A source as the adapter declared it, or null. Pane 3 renders `age_s` against
+   `max_age_s` and a threshold with no bound beside it is unreadable. */
+function sourceSpec(id) {
+  return adapterStruct().src[id] || null;
+}
+
+function manifestStruct() {
+  if (S.manifest === STRUCT.m) return STRUCT;
+  STRUCT.m = S.manifest;
+  STRUCT.mode = {};
+  for (const mode of ((S.manifest || {}).named_failure_modes || [])) {
+    if (mode && typeof mode.name === "string") STRUCT.mode[mode.name] = mode;
+  }
+  return STRUCT;
+}
+
+/* What the spec said a named failure mode is, or null for a row that is not one -- a
+   formula row, or a `phase:<phase>:<kind>` fault the phase machine raised, which has no
+   entry under `named_failure_modes` at all. */
+function declaredMode(name) {
+  return manifestStruct().mode[name] || null;
+}
+
 /* == bootstrap ============================================================== */
 
 async function boot() {
   renderMonitor();                 // disabled, and saying why, before anything is known
   renderEcho();                    // and the same for the echo picker
+  renderWarnings();                // and the warnings pane, before an adapter is latched
   renderWall(); renderAutomaton(); // and the band, saying it has no verdict yet
   const health = await api("/api/health");
   const monitors = await api("/api/monitors");
@@ -608,7 +773,61 @@ async function refreshLatched() {
     S[slot] = r.status === 200 ? r.body : null;
   }
   renderSpec(); renderConfig(); renderStatus(); renderAutomaton(); renderPhases();
-  renderEcho(); renderWall();
+  renderEcho(); renderSchema(); renderWarnings(); renderWall();
+}
+
+/* == 10 · adapter warnings ==================================================
+
+   `adapter.warnings` is what the descriptor's own load-time checks found, and
+   `_build_warnings` says why it is on the wire at all: "so they are visible on the wire
+   rather than only in a log nobody reads". This console read the topic every one of
+   them travels on and dropped the field, which put them back in a log nobody reads.
+
+   For `real_g1` today the list is not empty. It includes the one that says a key folded
+   `last` from a 10 Hz source against a 1 Hz tick discards nine samples in ten, so a
+   transient value can be missed entirely — which is the same fact pane 2 now shows as a
+   fold policy, said here as the consequence.
+
+   Absent, empty and non-empty are three different things and get three different
+   answers. Empty means the checks ran and found nothing; absent means this build does
+   not report them, which is not a clean bill of health. */
+function renderWarnings() {
+  const a = S.adapter;
+  const box = $("warnings"), note = $("warn-note");
+  if (!a) {
+    note.innerHTML = `<span class="dim">no adapter</span>`;
+    box.innerHTML = missing("/monitor/adapter", "P3",
+      "the evaluator has not latched what this robot can observe, so it has not " +
+      "latched what its descriptor's checks found either.");
+    return;
+  }
+  const w = a.warnings;
+  if (!Array.isArray(w)) {
+    note.innerHTML = `<span class="warn">unreported</span>`;
+    box.innerHTML = missing("adapter.warnings", "P3",
+      "this adapter document carries no warnings array at all. That is not the same " +
+      "as an empty one: nothing here says the descriptor's checks ran, so nothing " +
+      "here is evidence that they found nothing.");
+    return;
+  }
+  if (!w.length) {
+    note.innerHTML = `<span class="ok">none</span>`;
+    box.innerHTML = `<p class="ok" style="margin:0">✔ <b>none.</b> <span class="dim">The
+      descriptor's checks ran and had nothing to say about
+      <span class="key">${esc(raw(a.adapter))}</span>. Checked, and clean — which is a
+      different answer from a build that does not report them at all.</span></p>`;
+    return;
+  }
+  note.innerHTML = `<span class="warn">${w.length}</span>`;
+  box.innerHTML =
+    `<p class="warn" style="margin:0 0 6px">⚠ <b>${w.length}
+       warning${w.length === 1 ? "" : "s"}</b> <span class="dim">from
+       <span class="key">${esc(raw(a.adapter))}</span>'s own load-time checks. Each one
+       is about what this robot's numbers <em>are</em>, not about whether the monitor is
+       working — a fold that discards samples produces a perfectly healthy console
+       showing a value the robot never held.</span></p>` +
+    w.map(line => `<div class="missing" style="margin-bottom:5px">${txt(line)}</div>`)
+      .join("");
 }
 
 function connect() {
@@ -664,6 +883,7 @@ function connect() {
 function onObservation(o) {
   S.hist.push(o);
   if (S.hist.length > PLOT_N) S.hist.shift();
+  pushPlotSample(o);
   renderInputs(); renderPlots(); renderAps(); renderClock(); renderEchoAge();
 }
 
@@ -842,8 +1062,46 @@ function renderWallVerdict(v) {
   }
   box.innerHTML = `<span class="lead">verdict</span>
     <span class="big ${verdictClass(v.verdict)}">${VERDICT_MARK[v.verdict] || "•"}
-      ${txt(v.verdict)}</span>`;
+      ${txt(v.verdict)}</span>` + wallStale(v);
   why.innerHTML = `<span class="lead">why</span>` + wallCause(v);
+}
+
+/* `risk.stale_sources` — which of this robot's sources went quiet, and it belongs beside
+   the verdict because it is *why* a fault was de-escalated. A named failure mode is
+   graded on the freshness of the sources feeding its own propositions
+   (`manifest.failure_mode_entries`), so a stale source drags that mode's `confidence`
+   down and the ladder answers WARN where it would otherwise have answered HALT. The
+   band showed the de-escalated rung with no cause beside it.
+
+   Empty is not absent. Empty means the monitor checked and every source was fresh;
+   absent means this verdict carries no `risk` block to check, and the two get different
+   sentences. Nothing here is counted against the adapter -- the list is the monitor's,
+   printed as it arrived. */
+function wallStale(v) {
+  const risk = (v || {}).risk;
+  if (!risk || typeof risk !== "object" || Array.isArray(risk)) {
+    return `<div class="small">` + absent("verdict.risk.stale_sources",
+      "P4 publishes it on the risk block; without it this band cannot say whether a " +
+      "quiet source is what de-escalated this verdict.") + `</div>`;
+  }
+  const stale = risk.stale_sources;
+  if (!Array.isArray(stale)) {
+    return `<div class="small">` + absent("verdict.risk.stale_sources",
+      "this verdict's risk block carries no stale_sources array, so nothing here " +
+      "says whether a source went quiet.") + `</div>`;
+  }
+  if (!stale.length) {
+    return `<div class="dim small" title="Every source feeding this verdict reported
+      fresh, so no failure mode's confidence was lowered for staleness.">no stale
+      source — nothing was de-escalated for staleness.</div>`;
+  }
+  return `<div class="warn small">⚠ ${stale.length} stale
+    source${stale.length === 1 ? "" : "s"}:
+    ${stale.map(s => `<b>${txt(s)}</b>`).join(", ")}
+    <div class="dim">a failure mode is graded on the freshness of the sources feeding
+      its own propositions, so a quiet source lowers that mode's confidence and the
+      ladder answers a lower rung than it otherwise would. This is the monitor's own
+      list, not a judgement made here.</div></div>`;
 }
 
 /* The row the verdict rests on, or null when no row on it is VIOLATED.
@@ -895,8 +1153,37 @@ function wallCause(v) {
   return `<div class="name bad">✖ ${txt(r.name)}</div>
     <div><span class="dim">${esc(d.kind)}</span> · ${cat}
       <span class="dim">· its own confidence</span> ${conf}</div>
+    ${declaredAs(r.name)}
     <div class="dim small">${esc(d.rule)}. Chosen from the rows this verdict carries,
       and not graded here.</div>${also}`;
+}
+
+/* What the spec says this row *is*: `named_failure_modes[].description` in the author's
+   own prose and `.formula` in LTL. Both are on the latched manifest and neither reached
+   this page, so the band named `collision_imminent` and nothing on screen said what
+   `collision_imminent` means.
+
+   A row with no entry under that name is not a fault: a formula row is declared in
+   `ltl_formulas` and a `phase:<phase>:<kind>` fault is raised by the phase machine and
+   is declared nowhere. It says which, and does not go looking for something to show. */
+function declaredAs(name) {
+  const mode = declaredMode(name);
+  if (mode === null) {
+    return `<div class="dim small">the manifest declares no
+      <code>named_failure_modes</code> entry under this name — it is an LTL formula or a
+      fault the phase machine raised, and neither carries a description here.</div>`;
+  }
+  const says = typeof mode.description === "string" && mode.description
+    ? `<div class="wrap">${esc(mode.description)}</div>`
+    : `<div class="small">` + absent(`named_failure_modes['${name}'].description`,
+        "the spec declares this mode and gives it no prose, so there is nothing here " +
+        "to say what it means.") + `</div>`;
+  const formula = typeof mode.formula === "string" && mode.formula
+    ? `<div class="rule small">${esc(mode.formula)}</div>`
+    : `<div class="small">` + absent(`named_failure_modes['${name}'].formula`,
+        "the spec declares this mode and gives it no LTL, so what the monitor was " +
+        "built from is not on the wire.") + `</div>`;
+  return says + formula;
 }
 
 /* No row is VIOLATED, so there is no cause to name and the band does not invent one.
@@ -1291,7 +1578,7 @@ async function command(cmd) {
       // The episode this page was watching is over, and its history was witnessed
       // rather than fetched: there is nowhere to get it back from and nothing it now
       // describes. Discarded only on a command that actually went out.
-      S.hist = []; S.arrivals = []; S.aut.key = null;
+      S.hist = []; S.arrivals = []; S.aut.key = null; clearPlots();
       // The echoed frame belonged to the episode that was just thrown away. What is
       // *echoing* does not change -- that is a standing request to the evaluator and
       // not a piece of this episode's history -- so the request is left alone and only
@@ -1314,8 +1601,59 @@ for (const c of COMMANDS) $("cmd-" + c).onclick = () => command(c);
 
 /* == 1 · description and spec =============================================== */
 
+/* What the spec says the two ends of a run are. `verdict.terminal` says an episode
+   ended and which end it reached -- pass 1 put that in the band -- and until now nothing
+   on this page said what either end *is*. Both are on the latched manifest as
+   `{condition, description}`: the executable half in the spec's own expression language
+   and the prose half beside it.
+
+   These are the **criteria**, not a live truth. Whether either holds this tick is the
+   monitor's answer and arrives as `verdict.terminal`; nothing here evaluates a
+   condition, for the same reason pane 7 does not evaluate a guard. */
+const TERMINAL_SPEC = [
+  ["terminal_success", "success", "ok", "■", "the run reached the end the spec calls " +
+   "success"],
+  ["terminal_failure", "failure", "bad", "■", "the run reached the end the spec calls " +
+   "failure"],
+];
+
+function renderSpecTerminal(m) {
+  if (!m) {
+    $("spec-terminal").innerHTML = missing("/monitor/manifest", "P4",
+      "no manifest is latched, so this console does not have the spec and cannot say " +
+      "what it calls success or failure.");
+    return;
+  }
+  const blocks = TERMINAL_SPEC.map(([field, word, cls, glyph, says]) => {
+    const block = (m || {})[field];
+    if (!block || typeof block !== "object" || Array.isArray(block)) {
+      return missing(`manifest.${field}`, "P4, from the spec",
+        `this spec declares no ${word} criterion at all, so nothing here says what ` +
+        `would end the run that way. Whether a run ended is verdict.terminal, in the ` +
+        `band above; what ${word} means is this field, and it is not on the wire.`);
+    }
+    const cond = typeof block.condition === "string" && block.condition
+      ? `<div class="rule">${esc(block.condition)}</div>`
+      : absent(`manifest.${field}.condition`,
+          "the spec declares this outcome and gives it no condition, so there is no " +
+          "expression here to show.");
+    const says2 = typeof block.description === "string" && block.description
+      ? `<div class="dim wrap">${esc(block.description)}</div>`
+      : absent(`manifest.${field}.description`,
+          "the spec declares this outcome and gives it no prose.");
+    return `<div class="skey"><span class="${cls}">${glyph} ${esc(word.toUpperCase())}
+      </span> <span class="dim">${esc(says)}</span>${cond}${says2}</div>`;
+  });
+  $("spec-terminal").innerHTML =
+    `<p class="dim" style="margin:0 0 2px">what this spec calls the end of a run — the
+      criteria, in the spec's own words. Whether a run has reached one is
+      <code>verdict.terminal</code>, in the band at the top; nothing here is evaluated on
+      this page.</p>${blocks.join("")}`;
+}
+
 function renderSpec() {
   const m = S.manifest;
+  renderSpecTerminal(m);
   if (!m) { $("spec-text").value = ""; return; }
   $("spec-desc").textContent = m.description || "(the spec declares no description)";
   const spec = Object.assign({}, m);
@@ -1362,7 +1700,10 @@ $("reload").onclick = async (ev) => {
   S.status = r.body && r.body.problems !== undefined ? r.body : (r.body || null);
   renderStatus();
   await refreshLatched();
-  S.hist = []; S.arrivals = [];
+  // A pushed spec is a new schema. The canvases the old one built are thrown away with
+  // the history behind them -- a key the new spec does not declare must not go on
+  // showing the last value the old one ever had.
+  S.hist = []; S.arrivals = []; clearPlots();
   btn.disabled = false;
 };
 
@@ -1385,7 +1726,8 @@ function renderConfig() {
   const ins = (a.sources || []).map(s =>
     `<tr><td class="key wrap">${esc(s.topic)}</td><td class="dim wrap">${esc(s.type)}</td>
      <td>${num(s.expected_hz, 1)} Hz</td>
-     <td class="${s.required ? "warn" : "dim"}">${s.required ? "required" : "optional"}</td></tr>`).join("");
+     <td class="wrap">${sourceFlags(s)}</td></tr>
+     <tr><td colspan="4" class="wrap">${sourceSteps(s)}</td></tr>`).join("");
   const outs = ["/monitor/tick", "/monitor/observation", "/monitor/verdict",
                 "/monitor/manifest", "/monitor/adapter", "/monitor/spec_status"];
   $("config").innerHTML =
@@ -1402,35 +1744,164 @@ function renderConfig() {
      </div>`;
 }
 
+/* `required` and `tracked` are different claims and only one of them was on the page.
+   `required` is whether a spec may be refused for want of this source; `tracked` is
+   whether the monitor watches its freshness at all, and an untracked source can go
+   silent without its staleness ever reaching `risk.stale_sources`. Rendered as two
+   lines, each with its own word — an operator reading "required" alone learns nothing
+   about whether anybody is watching it. */
+function sourceFlags(s) {
+  const req = typeof s.required === "boolean"
+    ? `<span class="${s.required ? "warn" : "dim"}">${
+        s.required ? "required" : "optional"}</span>`
+    : absent("adapter.sources[].required", "this source declares no required flag.");
+  const tracked = typeof s.tracked === "boolean"
+    ? `<span class="${s.tracked ? "acc" : "dim"}">${s.tracked
+        ? "◉ tracked — its freshness is watched"
+        : "○ not tracked — it can go quiet without becoming a stale source"}</span>`
+    : absent("adapter.sources[].tracked",
+        "this source declares no tracked flag, so nothing here says whether its " +
+        "freshness is watched at all.");
+  return req + `<br>` + tracked;
+}
+
+/* The fold policy, which decides what a number on this page *is*.
+
+   `min_range` is folded `last` and not `min`: at 10 Hz against a 1 Hz tick that is the
+   newest of ten samples and not the nearest obstacle any of them saw, so a transient
+   obstacle can be missed entirely. And a `threshold` counts in the units of `on`:
+   `nav_stuck`'s 10 is ten consecutive *messages* on a 5 Hz topic — two seconds — and
+   not ten ticks. Both were on the wire and neither was anywhere on this page. */
+function sourceSteps(s) {
+  const steps = s.steps;
+  if (!Array.isArray(steps)) {
+    return absent(`adapter.sources['${raw(s.id)}'].steps`,
+      "this source declares no steps array, so how its samples are folded into one " +
+      "value a tick is not on the wire.");
+  }
+  if (!steps.length) {
+    return `<span class="dim">this source declares no steps — nothing it publishes is
+      folded into a schema key.</span>`;
+  }
+  return `<span class="dim">folds</span> ` + steps.map(st => {
+    const keys = Array.isArray((st || {}).keys)
+      ? (st.keys.map(k => `<span class="key">${esc(k)}</span>`).join(" ") ||
+         `<span class="dim">no key</span>`)
+      : absent("steps[].keys", "this step names no keys.");
+    const on = typeof (st || {}).on === "string" ? st.on : null;
+    const unit = on === "message" ? "messages" : on === "tick" ? "ticks" : `${raw(on)}s`;
+    const agg = typeof (st || {}).aggregate === "string"
+      ? `<b>${esc(st.aggregate)}</b>`
+      : absent("steps[].aggregate", "this step declares no aggregate.");
+    const per = on === null
+      ? absent("steps[].on", "this step does not say what it folds over.")
+      : `<span class="dim">per ${esc(on)}</span>`;
+    // Absent and null are the same fact here and are said as one: the contract makes
+    // `threshold` optional, and null is how a step that does not debounce spells it.
+    const thr = typeof (st || {}).threshold === "number"
+      ? `<span class="warn">after ${num(st.threshold, 0)} consecutive
+         ${esc(unit)}</span>`
+      : `<span class="dim">no threshold</span>`;
+    return `${keys} → ${agg} ${per} · ${thr}`;
+  }).join("<br>");
+}
+
 /* == 3 · input data ========================================================= */
 
+/* Off the structural index rather than a `find` over the source list: this is called
+   once per source per observation, and the answer changes only when the adapter does. */
 function keysOfSource(id) {
-  const s = ((S.adapter || {}).sources || []).find(x => x.id === id);
+  const s = sourceSpec(id);
   return (s && s.keys) || [];
+}
+
+/* The amber line, spelled once and printed on screen beside the number it grades. It
+   was a literal in the expression below and nowhere in the output, so a source turning
+   amber was a rule an operator could not read anywhere on the page. */
+const SLOW_FRACTION = 0.6;
+
+/* A source's health, as a glyph AND a word AND a colour — never colour alone, which
+   this dot was the page's only remaining violation of. Three states, all of them off
+   `observation.data_health` and none of them inferred: `refreshed: false` is nothing
+   arriving this tick, and the amber is the declared rate against the measured one. */
+const HEALTH = {
+  fresh: { cls: "ok", glyph: "●", word: "fresh" },
+  slow: { cls: "warn", glyph: "◐", word: "slow" },
+  stale: { cls: "bad", glyph: "○", word: "no data" },
+  unrated: { cls: "dim", glyph: "◌", word: "unrated" },
+};
+
+function sourceHealth(h) {
+  if (h.refreshed === false) return HEALTH.stale;
+  if (typeof h.rate_hz !== "number" || typeof h.expected_hz !== "number") {
+    return HEALTH.unrated;
+  }
+  return h.rate_hz < SLOW_FRACTION * h.expected_hz ? HEALTH.slow : HEALTH.fresh;
 }
 
 function renderInputs() {
   const o = S.obs, a = S.adapter;
   if (!o || !a) return;
   const health = o.data_health || {};
+  const st = adapterStruct();
+  const marks = st.mark;
   const rows = (a.sources || []).map(src => {
     const h = health[src.id] || {};
-    const slow = h.expected_hz && h.rate_hz < 0.6 * h.expected_hz;
-    const cls = h.refreshed === false ? "bad" : (slow ? "warn" : "ok");
+    const state = sourceHealth(h);
+    // The declared bound beside the measured number, in both rows. A threshold with no
+    // bound next to it is unreadable: "age 0.42 s" says nothing until the reader knows
+    // this source declared `max_age_s: 1.0`.
+    const floor = typeof h.expected_hz === "number"
+      ? `<span class="dim" title="This source is graded amber when its measured rate
+           falls below ${SLOW_FRACTION} × its declared expected_hz.">· amber below
+         ${num(SLOW_FRACTION * h.expected_hz, 2)} Hz</span>`
+      : `<span class="dim">· no expected_hz, so the rate is not graded</span>`;
+    const maxAge = st.age[src.id] || absent("adapter.sources[].max_age_s",
+      "this source declares no age bound, so the age beside it is a number with " +
+      "nothing to be read against.");
     const vals = keysOfSource(src.id)
-      .map(k => `<span class="key">${esc(k)}</span> ${esc(fmt(o.sensors[k]))}`)
+      .map(k => `<span class="key">${esc(k)}</span>${marks[k] ||
+        `<span class="doc nodoc" title="this key is not declared in adapter.schema"
+          >?</span>`} ${esc(fmt(o.sensors[k]))}`)
       .join("<br>");
     return `<tr>
-      <td class="wrap"><span class="${cls}">●</span> ${esc(src.id)}<br>
+      <td class="wrap"><span class="${state.cls}" title="${esc(state.word)}"
+            >${state.glyph} ${esc(state.word)}</span> ${esc(src.id)}<br>
           <span class="dim">${esc(src.topic)}</span></td>
-      <td>${num(h.rate_hz, 2)}<span class="dim">/${num(h.expected_hz, 1)} Hz</span><br>
-          <span class="dim">age ${num(h.age_s, 2)} s</span></td>
+      <td class="wrap">${num(h.rate_hz, 2)}<span class="dim">/${num(h.expected_hz, 1)}
+            Hz</span> ${floor}<br>
+          <span class="dim">age ${num(h.age_s, 2)} s</span> ${maxAge}</td>
       <td>${txt(h.samples_this_tick)}<br><span class="dim">drop ${txt(h.dropped)}</span></td>
       <td class="wrap">${vals || '<span class="dim">—</span>'}</td></tr>`;
   }).join("");
   $("inputs").innerHTML =
-    `<table class="fixed"><colgroup><col style="width:30%"><col style="width:19%"><col style="width:13%"><col></colgroup><tr><th>source</th><th>rate</th><th>tick</th><th>values this tick</th></tr>${rows}</table>`;
+    `<table class="fixed"><colgroup><col style="width:30%"><col style="width:23%"><col style="width:11%"><col></colgroup><tr><th>source</th><th class="wrap">rate · age, and the bounds they are graded on</th><th>tick</th><th>values this tick</th></tr>${rows}</table>`;
   $("in-note").innerHTML = "raw payloads: " + echoNote();
+}
+
+/* Every declared key, with what the descriptor says it is. Built once per adapter --
+   this is structure, and rebuilding twenty documentation blocks at the tick rate would
+   be paying for a paragraph that has not moved since the spec was pushed. */
+function renderSchema() {
+  const a = S.adapter;
+  if (!a) {
+    $("schema").innerHTML = "";
+    return;
+  }
+  const st = adapterStruct();
+  if (!st.keys.length) {
+    $("schema").innerHTML = `<p class="dim" style="margin:0">the adapter declares an
+      empty <code>schema</code>: this robot exposes no keys, so there is nothing to
+      document.</p>`;
+    return;
+  }
+  $("schema").innerHTML =
+    `<p class="dim" style="margin:0 0 2px">what each key means, from
+      <code>adapter.schema</code> — the descriptor's own words, for whatever robot this
+      is. This is where the units live, and where a key says what a value of it does
+      <em>not</em> mean; a rule written against a number whose doc was never read is the
+      fault this block exists to prevent.</p>` +
+    st.keys.slice().sort().map(k => st.note[k]).join("");
 }
 
 function fmt(v) {
@@ -1930,44 +2401,182 @@ function echoValue(v) {
   return fmt(v);
 }
 
-/* == 4 · plots ============================================================== */
+/* == 4 · plots ==============================================================
 
-function renderPlots() {
-  const a = S.adapter; if (!a) return;
-  const numeric = Object.keys(a.schema || {}).filter(k =>
-    S.hist.some(o => typeof o.sensors[k] === "number"));
-  if (!$("plots").childElementCount) {
-    $("plots").innerHTML = numeric.map(k =>
-      `<div class="plot"><div class="lbl"><span class="key">${esc(k)}</span>
-        <span id="pv-${esc(k)}"></span></div><canvas id="pc-${esc(k)}"></canvas></div>`).join("");
+   Three things were wrong with this pane and all three were quiet.
+
+   The series was `S.hist.map(…).filter(v => typeof v === "number")`, so a tick where a
+   key was absent did not leave a gap: it was **deleted**, and every earlier sample slid
+   one place to the right. A source that dropped ten frames drew a history ten ticks
+   shorter than it was, with no mark anywhere saying so. The samples are kept in place
+   now and a null is a gap the line breaks over.
+
+   `#plots` was built once, behind `if (!$("plots").childElementCount)`, and never
+   rebuilt. A pushed spec that renamed a key left the old canvas on screen for ever,
+   still showing the last value the old key ever had. The list is keyed on the plotted
+   keys and rebuilt when they change.
+
+   And there is no y-axis on a 34px sparkline, so a 0.001 wobble and a forty-metre swing
+   drew the same line. Every plot carries its own floor and ceiling.
+
+   The series is also kept **incrementally** rather than re-derived from the whole of
+   `S.hist` per key per tick, which is what made this the most expensive thing on the
+   pulse: one pass over twenty keys a tick instead of twenty passes over 180 samples. */
+
+const PLOTS = { key: null, keys: [], series: {}, counts: {} };
+
+/* The pane the canvases live in, held once. Whether it is folded decides whether there
+   is anything to draw into, and asking the document for it every tick is a query for an
+   element that has been in the page since it loaded. Null on a build where the pane is
+   not in the markup at all, which is read as "draw" rather than as "do not". */
+const PLOT_PANE = document.querySelector('details[data-pane="plots"]');
+
+/* One observation into the per-key series, in place. A key the observation does not
+   carry pushes null -- the gap -- and never nothing. `counts` is how many real numbers
+   each series holds, kept as a running total so "is this key plottable" is a lookup
+   rather than a scan. */
+function pushPlotSample(o) {
+  const keys = adapterStruct().keys;
+  const sensors = (o && o.sensors) || {};
+  for (const k of keys) {
+    let series = PLOTS.series[k];
+    if (series === undefined) { series = PLOTS.series[k] = []; PLOTS.counts[k] = 0; }
+    const v = sensors[k];
+    const numeric = typeof v === "number" && isFinite(v);
+    series.push(numeric ? v : null);
+    if (numeric) PLOTS.counts[k]++;
+    while (series.length > PLOT_N) {
+      if (typeof series.shift() === "number") PLOTS.counts[k]--;
+    }
   }
-  for (const k of numeric) {
-    const series = S.hist.map(o => o.sensors[k]).filter(v => typeof v === "number");
-    const el = $("pv-" + k); if (el) el.textContent = num(series[series.length - 1]);
-    drawSpark($("pc-" + k), series);
+  // A key the adapter no longer declares keeps no history: its canvas is about to go.
+  for (const k of Object.keys(PLOTS.series)) {
+    if (keys.indexOf(k) < 0) { delete PLOTS.series[k]; delete PLOTS.counts[k]; }
   }
 }
 
+function clearPlots() {
+  PLOTS.key = null; PLOTS.keys = []; PLOTS.series = {}; PLOTS.counts = {};
+  $("plots").innerHTML = "";
+}
+
+function renderPlots() {
+  const a = S.adapter; if (!a) return;
+  const plotted = adapterStruct().keys.filter(k => PLOTS.counts[k] > 0).sort();
+  const key = plotted.join(" ");
+  if (key !== PLOTS.key) {
+    PLOTS.key = key;
+    PLOTS.keys = plotted;
+    const marks = adapterStruct().mark;
+    $("plots").innerHTML = plotted.map(k =>
+      `<div class="plot"><div class="lbl">
+         <span class="key">${esc(k)}</span>${marks[k] || ""}
+         <span class="span" id="ps-${esc(k)}"></span>
+         <span><span id="pv-${esc(k)}"></span
+           ><span class="warn" id="pa-${esc(k)}"></span></span></div>
+       <canvas id="pc-${esc(k)}"></canvas>
+       <div class="dim wrap" id="pd-${esc(k)}"></div></div>`).join("") ||
+      `<p class="dim" style="margin:0">no declared key has carried a number yet, so
+         there is nothing to plot. This is not an empty pane: it is a pane whose
+         history is empty.</p>`;
+    // The key's own documentation under its shape over time -- the same block pane 3
+    // spells out, read from the cache rather than built a second time. This is the
+    // only place on the page where what a number means sits beside how it has moved.
+    const notes = adapterStruct().note;
+    for (const k of plotted) {
+      const d = $("pd-" + k);
+      if (d) d.innerHTML = notes[k] || "";
+    }
+  }
+  // A closed pane has no width to draw into, and a `<details>` that is shut is the
+  // default for this one. The samples are still kept -- history must not depend on
+  // whether anybody was looking -- and the drawing is skipped until there is a box.
+  //
+  // Read off the `<details>`' own `open`, and deliberately not off a `clientWidth` or
+  // an `offsetParent`: either of those is a layout read, and a layout read on the tick,
+  // straight after the innerHTML this function and the two before it just wrote, forces
+  // a synchronous reflow of the whole page. Measured: it cost more than everything the
+  // pane draws when it is open.
+  const visible = PLOT_PANE === null || PLOT_PANE.open;
+  // **Every drawing first, then every label.** `drawSpark` reads `canvas.clientWidth`,
+  // and a layout read after a DOM write forces a synchronous reflow: interleaved, ten
+  // plots cost ten of them a tick. Batched, the ten reads happen with nothing written
+  // between them and the browser reflows once. Measured, plots unfolded: 3.04 ms an
+  // observation interleaved, 1.14 ms batched.
+  const bounds = [];
+  for (const k of PLOTS.keys) {
+    bounds.push(visible ? drawSpark($("pc-" + k), PLOTS.series[k] || []) : null);
+  }
+  // Text writes and not innerHTML, on all three labels. Nine plots rebuilt as parsed
+  // markup at the tick rate cost more than everything else on the observation put
+  // together; the markup is in the document from the rebuild above and only the words
+  // inside it move. `textContent` is also why nothing here needs `esc`: a text sink is
+  // not a markup sink, and a number is not markup either way.
+  PLOTS.keys.forEach((k, i) => {
+    const last = lastNumber(PLOTS.series[k] || []);
+    const el = $("pv-" + k), aged = $("pa-" + k), sp = $("ps-" + k);
+    if (el) el.textContent = last === null ? "no value" : String(num(last.v));
+    // A series ending in nulls is a key that has stopped arriving, and printing its
+    // last value as this tick's is the same lie the echo's stale mark exists to stop.
+    if (aged) {
+      aged.textContent = (last === null || last.age === 0) ? ""
+        : ` · ${last.age} tick${last.age === 1 ? "" : "s"} ago`;
+    }
+    if (sp && bounds[i]) {
+      sp.textContent = bounds[i].flat
+        ? `flat at ${num(bounds[i].lo)}`
+        : `${num(bounds[i].lo)} … ${num(bounds[i].hi)}`;
+    }
+  });
+}
+
+/* The newest real number in a series and how many ticks back it is. A series ending in
+   nulls is a key that has stopped arriving, and printing its last value as if it were
+   this tick's is the same lie the echo's stale mark exists to prevent. */
+function lastNumber(series) {
+  for (let i = series.length - 1; i >= 0; i--) {
+    if (typeof series[i] === "number") return { v: series[i], age: series.length - 1 - i };
+  }
+  return null;
+}
+
+/* Returns the floor and ceiling it drew against, so the label can print them. A null is
+   a gap: the path is broken over it rather than joined across it, because a straight
+   line through a hole is a picture of data that never arrived. */
 function drawSpark(canvas, series) {
-  if (!canvas || series.length < 2) return;
+  if (!canvas) return null;
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return null;
   if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
   const g = canvas.getContext("2d");
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, w, h);
-  let lo = Math.min(...series), hi = Math.max(...series);
-  if (hi - lo < 1e-9) { hi = lo + 1; lo -= 1; }   // a flat line belongs in the middle
+  let lo = Infinity, hi = -Infinity, n = 0;
+  for (const v of series) {
+    if (typeof v !== "number") continue;
+    n++;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  if (!n) return null;
+  const flat = hi - lo < 1e-9;
+  const drawLo = flat ? lo - 1 : lo;         // a flat line belongs in the middle
+  const drawHi = flat ? lo + 1 : hi;
   g.beginPath();
+  let open = false;
   series.forEach((v, i) => {
+    if (typeof v !== "number") { open = false; return; }
     const x = (i / (PLOT_N - 1)) * w;
-    const y = h - 2 - ((v - lo) / (hi - lo)) * (h - 4);
-    i ? g.lineTo(x, y) : g.moveTo(x, y);
+    const y = h - 2 - ((v - drawLo) / (drawHi - drawLo)) * (h - 4);
+    open ? g.lineTo(x, y) : g.moveTo(x, y);
+    open = true;
   });
   // The stylesheet's own accent and not a second copy of it: a canvas cannot take a
   // `var()`, and a hex spelled in here is the one that survives a theme change and
   // reads wrong.
   g.strokeStyle = token("--acc"); g.lineWidth = 1; g.stroke();
+  return { lo: lo, hi: hi, flat: flat };
 }
 
 /* == 5 · atomic propositions ================================================ */
@@ -2035,23 +2644,36 @@ function renderAps() {
   if (!m || !o) return;
   const aps = m.atomic_propositions || {};
   const unknown = new Set(o.unknown_aps || []);
+  const marks = adapterStruct().mark;
   const rows = Object.keys(aps).sort().map(name => {
     const rule = aps[name];
     const keys = keysInRule(rule);
     const value = unknown.has(name)
       ? `<span class="unk">UNKNOWN</span>`
       : (o.ap_values[name] ? `<span class="ok">true</span>` : `<span class="dim">false</span>`);
+    // The key's own documentation beside the value the rule is reading. This is the
+    // pane where a rule is compared with the numbers under it, and it is where reading
+    // `dist_to_goal`'s doc changes what the comparison means.
     const live = keys.map(k =>
-      `<span class="key">${esc(k)}</span>=${esc(fmt(o.sensors[k]))}`).join(" ");
+      `<span class="key">${esc(k)}</span>${marks[k] || ""}=${esc(fmt(o.sensors[k]))}`)
+      .join(" ");
     return `<tr><td class="wrap">${esc(name)}</td><td>${value}</td>
       <td class="wrap"><span class="rule">${esc(rule)}</span><br>${live ||
         '<span class="dim">reads no declared key</span>'}</td></tr>`;
   }).join("");
   $("aps").innerHTML =
     `<table class="fixed"><colgroup><col style="width:26%"><col style="width:16%"><col></colgroup><tr><th>ap</th><th>this tick</th><th class="wrap">rule → keys it reads → live values</th></tr>${rows}</table>
-     <p class="dim" style="margin:8px 0 0">confidence ${num(o.confidence, 2)} ·
-       ${unknown.size} unknown · clock <span class="key">${esc(o.clock)}</span> ·
-       membership by ${esc(o.tick_membership)}</p>`;
+     <p class="dim" style="margin:8px 0 0"><b>observation</b> confidence
+       ${num(o.confidence, 2)} · ${unknown.size} unknown · clock
+       <span class="key">${esc(o.clock)}</span> · membership by
+       ${esc(o.tick_membership)}</p>
+     <p class="dim" style="margin:2px 0 0">Three different numbers on this page are
+       called confidence and they are not the same number. <b>This one</b> is the
+       observation's: how much of this tick's data arrived. The one in the band is the
+       <b>intervention's</b>, which is what the ladder graded the rung on. The
+       <code>mode conf</code> column beside the automata is <b>per row</b> — a named
+       failure mode's own, from the freshness of the sources feeding its propositions.
+       </p>`;
 }
 
 /* == 6 · automaton ==========================================================
@@ -2301,16 +2923,64 @@ function link(x1, y1, x2, y2, back, label, w) {
 function formulaTable(v) {
   const cls = { ACCEPTED: "ok", VIOLATED: "bad", INCONCLUSIVE: "dim" };
   const drawn = new Set(((S.manifest || {}).automata || []).map(a => (a || {}).name));
-  const rows = ((v || {}).formulas || []).concat((v || {}).failure_modes || []).map(f =>
-    `<tr><td>${esc(f.name)}</td>
+  // What the spec declared the row as goes on a row of its own, spanning the table,
+  // rather than under the name. This table is at the band's type size beside the
+  // drawings: prose inside the first column would take most of the width off the four
+  // columns that carry the tick, and break `collision_imminent` across two lines to
+  // do it.
+  const rows = ((v || {}).formulas || []).concat((v || {}).failure_modes || []).map(f => {
+    const says = rowDeclared(f.name);
+    return `<tr><td>${esc(f.name)}</td>
      <td><span class="${cls[f.status] || "dim"}">${esc(f.status)}</span></td>
      <td class="dim">${txt(f.fault_category)}</td>
      <td class="dim">${f.confidence === undefined ? "" : num(f.confidence, 2)}</td>
      <td class="${drawn.has(f.name) ? "acc" : "dim"}">${drawn.has(f.name)
-        ? txt(f.state) : "no graph"}</td></tr>`).join("");
+        ? txt(f.state) : "no graph"}</td></tr>` +
+     (says ? `<tr><td colspan="5" class="wrap">${says}</td></tr>` : "");
+  }).join("");
+  // `mode conf` and not `conf`. Three numbers on this page are called confidence: the
+  // intervention's, in the band; the observation's, in pane 5; and this one, which is
+  // this row's own and is on a failure-mode row only. A formula row has no such field
+  // and its cell is empty rather than zero. The long form of the distinction is in
+  // pane 5, where all three are named together; here it is one line, for the same
+  // reason the prose is on its own row.
   return `<table style="margin-top:8px">
-    <tr><th>formula</th><th>status</th><th>category</th><th>conf</th><th>state</th></tr>
-    ${rows}</table>`;
+    <tr><th class="wrap">formula</th><th>status</th>
+      <th>category</th><th title="This row's own confidence: a named
+        failure mode graded on the freshness of the sources feeding its own
+        propositions. It is neither the intervention's confidence above nor the
+        observation's in pane 5.">mode conf</th><th>state</th></tr>
+    ${rows}</table>
+    <p class="dim small" style="margin:3px 0 0"><code>mode conf</code> is this row's own —
+      not the intervention's above, and not the observation's in pane 5.</p>`;
+}
+
+/* What the spec declared a row as, on a row of its own under it. One line, clipped, with
+   the whole of it in the title -- the same treatment an edge label and a phase label
+   get, and for the same reason: this table sits beside the automata at wall type size
+   and a four-line paragraph per row would push the graphs off the band.
+
+   A row with no `named_failure_modes` entry gets nothing rather than a placeholder: the
+   formulas are declared in `ltl_formulas` and their LTL is already on the drawing
+   beside this table, and a `phase:<phase>:<kind>` row is declared nowhere at all. */
+const ROW_DECLARED_MAX = 96;
+
+function rowDeclared(name) {
+  const mode = declaredMode(name);
+  if (mode === null) return "";
+  const bits = [];
+  if (typeof mode.formula === "string" && mode.formula) bits.push(mode.formula);
+  if (typeof mode.description === "string" && mode.description) {
+    bits.push(mode.description);
+  }
+  if (!bits.length) {
+    return `<div class="dim small">the manifest declares this mode with neither a
+      <code>formula</code> nor a <code>description</code>.</div>`;
+  }
+  const full = bits.join(" — ");
+  const shown = full.length > ROW_DECLARED_MAX
+    ? full.slice(0, ROW_DECLARED_MAX - 1) + "…" : full;
+  return `<div class="dim small wrap" title="${esc(full)}">${esc(shown)}</div>`;
 }
 
 /* == 7 · phase machine ======================================================
@@ -2492,22 +3162,150 @@ function phaseTiming(phases, i, v) {
         : `${inPhase} <span class="dim">/ ${bound}</span>
            <div class="bar" style="margin-top:3px"><i style="width:${
              Math.max(0, Math.min(100, 100 * inPhase / Math.max(bound, 1)))}%"></i></div>`)],
-    ["steps to timeout", typeof left === "number"
-      ? `<span class="${bound !== null && left <= 0 ? "bad" : "ok"}">${left}</span>`
-      : `<span class="dim">not reported</span>`],
-    ["violations to fault", `${typeof risk.violations_to_fault === "number"
-      ? `<span class="${risk.violations_to_fault <= 0 ? "bad" : "warn"}">${risk.violations_to_fault}</span>`
-      : `<span class="dim">not reported</span>`} <span class="dim">of ${limit === null
-        ? "no declared progress_violation_limit" : `${limit} allowed by this phase`}</span>`],
-    ["severity", risk.severity === null || risk.severity === undefined
-      ? `<span class="dim">none reported this tick</span>`
-      : `<span class="bad">${esc(risk.severity)}</span>
-         <span class="dim">the monitor graded this tick's risk</span>`],
+    ["steps to timeout", stepsToTimeout(left, risk)],
+    ["seconds to timeout", typeof risk.seconds_to_timeout === "number"
+      ? `${num(risk.seconds_to_timeout, 2)} s <span class="dim">— the same bound in
+         seconds, derived by the monitor from the tick rate off the pulse. Spec bounds
+         are counted in ticks; this is a convenience and not a second source of
+         truth.</span>`
+      : risk.seconds_to_timeout === null
+        ? `<span class="dim">null — there is no step bound to convert, so there is no
+           duration either</span>`
+        : absent("verdict.risk.seconds_to_timeout",
+            "this verdict's risk block carries no seconds_to_timeout.")],
+    ["violations to fault", violationsToFault(risk, limit)],
+    ["close to a bound", riskWarn(risk)],
+    ["severity", riskSeverity(risk)],
+    ["trigger confidence", typeof risk.trigger_confidence === "number"
+      ? `${num(risk.trigger_confidence, 2)} <span class="dim">— how much the monitor
+         believes the signal that raised this risk. Below the supervisor's
+         <code>min_confidence</code> the ladder de-escalates rather than actuating on a
+         shaky reading, which is what the stale sources beside the verdict explain.
+         </span>`
+      : absent("verdict.risk.trigger_confidence",
+          "this verdict's risk block carries no trigger_confidence, so nothing here " +
+          "says how much the monitor believed the signal.")],
   ];
   return `<table class="fixed" style="margin-top:8px"><colgroup><col style="width:32%">
     <col></colgroup>${rows.map(([k, cell]) =>
       `<tr><th class="wrap">${esc(k)}</th><td class="wrap">${cell}</td></tr>`).join("")}
     </table>`;
+}
+
+/* This read green until it hit zero, so one step from a timeout looked exactly as
+   healthy as thirty. It is not graded on a threshold invented here either: `risk.warn`
+   is the monitor's *own* "close to a bound" boolean, computed against its own
+   `warn_steps`, and it was on the wire while this page re-derived a worse answer from
+   `steps_to_timeout <= 0`. Where the monitor reports no `warn` the number is printed
+   ungraded and the row says why, rather than being coloured on a rule from nowhere. */
+function stepsToTimeout(left, risk) {
+  if (typeof left !== "number") {
+    return left === null
+      ? `<span class="dim">null — the monitor reports no step bound to count down
+         to</span>`
+      : absent("verdict.risk.steps_to_timeout",
+          "this verdict's risk block carries no steps_to_timeout.");
+  }
+  if (left <= 0) {
+    return `<span class="bad">✖ ${left}</span> <span class="dim">— at or past the
+      bound</span>`;
+  }
+  if (risk.warn === true) {
+    return `<span class="warn">⚠ ${left}</span> <span class="dim">— the monitor reports
+      this is close to a bound (<code>risk.warn</code>), on its own warn_steps and not
+      on any threshold this page holds</span>`;
+  }
+  if (risk.warn === false) {
+    return `<span class="ok">✔ ${left}</span> <span class="dim">— the monitor does not
+      report this as close to a bound</span>`;
+  }
+  return `<span class="dim">${left}</span> ` + absent("verdict.risk.warn",
+    "the monitor reports no warn boolean, so how close this is to the bound is not " +
+    "graded here — this page holds no threshold of its own to grade it with.");
+}
+
+/* And this read amber whenever it was positive, so a healthy `5 of 5` looked like a
+   warning while `0 of 5` — the fault itself — was the only thing that read worse.
+   Positive is the good case. `1` is arithmetic and not a threshold: one left means the
+   next violation raises the fault, which is what the number says. */
+function violationsToFault(risk, limit) {
+  const of = `<div class="dim">${limit === null
+    ? "this phase declares no <code>progress_violation_limit</code>"
+    : `this phase allows ${limit}`}</div>`;
+  const n = risk.violations_to_fault;
+  if (typeof n !== "number") {
+    return (n === null
+      ? `<span class="dim">null — the monitor reports no violation allowance to count
+         down</span>`
+      : absent("verdict.risk.violations_to_fault",
+          "this verdict's risk block carries no violations_to_fault.")) + of;
+  }
+  const cell = n <= 0
+    ? `<span class="bad">✖ ${n}</span> <span class="dim">— the allowance is spent</span>`
+    : n === 1
+      ? `<span class="warn">⚠ 1</span> <span class="dim">— the next violation raises the
+         fault</span>`
+      : `<span class="ok">✔ ${n}</span> <span class="dim">— violations still
+         allowed</span>`;
+  return cell + of;
+}
+
+/* `risk.warn` on its own line as well, because it is the monitor's own answer to "is
+   this close to a bound" and it is the thing the row above is graded on. It was on the
+   wire and rendered nowhere, while the page re-derived a worse version of it. */
+function riskWarn(risk) {
+  if (risk.warn === true) {
+    return `<span class="warn">⚠ yes</span> <span class="dim">— the monitor reports the
+      run is close to one of this phase's bounds. This is the monitor's boolean, on its
+      own <code>warn_steps</code>; this page holds no threshold of its own.</span>`;
+  }
+  if (risk.warn === false) {
+    return `<span class="ok">✔ no</span> <span class="dim">— the monitor reports no
+      bound close enough to warn about</span>`;
+  }
+  return absent("verdict.risk.warn",
+    "this verdict's risk block carries no warn boolean, so the monitor's own " +
+    "'close to a bound' answer is not on the wire and nothing here substitutes for it.");
+}
+
+/* Which bound the monitor graded this tick's risk against. This was painted `.bad`
+   whatever the value, so a PROGRESS severity — a run that is behind — was the same red
+   as a SAFETY one, and the colour carried nothing at all. Graded by the same buckets
+   `monitor_action.grade_action` grades them by: SAFETY and INVARIANT go to a halting
+   rung, TIMEOUT and PROGRESS to a re-planning one. A word this console has no bucket
+   for is shown as it arrived and marked as unplaced, never quietly as either.
+
+   Glyph and word both, like everywhere else: a severity read off a photograph of this
+   screen must still say which one it was. */
+const SEVERITY = {
+  SAFETY: { cls: "bad", glyph: "✖", says: "a halting category — the ladder takes it to " +
+            "HALT or ABORT when the monitor is confident" },
+  INVARIANT: { cls: "bad", glyph: "✖", says: "a halting category — the ladder takes it " +
+               "to HALT or ABORT when the monitor is confident" },
+  TIMEOUT: { cls: "warn", glyph: "⚠", says: "a bound on how long the phase may take; " +
+             "the ladder answers REPLAN, not a halt" },
+  PROGRESS: { cls: "warn", glyph: "⚠", says: "the run is not making progress; the " +
+              "ladder answers SLOW or REPLAN, not a halt" },
+};
+
+function riskSeverity(risk) {
+  const s = risk.severity;
+  if (s === null) {
+    return `<span class="ok">✔ none</span> <span class="dim">— the monitor graded no
+      risk this tick. Null is a reported answer here and not an absence.</span>`;
+  }
+  if (typeof s !== "string") {
+    return absent("verdict.risk.severity",
+      "this verdict's risk block carries no severity, so which bound the monitor " +
+      "graded against is not on the wire.");
+  }
+  const meta = Object.prototype.hasOwnProperty.call(SEVERITY, s) ? SEVERITY[s] : null;
+  return meta
+    ? `<span class="${meta.cls}">${meta.glyph} ${esc(s)}</span>
+       <span class="dim">— ${esc(meta.says)}</span>`
+    : `<span class="unk">? ${esc(s)}</span> <span class="dim">— a severity this console
+       has no bucket for. Shown as it arrived rather than graded as either a halting or
+       a non-halting one.</span>`;
 }
 
 /* The guards of the phase we are in, with the truth the monitor reported for each and
@@ -2523,7 +3321,7 @@ function phaseGuards(phases, i, v) {
       "no producer reports which guard it acted on, so this build can show the phase " +
       "machine and its timing but no guard truth. This page will not evaluate the " +
       "expressions itself — a second evaluator here is where the same fault would be " +
-      "invented rather than observed.");
+      "invented rather than observed.") + declaredGuards(phases, i);
   }
   const g = v.phase_guards;
   if (g === null || g === undefined) {
@@ -2565,6 +3363,57 @@ function phaseGuards(phases, i, v) {
       <th class="wrap">expression → propositions it reads → live values</th></tr>
       ${rows}</table>` +
     (notes.length ? `<p class="warn" style="margin:6px 0 0">${notes.join(" · ")}</p>` : "");
+}
+
+/* `api.PHASE_GUARD_NAMES`, in the order the phase machine consults them, with what each
+   one does to a run. Pinned against the constant by tests/test_web_ui.py: a guard name
+   added to the contract and not to this list is a condition the console silently does
+   not show. */
+const GUARD_NAMES = [
+  ["enter_condition", "holds before the machine may enter this phase"],
+  ["precondition", "must hold on entry, or entry is refused"],
+  ["invariant", "must hold throughout, and breaking it fails the phase outright"],
+  ["progress_condition", "counts a violation each tick it does not hold"],
+  ["exit_condition", "leaves this phase when it holds — also the edge label above"],
+];
+
+/* The fallback, when the build reports no guard truth at all.
+
+   The *structure* is on the latched manifest regardless of whether any producer
+   evaluates it, so a build with no guard reporting can still show an operator what this
+   phase's guards ARE — the expressions in the spec's own words and the fault category
+   each one raises. Marked as structure and not as truth, in as many words: nothing here
+   says whether any of them held this tick, and this page does not evaluate one to find
+   out. That is the same rule the live table renders by, and it is why the two are told
+   apart on screen rather than run together into a table that looks live. */
+function declaredGuards(phases, i) {
+  const p = (i === null) ? null : (phases[i] || null);
+  if (!p || typeof p !== "object") {
+    return `<p class="dim" style="margin:6px 0 0">No phase is highlighted, so there is
+      no declared guard block to show either.</p>`;
+  }
+  const rows = GUARD_NAMES.map(([name, does]) => {
+    const expr = p[name];
+    const cat = p[name + "_fault_category"];
+    const cell = typeof expr === "string" && expr
+      ? `<span class="rule">${esc(expr)}</span>`
+      : `<span class="dim">this phase declares no <code>${esc(name)}</code></span>`;
+    const raised = typeof cat === "string" && cat
+      ? `<span class="warn">${esc(cat)}</span>`
+      : `<span class="dim">no <code>${esc(name)}_fault_category</code> — the spec
+         names no category for this one, so the engine's own default applies and this
+         page does not guess which</span>`;
+    return `<tr><td class="wrap">${esc(name)}<div class="dim small">${esc(does)}</div>
+      </td><td class="wrap">${cell}</td><td class="wrap">${raised}</td></tr>`;
+  }).join("");
+  return `<p class="warn" style="margin:8px 0 2px">▤ what this phase's guards
+      <b>are</b>, off <code>manifest.execution_phases</code> — structure, not this
+      tick's truth. No column here says whether a guard held: nothing on the wire says
+      so, and this page does not evaluate an expression to find out.</p>
+    <table class="fixed"><colgroup><col style="width:27%"><col><col style="width:21%">
+      </colgroup><tr><th class="wrap">guard</th>
+      <th class="wrap">the expression, as the spec authored it</th>
+      <th class="wrap">fault category it raises</th></tr>${rows}</table>`;
 }
 
 /* Which declared propositions an expression reads. A word-boundary name match against
