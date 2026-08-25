@@ -147,9 +147,10 @@ no VIOLATED row it says what the verdict *rests on*, counted off the rows the ve
 carries, and prints the disagreement rather than resolving it when the verdict word says
 `VIOLATED` anyway.
 
-**Tier 2 — the nine panes**, unchanged in content, now `<details>` that fold. Open/closed
-is remembered per pane and per browser; `plots`, `timing` and `clock` start closed. The
-`max-height:46vh` cap that put nine scrollbars on one page is tier 2's alone now.
+**Tier 2 — the panes**, now `<details>` that fold. Open/closed is remembered per pane and
+per browser; `plots`, `timing` and `clock` start closed. The `max-height:46vh` cap that put
+nine scrollbars on one page is tier 2's alone now. There are ten: `adapter.warnings` got
+its own, and it starts open.
 
 **One number for density.** Every size on the page is a `rem` off `:root{font-size}` —
 one literal px size is left in the stylesheet and it is that root — so `A−`/`A+` in the
@@ -172,7 +173,79 @@ whole paragraph and reassigned `document.title` every tick for a string that mov
 operator moves it; it is keyed on the status now, and only the duration is written per
 tick.
 
-### The nine panes, the strip above them, and what each is actually reading
+### What was already on the wire and rendered nowhere
+
+None of the following needed a backend change. Every field was published, validated and
+dropped on the floor by this page:
+
+| field | where it is now | what its absence cost |
+|---|---|---|
+| `verdict.risk.stale_sources` | beside the verdict in the band | a mode is graded on the freshness of the sources feeding its own propositions, so a quiet source de-escalates the rung. The band showed the de-escalation and nothing said why |
+| `verdict.risk.warn` | pane 7, and it now grades `steps to timeout` | the monitor's own "close to a bound" boolean, while the page re-derived a worse one from `steps_to_timeout <= 0` |
+| `verdict.risk.seconds_to_timeout`, `.trigger_confidence` | pane 7's timing table | the bound in seconds, and how much the monitor believed the signal that raised the risk — which is what the stale sources beside the verdict explain |
+| `adapter.warnings` | pane 10 | `_build_warnings` publishes these "so they are visible on the wire rather than only in a log nobody reads", and the console put them back in one. For `real_g1` there are fifteen, including the `min_range` fold |
+| `adapter.schema[k].doc`, `.default`, `.debounce_ticks` | a mark on every value in panes 3, 4 and 5, spelled out under pane 3's table and under each plot | **this is where the units live.** `yaw` warns that it wraps; the goal keys warn that `0.0` is the odometry origin and not "no goal". Both were on the wire and invisible |
+| `adapter.sources[].steps[]` | pane 2, per source | the fold policy decides what a number on this page *is*: `min_range` is folded `last` and not `min`, and `nav_stuck`'s threshold of 10 counts *messages* because its step runs `on: "message"` |
+| `adapter.sources[].max_age_s`, `.tracked` | pane 3 beside `age_s`; pane 2 beside `required` | a threshold with no bound beside it is unreadable, and `required` and `tracked` are different claims — only one was shown |
+| `manifest.named_failure_modes[].description`, `.formula` | the band's driving-cause cell, and every row of the table beside the automata | the band named `collision_imminent` and nothing on screen said what `collision_imminent` means |
+| `manifest.terminal_success/failure.condition`, `.description` | pane 1 | the console could report that an episode ended without anything saying what ending it that way would have taken |
+| `manifest.execution_phases[].enter_condition`, `precondition`, `invariant`, `progress_condition`, `exit_condition` (+ their `*_fault_category`) | pane 7, as the **fallback** when `verdict.phase_guards` is absent | the structure is on the latched manifest regardless, so a build with no guard reporting can still show what the guards *are* — marked as structure and not as this tick's truth |
+
+**Absent, null and empty each keep their own sentence.** `adapter.warnings` absent is a
+build that does not report them and is not a clean bill of health; `[]` is "checked, and
+clean". `risk.severity: null` is a reported answer — the monitor graded no risk this tick —
+and is not a missing field. A schema key with no `default` and one with no `debounce_ticks`
+are different facts about the descriptor and neither is a zero. Where a field will not fit
+a `missing()` box, an inline `absent()` names it in the same place with the same rule.
+
+**And four gradings that carried nothing or carried it backwards.** `severity` was painted
+`.bad` whatever it said, so a `PROGRESS` severity was the same red as a `SAFETY` one; it is
+graded now by the buckets `monitor_action.grade_action` uses, with a glyph and a word.
+`steps to timeout` was green until it hit zero, so one step from a timeout looked as healthy
+as thirty — it grades on `risk.warn` now, the monitor's own boolean, and prints the number
+ungraded and says why where the monitor does not report one. `violations to fault` was amber
+whenever it was positive, so a healthy `5 of 5` read as a warning while `0 of 5` — the fault
+itself — was the only thing that read worse. And pane 3's source-health dot was the page's
+last violation of its own "never colour alone" rule: it carries a glyph and a word now, and
+the rule that turns it amber (`rate_hz < 0.6 × expected_hz`) is printed beside the rate it
+grades instead of living only in the expression.
+
+**Three different numbers on this page are called confidence** — the intervention's, the
+observation's, and a failure-mode row's own — and two of them were printed as `conf` with
+nothing saying which. Each says whose it is now, and the row column is headed `mode conf`.
+
+**The plots had three quiet faults.** A `filter` deleted the ticks where a key was absent
+instead of leaving a gap, so every earlier sample slid one place to the right and a source
+that dropped ten frames drew a history ten ticks shorter than it was. `#plots` was built
+once behind `if (!$("plots").childElementCount)` and never rebuilt, so a pushed spec that
+renamed a key left the old canvas on screen for ever showing the last value the old key
+ever had. And there is no y-axis on a 34px sparkline, so a 0.001 wobble and a forty-metre
+swing drew the same line. Nulls are gaps the line breaks over, every plot carries its own
+floor and ceiling, and the canvas list is keyed on the plotted keys.
+
+**The hot path is cheaper than it was before any of this.** Everything structural — a
+key's documentation, a source's bounds and fold policy, a mode's declared prose — is built
+once and keyed on the **identity** of the latched payload it came from: `refreshLatched`
+replaces `S.adapter` and `S.manifest` wholesale, so a new object is a new document and the
+comparison is free where re-serialising a twenty-key schema every tick would not be. And
+the plot series are kept incrementally instead of being re-derived from all of `S.hist` per
+key per tick. Measured in the live page against `--mock`, over 239 observations and 239
+verdicts each:
+
+| | before | after |
+|---|---|---|
+| per observation, plots folded *(the default)* | 2.55 ms | **0.89 ms** |
+| per observation, plots unfolded | 2.51 ms | **2.23 ms** |
+| per verdict | 0.56 ms | 0.66 ms — the risk rows, the declared guards, and the band's stale-source line |
+
+The observation path is cheaper in **both** fold states, and the old one cost the same
+either way: it re-derived every series from the whole of `S.hist` whether or not there was
+a box to draw into. The unfolded figure also needed one more fix — `drawSpark` reads
+`canvas.clientWidth`, and a layout read after a DOM write forces a synchronous reflow, so
+ten plots interleaved cost ten reflows a tick. Every drawing happens first and every label
+after it, and the browser reflows once.
+
+### The ten panes, the strip above them, and what each is actually reading
 
 Numbered as the page numbers them, so a heading here and a heading on screen are the same
 heading. The state banner and the control strip carry no number: they are in the sticky
@@ -229,6 +302,13 @@ on someone's disk, and the editor is not overwritten by a refresh while the oper
 typing in it. `load_spec` exists end to end — constant, ingress route, latched answer — so
 this is the one editor that reaches the wire.
 
+**And what this spec calls the end of a run**, above the editor: `terminal_success` and
+`terminal_failure`, each as the `condition` in the spec's own expression language and the
+`description` beside it. These are the **criteria**, not a live truth — whether a run has
+reached one is `verdict.terminal`, in the band at the top, and nothing here evaluates a
+condition for the same reason pane 7 does not evaluate a guard. Until the band landed the
+console showed neither the outcome nor what would have produced it.
+
 **The descriptor is read-only here, and not because it was skipped.** `load_adapter` exists
 nowhere: it needs a topic constant from P0, an `INGRESS_TOPICS` entry from P6, and a handler
 from P3, in that order. Until then the loaded descriptor is rendered in pane 2 rather than
@@ -250,6 +330,14 @@ where it was loaded from, spec name and `source`, every topic subscribed and eve
 published, the clock mode, `step` against the spec's `max_steps` with the remaining budget,
 and the declared provenance of the data.
 
+**And, per source, the fold policy** — `adapter.sources[].steps[]`, which is what decides
+what a number on this page *is*. Each step names the keys it feeds, its `aggregate`, what
+it folds over (`on`), and its `threshold` **in the units of `on`**: a `last` fold from a
+10 Hz source against a 1 Hz tick is the newest of ten samples and not the smallest of them,
+and a threshold of 10 `on: "message"` is ten consecutive messages on a 5 Hz topic — two
+seconds — and not ten ticks. Beside `required`, `tracked`: they are different claims, and
+an untracked source can go quiet without its staleness ever reaching `risk.stale_sources`.
+
 **On "is it real or simulated" — the monitor cannot know, and the surface must not pretend
 otherwise.** Hardware agnosticism is the whole claim: `real_g1`, `mujoco` and `isaac_lab`
 declare an identical schema over different topics, and the engine is unable to tell them
@@ -259,9 +347,18 @@ that the monitor inferred would be a lie the first time someone replays a bag th
 real descriptor, which is a thing this project does on purpose.
 
 **3 — Raw input, per topic.** One row per source from the adapter's `sources`: topic name,
-message type, `expected_hz` against measured `rate_hz`, `age_s`, `samples_this_tick`,
-`refreshed`, `dropped`. A source below its expected rate renders as an alert, not as a
-number to notice.
+message type, `expected_hz` against measured `rate_hz`, `age_s` against the source's own
+declared `max_age_s`, `samples_this_tick`, `refreshed`, `dropped`. A source below its
+expected rate renders as an alert, not as a number to notice — as a glyph, a word and a
+colour, with the rule that produced it (`0.6 × expected_hz`) printed as a number beside the
+rate it grades. A bound with nothing beside it is unreadable, and a rule that lives only in
+the expression is a rule an operator cannot check.
+
+**And what every key means.** Each value carries a mark — `ⓘ` where the descriptor
+documents the key, `?` where it does not — with `adapter.schema[k].doc`, its `default` and
+its resolved `debounce_ticks` in the title; and under the table, every declared key with the
+whole of its documentation spelled out. This is where the units live, and where a key says
+what a value of it does *not* mean. It is built once per adapter, not per tick.
 
 Below the table, **the echo**: a picker naming the adapter's sources and an explicit off,
 which is what it is until somebody chooses. One at a time, and the reason for that
@@ -319,6 +416,14 @@ over time. Ring buffer in the page, no server-side history, no new topic. This i
 that answers "what was the robot actually doing when it said that", built entirely out of a
 stream the monitor is already publishing.
 
+Every plot carries its own floor and ceiling, because there is no y-axis on a 34px
+sparkline and without them a 0.001 wobble and a forty-metre swing draw the same line. A
+tick where a key did not arrive is a **gap** the line breaks over rather than a sample
+deleted, which is what silently shortened the history. A series ending in nulls says how
+many ticks ago its last real value was, so a key that has stopped arriving cannot go on
+looking like this tick's. And each plot carries the key's documentation under it — the one
+place on the page where what a number means sits beside how it has moved.
+
 **The X-Y track is not free, and calling it free was the error worth naming.** No shipped
 descriptor's schema has position, goal or waypoint coordinates: `nav_schema.json` — the one
 schema all three descriptors reference — declares `angular_vel`, `base_height`, `base_pitch`,
@@ -349,6 +454,12 @@ The mapping is not new work: `spec_contract.sensor_keys_in_rule()`
 exactly this, because it is how a pushed spec is validated against the schema. P4 publishes
 the map on the manifest rather than making every client re-parse the rules and drift from
 the validator.
+
+Each live key carries the same documentation mark pane 3 carries, because this is the pane
+where a rule is compared with the numbers under it and reading `dist_to_goal`'s doc changes
+what the comparison means. The footer's `confidence` is labelled **the observation's** — how
+much of this tick's data arrived — and says in as many words that it is neither the
+intervention's in the band nor a failure-mode row's own beside the automata.
 
 **6 — The automaton, with the current state lit and the path this page has watched it
 take.** Per monitor — property formulas *and* named failure modes — `manifest.automata`
@@ -409,6 +520,17 @@ alarming. The surface renders the category as given and does not re-rank it: an
 unclassifiable fault is not thereby a severe one, and the spec that named it was already
 rejected at load if the spelling was unrecognised.
 
+**Every row says what the spec declared it as.** `named_failure_modes[].formula` and
+`.description` are both on the latched manifest and neither reached the page, so the band
+named `collision_imminent` and nothing on screen said what `collision_imminent` means. The
+row carries them, clipped with the whole of it in the title — the treatment an edge label
+already gets, and necessary because this table sits beside the automata at wall type size.
+A row with no entry under that name is not a fault and gets no placeholder: a formula is
+declared in `ltl_formulas` and its LTL is already on the drawing beside the table, and a
+`phase:<phase>:<kind>` row is declared nowhere at all. The confidence column is headed
+`mode conf`, because it is the row's own and is neither of the other two numbers on this
+page called confidence.
+
 **7 — The phase machine, with the phase we are in, its budget, and the live truth of its
 guards.** Directly after pane 6 because the two are one subject seen at two levels: the
 Büchi automata answer "is this property still holding", and the layer above them answers
@@ -442,8 +564,18 @@ that bound as a bar; a verdict that reports no `steps_to_timeout` leaves nothing
 it from, and the pane says so rather than showing the episode's step against a phase's
 bound. Beside it: `risk.steps_to_timeout`, and `risk.violations_to_fault` against the
 phase's own `progress_violation_limit`, which is what says whether the next progress
-violation is the one that faults. When `risk.severity` is set the pane names it, because a
-graded tick is exactly the one an operator must not have to infer from a colour elsewhere.
+violation is the one that faults. Beside them, three fields of `risk` that were on the wire
+and rendered nowhere: `warn` — the monitor's own "close to a bound" answer, on its own
+`warn_steps`, which is what `steps to timeout` is graded on rather than a threshold this
+page invented; `seconds_to_timeout`, the same bound in seconds, derived by the monitor off
+the pulse and shipping *beside* the step count rather than replacing it; and
+`trigger_confidence`, how much the monitor believed the signal that raised the risk, which
+is what the stale sources beside the verdict explain. When `risk.severity` is set the pane
+names it and **grades** it — by the buckets `monitor_action.grade_action` grades them by, so
+a `PROGRESS` severity is not painted the same red as a `SAFETY` one — with a glyph and a
+word, because a graded tick is exactly the one an operator must not have to infer from a
+colour elsewhere. A severity this console has no bucket for is shown as it arrived rather
+than quietly as either.
 
 **The guards, with their live truth, which is where a fault actually originates.** For the
 current phase, each guard it declares — `precondition`, `enter_condition`, `invariant`,
@@ -475,7 +607,12 @@ no phase machine at all, and the pane says so with the field name and its owner;
 `execution_phases` that is present and empty is a spec that runs as one unphased episode,
 which is a different sentence. A `phase_guards` that is *absent* is a build whose producer
 does not report guard truth: the machine and the timing still draw, and the pane names the
-field and refuses to fall back to evaluating it. A `phase_guards` that is present and `null`
+field and refuses to fall back to evaluating it — and under that placeholder it shows what
+the guards **are**, off `manifest.execution_phases`, which carries them regardless of
+whether any producer evaluates them. Each of the five `PHASE_GUARD_NAMES` with the
+expression the spec authored and the `*_fault_category` it raises, marked as structure and
+not as this tick's truth: no column there says whether a guard held, because nothing on the
+wire says so. A `phase_guards` that is present and `null`
 is the machine between phases — no phase active, so no guards to report. A `verdict.phase`
 of null draws the machine with **nothing** highlighted, for the same reason a null `state`
 lights nothing in pane 6.
@@ -521,6 +658,26 @@ totals only for ticks that produced both, and shows the unmatched observation ti
 they are: ticks the monitor did not judge. Reconstructing the tick axis from `seq` and
 `missed_ticks` rather than from message counts is the same discipline every other consumer
 of the verdict owes.
+
+**10 — Adapter warnings.** What the descriptor's own load-time checks found, off
+`adapter.warnings`. `adapter_spec._build_warnings` says why the field exists at all — the
+warnings are published "so they are visible on the wire rather than only in a log nobody
+reads" — and this console read the topic they travel on and dropped the field, which put
+them back in a log nobody reads. For `real_g1` today there are fifteen, including the one
+that says `min_range` is folded `last` from a 10 Hz source against a 1 Hz tick and that
+about nine samples in ten are discarded, so a transient obstacle can be missed entirely.
+That is the same fact pane 2 shows as a fold policy, said here as its consequence.
+
+It starts **open**, because a warning behind a fold is a warning in a log nobody reads. And
+each line is about what this robot's numbers *are*, not about whether the monitor is
+working: a fold that discards samples produces a perfectly healthy-looking console showing
+a value the robot never held.
+
+**Absent, empty and non-empty are three different facts and get three answers.** No
+`warnings` key at all is a build that does not report them and names the field and its
+owner; `[]` is "the checks ran and had nothing to say", which is a clean bill of health and
+must not be confused with the first; anything else is the list, rendered through the same
+`.missing` treatment every other unreported thing on this page uses.
 
 ### What this pane set requires from the backend
 
@@ -813,6 +970,43 @@ one); and `test_the_panes_are_numbered_the_way_the_page_lays_them_out`, which pi
 renumbering against both the page and this document, because a heading here and a heading
 on screen have to be the same heading.
 
+**What was already on the wire and rendered nowhere, read off the page** — one test per
+field, each asserting that it is rendered *and* that its absence keeps its own sentence:
+`test_the_band_says_which_sources_went_quiet_beside_the_verdict`;
+`test_the_timing_table_carries_the_monitors_own_risk_fields`;
+`test_the_adapter_warnings_get_a_pane_and_absent_is_not_empty`, which pins the three
+answers apart, because `[]` is a clean bill of health and an absent field is not;
+`test_every_value_carries_what_the_descriptor_says_the_key_is`;
+`test_the_fold_policy_of_every_source_is_on_the_page`, including that a `threshold` is
+labelled in the units of its `on`; `test_a_sources_declared_bounds_sit_beside_the_numbers_
+they_grade`; `test_the_driving_row_says_what_the_spec_declared_it_as`;
+`test_pane_one_says_what_this_spec_calls_success_and_failure`; and
+`test_the_declared_guards_stand_in_when_no_build_reports_their_truth`, which pins
+`GUARD_NAMES` against `api.PHASE_GUARD_NAMES` and that the fallback is marked as structure
+and contains no evaluator.
+
+**And the honesty fixes** — `test_the_three_confidences_are_each_labelled_as_whose`;
+`test_severity_is_graded_and_not_always_painted_the_same_red`, which pins the buckets
+against `grade_action`'s and that a word this console has no bucket for is shown as it
+arrived; `test_a_sources_health_is_a_glyph_and_a_word_and_its_threshold_is_on_screen`;
+`test_the_two_countdowns_are_graded_the_right_way_round`, which asserts both old rules are
+gone from the page entirely; `test_the_plots_carry_their_own_bounds_and_gap_their_nulls`;
+`test_the_canvas_list_is_rebuilt_when_the_schema_changes`; and
+`test_everything_structural_is_cached_against_the_document_it_came_from`, which pins the
+identity guard, that no latched document is re-serialised on the hot path, and that the
+plots pane's fold is read off `open` rather than off a layout property — a layout read on
+the tick, straight after an `innerHTML` write, forces a whole-page reflow.
+
+`test_the_wire_carries_every_field_these_panes_now_read` asserts both ends in one test: the
+page reading each field, and the mock — held to the shipped validators — publishing it. A
+page reading a field the wire dropped and a wire carrying a field the page dropped are one
+fault seen from two ends, and neither shows up if the two halves are asserted apart.
+
+The drawings, the tooltips, the degrade paths with fields deleted off the live payload, and
+the per-tick cost were driven by hand in headless Chrome over CDP against `--mock`; the
+test file lists exactly which, beside what it asserts, so the split is on the record rather
+than rediscovered.
+
 **Still asked for, and not written here yet** —
 `test_every_clock_request_sends_the_csrf_header`, *reads included*. The whole proxied clock
 surface is gated, not only its POSTs, so the rule the page has to obey is "every clock
@@ -850,7 +1044,7 @@ already on the ROS graph, and this is defence in depth. Nothing in this repo ass
 
 ## Done when
 
-The nine panes render from a live gateway and from `--mock`; the monitor can be armed,
+The ten panes render from a live gateway and from `--mock`; the monitor can be armed,
 reset, paused and resumed from the console, and a monitor that is not `running` is
 impossible to miss and impossible to mistake for a crash; the AP-dependency map is the
 validator's own; the automaton lights the current state and claims only the path it
@@ -863,8 +1057,12 @@ they are waiting for rather than failing.
 **Where this stands.** The control strip and the state banner are complete: all four
 commands go out on `POST .../command`, and the state is read from `/monitor/status` —
 latched on boot and on every reconnect, streamed in between — with a placeholder naming the
-field and its owner on a build that does not publish it. Eight of the nine panes render
-from the wire as it is today. The
+field and its owner on a build that does not publish it. Nine of the ten panes render
+from the wire as it is today, and every field they read is one a producer already
+publishes: the descriptor's warnings and its per-key documentation, every source's bounds
+and fold policy, the three `risk` fields the timing table was missing, the spec's own
+terminal criteria, and the declared phase guards that stand in where no build reports their
+truth. The
 automaton draws its graphs from `manifest.automata` and lights the state each verdict row
 reports, showing the path from the tick this page connected and saying so; where a build
 publishes no graph, or a row no state, it says which of those it is and lights nothing.

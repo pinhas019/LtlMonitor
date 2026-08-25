@@ -123,6 +123,30 @@ quoted in it are measurements:
   taking the band over and coming back off, a node's text at ~17.8 screen px against ~7px
   before, the density and the fold surviving a reload, and each degrade path with the
   field deleted off the live payload.
+
+The last section covers **what was already on the wire and rendered nowhere** --
+`adapter.warnings`, every `schema[k].doc`, the fold policy of every source, the three
+unrendered `risk` fields, the spec's own terminal criteria, and the declared phase
+guards -- plus the honesty fixes beside them. Same split, and the same reason:
+
+* asserted, below: the page's source at every point where a rewrite would turn "what
+  the producer published" back into a blank, a zero or a guess -- that absent, null and
+  empty each keep their own sentence and name their own field; that the health dot, the
+  two countdowns and `severity` are graded by a glyph and a word and not by hue; that
+  the amber threshold and the monitor's own `warn` are printed rather than re-derived;
+  that the plots gap their nulls, carry their bounds and rebuild their canvas list; and
+  that every structural read is keyed on the document it came from. Plus, against the
+  mock bus, that every one of those fields really is published and really validates,
+  asserted in the same test as the page reading it -- a page reading a field the wire
+  dropped and a wire carrying a field the page dropped are one fault seen from two ends.
+* driven, not asserted, in headless Chrome over CDP against `--mock`: everything listed
+  in the comment above that section -- all fifteen of `real_g1`'s warnings on screen and
+  the pane's two other answers with the field deleted and emptied; `ⓘ` against every
+  documented key and `?` against one whose `doc` was deleted; `nav_stuck → last per
+  message · after 10 consecutive messages`; the timing table with the whole `risk` block
+  deleted; the declared-guard table appearing under the placeholder; and the plots'
+  floor and ceiling, their gap, and their canvas count moving with the schema. Also the
+  per-tick cost, measured in the live page and quoted in that section.
 """
 
 from __future__ import annotations
@@ -1729,6 +1753,16 @@ def _fn(page, name):
     return page[start:page.index("\n}", start)]
 
 
+def _code(text):
+    """The same text with its comments taken out.
+
+    For the handful of assertions that say a construct is *gone*: the comment that
+    records why it went names it, and a bare `in page` would then be satisfied by the
+    epitaph. This is a blunt strip -- it does not know about `//` inside a string -- and
+    it is only ever used to make a negative assertion stricter."""
+    return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", text, flags=re.S))
+
+
 def test_the_page_offers_exactly_the_commands_the_contract_declares():
     """A command in `api.COMMANDS` and not in this list is a control the console silently
     does not offer; one here and not there is a 400 from the gateway. Pinned against the
@@ -1934,7 +1968,8 @@ def _style(page):
 
 #: The band's own render functions, for the properties that hold across all of them.
 _WALL_FNS = ("renderWall", "renderWallTerminal", "renderWallVerdict", "wallCause",
-             "wallRests", "renderWallAction", "renderWallWhere", "drivingRow")
+             "wallRests", "renderWallAction", "renderWallWhere", "drivingRow",
+             "wallStale", "declaredAs", "rowDeclared")
 
 
 def test_the_wall_is_the_first_thing_on_the_page_and_carries_the_two_readings():
@@ -2182,11 +2217,16 @@ def test_the_density_control_is_one_number_and_is_remembered():
 def test_every_tier_two_pane_folds_and_remembers_which():
     """Nine panes competing with the band is what this layout was. They fold, per pane
     and per browser, and the three that start closed are the ones an operator consults
-    rather than watches. A default, not a policy: what a pane was last left as wins."""
+    rather than watches. A default, not a policy: what a pane was last left as wins.
+
+    Ten now: `adapter.warnings` got its own, and it starts open. A warning behind a fold
+    is a warning in a log nobody reads, which is the thing publishing it was meant to
+    fix."""
     page = _page()
     panes = re.findall(r'<details class="pane" data-pane="([a-z]+)"( open)?>', page)
     assert [p[0] for p in panes] == ["spec", "config", "inputs", "plots", "aps",
-                                     "automaton", "phase", "clock", "timing"]
+                                     "automaton", "phase", "clock", "timing",
+                                     "warnings"]
     closed = {p[0] for p in panes if not p[1]}
     assert closed == {"plots", "timing", "clock"}
     assert 'const PANE_CLOSED = ["plots", "timing", "clock"];' in page
@@ -2300,6 +2340,506 @@ def test_the_wire_carries_every_field_the_band_reads(bus):
     # fixture demonstrates and the takeover was driven by hand. Said here rather than
     # left as a gap somebody rediscovers.
     assert verdict["terminal"] is None
+
+
+# ============================ what was already on the wire and rendered nowhere
+#
+# Same split as everything above it, and the same reason: no JavaScript test runner in
+# this repo. What is asserted here is the page's source at the points where a rewrite
+# would turn "what the producer published" back into a blank, a zero or a guess -- plus,
+# against the mock bus, that every field below really is on the wire, because a pane
+# written against a field no producer publishes would degrade for ever and read as
+# working.
+#
+# What was instead driven by hand, in headless Chrome over CDP against
+# `python3 -m skill_monitor.frontend.web --mock`, and is recorded here so the next reader
+# knows it was checked rather than assumed:
+#
+#   * pane 10 lists all fifteen of `real_g1`'s warnings, including the `min_range` fold
+#     one; with the field deleted off the live adapter it names the field and its owner,
+#     and with it set to `[]` it says "checked, and clean";
+#   * pane 3 renders `ⓘ` against every key and `?` against one whose `doc` was deleted,
+#     with the doc, the default and the debounce spelled out under the table;
+#   * pane 2 prints `nav_stuck → last per message · after 10 consecutive messages` and
+#     `dist_to_goal → last per tick`, and `⚠ no adapter.sources['odom'].steps` with the
+#     array deleted;
+#   * pane 7's timing table reads `✔ 63 — the monitor does not report this as close to a
+#     bound`, and with the whole `risk` block deleted every row names its own field;
+#   * with `phase_guards` deleted the declared-structure table appears under the
+#     placeholder, marked as structure and with `invariant → SAFETY`;
+#   * the plots: `-0.092 … 0.15` as a floor and ceiling, a null pushed into a series
+#     leaves the count unmoved and the label reads `· 1 tick ago`, and dropping a key
+#     from the schema takes its canvas from ten to nine while a new key gains one.
+#
+# And measured, in the same live page, over 239 observations and 239 verdicts each,
+# against `real_g1`'s twenty-one keys:
+#
+#   per observation, plots folded (the default)   2.55 ms -> 0.89 ms
+#   per observation, plots unfolded               2.51 ms -> 2.23 ms
+#   per verdict                                   0.56 ms -> 0.66 ms
+#
+# The observation path is cheaper in both fold states, and the old one cost the same
+# either way -- it re-derived every series from all of `S.hist` per key per tick whether
+# or not there was a box to draw into. The verdict path buys the risk rows, the declared
+# guards and the wall's stale-source line.
+
+
+def test_the_band_says_which_sources_went_quiet_beside_the_verdict():
+    """`risk.stale_sources` is *why* a fault was de-escalated: a named failure mode is
+    graded on the freshness of the sources feeding its own propositions, so a quiet
+    source lowers that mode's confidence and the ladder answers a lower rung. The band
+    showed the de-escalated rung and nothing beside it said what caused it.
+
+    Empty is not absent. Empty is "checked, every source fresh"; absent is a verdict
+    with no risk block to check, and the two get different sentences."""
+    page = _page()
+    body = _fn(page, "wallStale")
+    assert "risk.stale_sources" in body
+    assert "Array.isArray(stale)" in body                  # a non-array is its own case
+    assert "if (!stale.length) {" in body                  # and so is empty
+    assert "no stale\n      source" in body
+    assert 'absent("verdict.risk.stale_sources"' in body
+    # The names come off the wire and are escaped like everything else.
+    assert "stale.map(s => `<b>${txt(s)}</b>`)" in body
+    # Never colour alone: a glyph and a count.
+    assert "⚠ ${stale.length} stale" in body
+    # And it is drawn beside the verdict itself, not in a pane.
+    assert "wallStale(v)" in _fn(page, "renderWallVerdict")
+
+
+def test_the_timing_table_carries_the_monitors_own_risk_fields():
+    """Three fields of `verdict.risk` were on the wire and rendered nowhere, and one of
+    them -- `warn` -- is the monitor's own "close to a bound" boolean, which the page was
+    re-deriving worse from `steps_to_timeout <= 0`."""
+    page = _page()
+    body = _fn(page, "phaseTiming")
+    for row in ("seconds to timeout", "close to a bound", "trigger confidence"):
+        assert f'["{row}"' in body, row
+    assert "risk.seconds_to_timeout" in body
+    assert "risk.trigger_confidence" in body
+    assert "riskWarn(risk)" in body
+    warn = _fn(page, "riskWarn")
+    assert "risk.warn === true" in warn and "risk.warn === false" in warn
+    assert 'absent("verdict.risk.warn"' in warn
+    # A null seconds_to_timeout is a reported answer, not a missing field.
+    assert "risk.seconds_to_timeout === null" in body
+    # Each absence names its own field rather than one dash for the block.
+    for field in ("verdict.risk.seconds_to_timeout", "verdict.risk.trigger_confidence",
+                  "verdict.risk.severity", "verdict.risk.steps_to_timeout",
+                  "verdict.risk.violations_to_fault"):
+        assert f'absent("{field}"' in page, field
+
+
+def test_the_adapter_warnings_get_a_pane_and_absent_is_not_empty():
+    """`_build_warnings`' own docstring says these are published "so they are visible on
+    the wire rather than only in a log nobody reads" -- and the console read the topic
+    they travel on and dropped the field. For `real_g1` today the list is not empty.
+
+    Three answers, because there are three facts: a build that does not report them at
+    all is not a clean bill of health, and must not read as one."""
+    page = _page()
+    assert '<details class="pane" data-pane="warnings" open>' in page
+    body = _fn(page, "renderWarnings")
+    assert 'missing("adapter.warnings", "P3"' in body
+    assert "That is not the same " in body                 # absent != empty, in words
+    assert "if (!w.length) {" in body
+    assert "Checked, and clean" in body
+    # Every line is wire data going into innerHTML.
+    assert "w.map(line => `<div class=\"missing\">" not in body
+    assert "${txt(line)}" in body
+    # Glyph and word on both ends, never the colour alone.
+    assert "✔ <b>none.</b>" in body
+    assert "⚠ <b>${w.length}" in body
+    # And it is built from the latched read, not from a tick.
+    assert "renderWarnings();" in _fn(page, "refreshLatched")
+    assert "renderWarnings();" in _fn(page, "boot")
+    for hot in ("onObservation", "onVerdict"):
+        assert "renderWarnings" not in _fn(page, hot), hot
+
+
+def test_every_value_carries_what_the_descriptor_says_the_key_is():
+    """`adapter.schema[k].doc` is where the units live, and where a key says what a
+    value of it does *not* mean. None of it was on this page.
+
+    The mark differs in the glyph and not in the hue -- `ⓘ` documented, `?` not -- and
+    the full text is spelled out under pane 3's table as well as being in the title, so
+    it can be read without hovering anything."""
+    page = _page()
+    mark = _fn(page, "schemaMark")
+    assert "entry.doc" in mark
+    assert '`no adapter.schema.${k}.doc' in mark
+    assert 'doc ? "ⓘ" : "?"' in mark                       # the glyph carries it
+    assert "invents none" in mark
+    facts = _fn(page, "schemaFacts")
+    assert 'hasOwnProperty.call(entry, "default")' in facts    # `default: 0` is a value
+    assert "no declared default" in facts
+    assert "entry.debounce_ticks" in facts
+    assert "no debounce_ticks" in facts
+    note = _fn(page, "schemaNote")
+    assert 'missing(`adapter.schema.${k}.doc`, "P3"' in note
+    # Panes 3, 4 and 5 all read the same cache rather than building it three times.
+    for fn in ("renderInputs", "renderPlots", "renderAps"):
+        assert "adapterStruct()" in _fn(page, fn), fn
+    assert 'id="schema"' in page
+    assert "renderSchema();" in _fn(page, "refreshLatched")
+    # An empty schema is its own sentence and not an empty pane.
+    assert "exposes no keys" in _fn(page, "renderSchema")
+
+
+def test_the_fold_policy_of_every_source_is_on_the_page():
+    """`adapter.sources[].steps[]` decides what a number on this page *is*: a key folded
+    `last` from a 10 Hz source against a 1 Hz tick is the newest of ten samples and not
+    the smallest of them. And a `threshold` counts in the units of `on` -- `nav_stuck`'s
+    10 is ten consecutive *messages*, not ten ticks. None of it was rendered."""
+    page = _page()
+    body = _fn(page, "sourceSteps")
+    assert "st.aggregate" in body
+    assert "st.threshold" in body
+    assert 'typeof (st || {}).on === "string"' in body
+    # The units of the threshold come off `on`, and are never assumed to be ticks.
+    assert 'on === "message" ? "messages" : on === "tick" ? "ticks"' in body
+    assert "consecutive\n         ${esc(unit)}" in body
+    # Absent and null are the same fact for `threshold` -- the contract makes it
+    # optional and null is how a step that does not debounce spells it.
+    assert "no threshold" in body
+    # An absent steps array is not an empty one.
+    assert "Array.isArray(steps)" in body
+    assert 'absent(`adapter.sources[\'${raw(s.id)}\'].steps`' in body
+    assert "declares no steps" in body
+    assert "sourceSteps(s)" in _fn(page, "renderConfig")
+
+
+def test_a_sources_declared_bounds_sit_beside_the_numbers_they_grade():
+    """`max_age_s` and `tracked` were on the wire and nowhere on the page. An `age 0.42
+    s` with no bound beside it is unreadable, and `required` and `tracked` are different
+    claims -- one is whether a spec may be refused for want of this source, the other is
+    whether anybody watches whether it is still arriving."""
+    page = _page()
+    assert "max_age_s" in _fn(page, "adapterStruct")
+    assert 'absent("adapter.sources[].max_age_s"' in page
+    assert "st.age[src.id]" in _fn(page, "renderInputs")
+    flags = _fn(page, "sourceFlags")
+    assert 's.required === "boolean"' in flags
+    assert 's.tracked === "boolean"' in flags
+    assert "◉ tracked" in flags and "○ not tracked" in flags   # glyph, not hue alone
+    assert "without becoming a stale source" in flags
+    assert 'absent("adapter.sources[].tracked"' in flags
+    assert "sourceFlags(s)" in _fn(page, "renderConfig")
+
+
+def test_the_driving_row_says_what_the_spec_declared_it_as():
+    """The band named `collision_imminent` and nothing on screen said what
+    `collision_imminent` means. `named_failure_modes[].description` and `.formula` are
+    both on the latched manifest.
+
+    A row with no entry under that name is not a fault: a formula is declared in
+    `ltl_formulas` and a `phase:<phase>:<kind>` fault is declared nowhere."""
+    page = _page()
+    body = _fn(page, "declaredAs")
+    assert "declaredMode(name)" in body
+    assert "esc(mode.description)" in body and "esc(mode.formula)" in body
+    assert "if (mode === null) {" in body
+    assert "declares no\n      <code>named_failure_modes</code> entry" in body
+    # Each absence names its own field rather than one dash for the whole entry.
+    assert "].description`" in body and "].formula`" in body
+    assert "declaredAs(r.name)" in _fn(page, "wallCause")
+    # And the same on every row of the table beside the automata, clipped with the whole
+    # of it in the title -- the treatment an edge label already gets.
+    rows = _fn(page, "rowDeclared")
+    assert "ROW_DECLARED_MAX" in rows and 'title="${esc(full)}"' in rows
+    assert "rowDeclared(f.name)" in _fn(page, "formulaTable")
+
+
+def test_pane_one_says_what_this_spec_calls_success_and_failure():
+    """`terminal_success` / `terminal_failure` carry a `condition` and a `description`,
+    and the console showed neither -- so an operator could read that an episode ended
+    without anything on the page saying what ending it that way would have taken.
+
+    They are criteria and not a live truth. Whether either holds is the monitor's answer
+    and arrives as `verdict.terminal`; nothing here evaluates a condition, for the same
+    reason pane 7 does not evaluate a guard."""
+    page = _page()
+    block = _block(page, "const TERMINAL_SPEC = [")
+    assert '"terminal_success"' in block and '"terminal_failure"' in block
+    body = _fn(page, "renderSpecTerminal")
+    assert "block.condition" in body and "block.description" in body
+    assert 'missing(`manifest.${field}`' in body
+    assert 'absent(`manifest.${field}.condition`' in body
+    assert 'absent(`manifest.${field}.description`' in body
+    # No manifest at all is a different silence from a spec with no terminal block. The
+    # topic is named from the constant, so a rename fails here rather than in a browser.
+    assert f'missing("{api.MANIFEST}", "P4"' in body
+    # Criteria, not truth, and said so on screen.
+    assert "nothing here is evaluated on" in body
+    assert 'id="spec-terminal"' in page
+    assert "renderSpecTerminal(m);" in _fn(page, "renderSpec")
+
+
+def test_the_declared_guards_stand_in_when_no_build_reports_their_truth():
+    """`verdict.phase_guards` is optional, and a build that does not report it left
+    pane 7 with a placeholder and nothing else. The *structure* is on the latched
+    manifest regardless: what the guards are, in the spec's own words, and the fault
+    category each one raises.
+
+    Marked as structure and not as truth, in as many words. No column says whether a
+    guard held, because nothing on the wire says so and this page does not evaluate an
+    expression to find out -- which is the rule the live table renders by too."""
+    page = _page()
+    names = page[page.index("const GUARD_NAMES = ["):page.index("\n];", page.index(
+        "const GUARD_NAMES = ["))]
+    assert re.findall(r'\["(\w+)",', names) == list(api.PHASE_GUARD_NAMES)
+    body = _fn(page, "declaredGuards")
+    assert 'p[name + "_fault_category"]' in body
+    assert "structure, not this\n      tick's truth" in body
+    assert "does not evaluate an expression" in body
+    assert "declares no <code>${esc(name)}</code>" in body
+    assert "names no category for this one" in body        # and does not guess a default
+    # It is the fallback, and only the fallback: the live table is untouched.
+    guards = _fn(page, "phaseGuards")
+    assert "declaredGuards(phases, i)" in guards
+    assert guards.count("declaredGuards(") == 1
+    assert '!("phase_guards" in v)' in guards
+    # No evaluator, here of all places.
+    for evaluated in ("eval(", "new Function", "=== true ?"):
+        assert evaluated not in body, evaluated
+
+
+def test_the_three_confidences_are_each_labelled_as_whose():
+    """Three numbers on this page are called confidence and they are not the same
+    number: the intervention's, the observation's, and a failure-mode row's own. Two of
+    them were printed as `conf` with nothing saying which."""
+    page = _page()
+    aps = _fn(page, "renderAps")
+    assert "<b>observation</b> confidence" in aps
+    assert "are not the same number" in aps
+    table = _fn(page, "formulaTable")
+    assert "mode conf" in table
+    assert "conf</th>" not in table.replace("mode conf</th>", "")
+    assert "neither the intervention's confidence above nor the" in table
+    # The band's was labelled in pass 1 and stays labelled.
+    assert "the intervention's own" in _fn(page, "renderWallAction")
+
+
+def test_severity_is_graded_and_not_always_painted_the_same_red():
+    """`severity` was rendered `.bad` whatever it said, so a PROGRESS severity -- a run
+    that is behind -- was the same red as a SAFETY one and the colour carried nothing.
+
+    Graded by the buckets `monitor_action.grade_action` grades them by, and a word this
+    console has no bucket for is shown as it arrived rather than quietly as either."""
+    page = _page()
+    block = _block(page, "const SEVERITY = {")
+    for name in ("SAFETY", "INVARIANT", "TIMEOUT", "PROGRESS"):
+        assert f"  {name}: {{" in block, name
+    assert block.count('cls: "bad"') == 2 and block.count('cls: "warn"') == 2
+    body = _fn(page, "riskSeverity")
+    assert "hasOwnProperty.call(SEVERITY, s)" in body
+    assert "no bucket for" in body
+    # Null is a reported answer here, not an absence, and not a fault.
+    assert "if (s === null) {" in body
+    assert "Null is a reported answer" in body
+    assert 'absent("verdict.risk.severity"' in body
+    # Glyph and word, so the grade survives a photograph of the screen.
+    assert "meta.glyph" in body
+    assert 'glyph: "✖"' in block and 'glyph: "⚠"' in block
+    # And the old blanket red is gone.
+    assert '`<span class="bad">${esc(risk.severity)}</span>' not in page
+
+
+def test_a_sources_health_is_a_glyph_and_a_word_and_its_threshold_is_on_screen():
+    """The last place on this page that carried a state in colour alone -- a bare `●` in
+    three hues, in the pane an operator looks at to find out whether a sensor is still
+    arriving. And the rule that turns it amber, `rate_hz < 0.6 * expected_hz`, was a
+    literal in the expression and appeared nowhere in the output."""
+    page = _page()
+    block = _block(page, "const HEALTH = {")
+    for state in ("fresh", "slow", "stale", "unrated"):
+        assert f"  {state}: {{" in block, state
+    assert block.count("glyph:") == 4
+    assert len({m for m in re.findall(r'glyph: "(.)"', block)}) == 4   # four distinct
+    assert block.count("word:") == 4
+    body = _fn(page, "sourceHealth")
+    assert "h.refreshed === false" in body
+    assert "SLOW_FRACTION * h.expected_hz" in body
+    assert "const SLOW_FRACTION = 0.6;" in page
+    inputs = _fn(page, "renderInputs")
+    assert "${state.glyph} ${esc(state.word)}" in inputs
+    # The threshold is printed as a number beside the rate it grades.
+    assert "${num(SLOW_FRACTION * h.expected_hz, 2)} Hz" in inputs
+    assert "· amber below" in inputs
+    assert "no expected_hz, so the rate is not graded" in inputs
+
+
+def test_the_two_countdowns_are_graded_the_right_way_round():
+    """`steps to timeout` was green until it hit zero, so one step from a timeout looked
+    exactly as healthy as thirty. `violations to fault` was amber whenever it was
+    positive, so a healthy `5 of 5` read as a warning while `0 of 5` -- the fault -- was
+    the only thing that read worse. Both backwards.
+
+    And the fix does not invent a threshold: proximity is graded on `risk.warn`, the
+    monitor's own boolean on its own `warn_steps`. Where the monitor does not report it
+    the number is printed ungraded and the row says why."""
+    page = _page()
+    steps = _fn(page, "stepsToTimeout")
+    assert "if (left <= 0) {" in steps
+    assert "risk.warn === true" in steps and "risk.warn === false" in steps
+    assert "this page holds no threshold" in steps
+    assert 'absent("verdict.risk.warn"' in steps
+    assert "✖" in steps and "⚠" in steps and "✔" in steps  # never the hue alone
+    viol = _fn(page, "violationsToFault")
+    # Positive is the good case now, and `1` is arithmetic and not a threshold.
+    assert 'n <= 0\n    ? `<span class="bad">' in viol
+    assert 'n === 1' in viol
+    assert '`<span class="ok">✔ ${n}</span>' in viol
+    assert "violations still" in viol
+    # The old rules are gone from the page entirely.
+    assert 'bound !== null && left <= 0 ? "bad" : "ok"' not in page
+    assert 'risk.violations_to_fault <= 0 ? "bad" : "warn"' not in page
+
+
+def test_the_plots_carry_their_own_bounds_and_gap_their_nulls():
+    """Three quiet faults. A `filter` dropped the ticks where a key was absent instead
+    of leaving a gap, so every earlier sample slid one place to the right and a source
+    that dropped ten frames drew a history ten ticks shorter than it was. There is no
+    y-axis on a 34px sparkline, so a 0.001 wobble and a forty-metre swing drew the same
+    line. And a series ending in nulls printed its last value as if it were this
+    tick's."""
+    page = _page()
+    push = _fn(page, "pushPlotSample")
+    assert "series.push(numeric ? v : null);" in push
+    assert "PLOTS.counts[k]--" in push                     # the count follows the shift
+    plots = _fn(page, "renderPlots")
+    assert '.filter(v => typeof v === "number")' not in plots
+    spark = _fn(page, "drawSpark")
+    assert 'if (typeof v !== "number") { open = false; return; }' in spark
+    assert "return { lo: lo, hi: hi, flat: flat };" in spark
+    assert "Math.min(...series)" not in page               # one pass, and null-safe
+    assert 'ps-${esc(k)}' in plots and "bounds[i].flat" in plots
+    assert "flat at ${num(bounds[i].lo)}" in plots
+    last = _fn(page, "lastNumber")
+    assert "series.length - 1 - i" in last
+    assert "tick${last.age === 1" in plots
+    # And the accent is the stylesheet's, not a second copy of it.
+    assert 'g.strokeStyle = token("--acc");' in page
+    assert "#6aa9ff" not in page.split(":root {")[1].split("\n  }")[1]
+
+
+def test_the_canvas_list_is_rebuilt_when_the_schema_changes():
+    """`#plots` was built once, behind `if (!$("plots").childElementCount)`, and never
+    again. A pushed spec that renamed a key left the old canvas on screen for ever,
+    still showing the last value the old key ever had."""
+    page = _page()
+    assert '!$("plots").childElementCount' not in _code(page)
+    plots = _fn(page, "renderPlots")
+    assert "if (key !== PLOTS.key) {" in plots
+    assert "adapterStruct().keys.filter" in plots
+    push = _fn(page, "pushPlotSample")
+    assert "keys.indexOf(k) < 0" in push                   # and its history goes with it
+    # A pushed spec and an arm/reset both throw the canvases away with the history
+    # behind them, rather than leaving a key the new spec does not declare on screen.
+    assert "function clearPlots()" in page
+    assert page.count("clearPlots();") == 2               # arm/reset, and the spec push
+    assert "clearPlots();" in _fn(page, "command")
+
+
+def test_everything_structural_is_cached_against_the_document_it_came_from():
+    """Panes 2 to 7 now render a great deal that comes off the latched adapter and
+    manifest, and three of the panes that read it are rebuilt at the tick rate. All of
+    it is built once and keyed on the payload's identity -- `refreshLatched` replaces
+    both documents wholesale, so a new object is a new document and the comparison is
+    free where re-serialising a twenty-key schema every tick would not be.
+
+    Measured in the live page over 239 observations, plots folded (the default):
+    2.55 ms per observation before, 0.89 ms after."""
+    page = _page()
+    guard = _fn(page, "adapterStruct")
+    assert "if (S.adapter === STRUCT.a) return STRUCT;" in guard
+    assert "STRUCT.a = S.adapter;" in guard
+    mguard = _fn(page, "manifestStruct")
+    assert "if (S.manifest === STRUCT.m) return STRUCT;" in mguard
+    # No per-tick serialisation of a latched document anywhere on the hot path.
+    for hot in ("renderInputs", "renderPlots", "renderAps", "pushPlotSample",
+                "formulaTable", "phaseTiming"):
+        assert "JSON.stringify" not in _fn(page, hot), hot
+    # The series is kept incrementally, not re-derived from the whole of S.hist.
+    assert "S.hist" not in _fn(page, "renderPlots")
+    assert "pushPlotSample(o);" in _fn(page, "onObservation")
+    # And whether the pane is folded is read off `open`, never off a layout property --
+    # a layout read straight after an innerHTML write forces a whole-page reflow.
+    plots = _code(_fn(page, "renderPlots"))
+    assert "PLOT_PANE === null || PLOT_PANE.open" in plots
+    for layout in ("clientWidth", "offsetParent", "getBoundingClientRect"):
+        assert layout not in plots, layout
+    # Every drawing, then every label: `drawSpark` reads `clientWidth`, and a layout read
+    # after a DOM write forces a reflow, so interleaved they cost one per plot per tick.
+    assert plots.index("bounds.push(") < plots.index("el.textContent")
+
+
+def test_the_wire_carries_every_field_these_panes_now_read(bus):
+    """Every field above is published and validated today; none of them needed a
+    backend change. This asserts that against the mock -- which is held to the shipped
+    validators -- because a pane written against a field no producer publishes degrades
+    for ever and reads as working.
+
+    Both halves, in one test, deliberately: a page reading a field the wire stopped
+    carrying and a wire carrying a field the page stopped reading are the same fault
+    seen from two ends, and neither shows up if the two are asserted apart."""
+    page = _page()
+    for read in ("a.warnings", "entry.debounce_ticks", "entry.doc", "st.threshold",
+                 "s.max_age_s", "s.tracked", "risk.trigger_confidence",
+                 "risk.seconds_to_timeout", "risk.stale_sources", "risk.warn",
+                 "mode.description", "mode.formula", "block.condition",
+                 'p[name + "_fault_category"]'):
+        assert read in page, read
+    verdict = frames(bus)[api.VERDICT]
+    adapter = json.loads(bus.latched(mock_monitor.NS, api.ADAPTER))
+    manifest = json.loads(bus.latched(mock_monitor.NS, api.MANIFEST))
+    assert api.validate_adapter(adapter) == []
+    assert api.validate_skill_manifest(manifest) == []
+
+    # `warnings` is published, and for this adapter it is not empty.
+    assert isinstance(adapter["warnings"], list) and adapter["warnings"]
+    assert any("min_range" in w for w in adapter["warnings"])
+
+    # Every schema entry carries the doc the units live in.
+    assert all(isinstance(e.get("doc"), str) and e["doc"]
+               for e in adapter["schema"].values())
+    assert any("default" in e for e in adapter["schema"].values())
+
+    for source in adapter["sources"]:
+        assert isinstance(source["max_age_s"], (int, float))
+        assert isinstance(source["tracked"], bool)
+        assert isinstance(source["required"], bool)
+        for step in source["steps"]:
+            assert isinstance(step["aggregate"], str)
+            assert step["on"] in ("message", "tick")
+            assert step.get("threshold") is None or \
+                isinstance(step["threshold"], (int, float))
+    # The two facts pane 2 exists to make visible: a `last` fold, and a threshold whose
+    # units are messages rather than ticks.
+    steps = [s for src in adapter["sources"] for s in src["steps"]]
+    assert any(s["aggregate"] == "last" for s in steps)
+    assert any(s["threshold"] is not None and s["on"] == "message" for s in steps)
+
+    risk = verdict["risk"]
+    assert set(risk) == {"steps_to_timeout", "seconds_to_timeout",
+                         "violations_to_fault", "warn", "severity",
+                         "trigger_confidence", "stale_sources"}
+    assert isinstance(risk["warn"], bool)
+    assert 0.0 <= risk["trigger_confidence"] <= 1.0
+    assert isinstance(risk["stale_sources"], list)
+    assert risk["severity"] is None or isinstance(risk["severity"], str)
+
+    for mode in manifest["named_failure_modes"]:
+        assert isinstance(mode["description"], str) and mode["description"]
+        assert isinstance(mode["formula"], str) and mode["formula"]
+    for field in ("terminal_success", "terminal_failure"):
+        assert isinstance(manifest[field]["condition"], str)
+        assert isinstance(manifest[field]["description"], str)
+    # The declared guards pane 7 falls back to, on the latched manifest regardless of
+    # whether any producer evaluates them.
+    for phase in manifest["execution_phases"]:
+        assert any(name in phase for name in api.PHASE_GUARD_NAMES)
+    assert any("invariant_fault_category" in p for p in manifest["execution_phases"])
 
 
 # =============================================================================
