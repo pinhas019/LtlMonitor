@@ -2214,22 +2214,27 @@ def test_the_density_control_is_one_number_and_is_remembered():
     assert "localStorage" not in _fn(page, "setDensity")   # only ever through STORE
 
 
-def test_every_tier_two_pane_folds_and_remembers_which():
-    """Nine panes competing with the band is what this layout was. They fold, per pane
-    and per browser, and the three that start closed are the ones an operator consults
-    rather than watches. A default, not a policy: what a pane was last left as wins.
+def test_the_page_is_five_things_and_the_rest_is_behind_one_fold():
+    """Eleven panes competing with the band is what this layout was, and the operator's
+    word for it was "so so noisy".
 
-    Ten now: `adapter.warnings` got its own, and it starts open. A warning behind a fold
-    is a warning in a log nobody reads, which is the thing publishing it was meant to
-    fix."""
+    Five now: the state machine, the propositions, the input, the clock, and the verdict
+    band above them. Everything consulted rather than watched is behind one fold, which
+    starts shut -- including `adapter.warnings`, which is not deleted, because it is what
+    surfaced the `min_range` fold gap and a warning that is gone is worse than one a
+    click away."""
     page = _page()
-    panes = re.findall(r'<details class="pane" data-pane="([a-z]+)"( open)?>', page)
-    assert [p[0] for p in panes] == ["spec", "config", "inputs", "plots", "aps",
-                                     "automaton", "phase", "clock", "timing",
-                                     "warnings"]
-    closed = {p[0] for p in panes if not p[1]}
-    assert closed == {"plots", "timing", "clock"}
-    assert 'const PANE_CLOSED = ["plots", "timing", "clock"];' in page
+    top = re.findall(r'<details class="pane" data-pane="([a-z]+)"( open)?>',
+                     page.split('<details id="more"')[0])
+    assert [p[0] for p in top] == ["machine", "aps", "inputs", "clock"]
+    assert all(p[1] for p in top), "every panel starts open; the fold is the `more` one"
+    # The band is the fifth, and it is not inside the grid.
+    assert '<section id="wall">' in page.split('<div class="grid">')[0]
+    # The rest, behind one control, and none of it deleted.
+    more = page.split('<details id="more"')[1]
+    behind = set(re.findall(r'data-pane="([a-z]+)"', more)) - {"more"}
+    assert behind == {"warnings", "config", "schema", "spec", "plots", "timing"}
+    assert 'const PANE_CLOSED = ["more", "plots", "timing"];' in page
     assert 'STORE.get(paneKey(name)' in page
     assert 'pane.addEventListener("toggle"' in page
     # The fold state is a glyph *and* a word, like every other state on this page.
@@ -2237,6 +2242,14 @@ def test_every_tier_two_pane_folds_and_remembers_which():
     # A control inside a summary must not fold the pane it acts on.
     assert page.count("ev.stopPropagation();") == 2
 
+
+def test_a_proposition_shows_its_condition_not_its_whole_description():
+    """A spec's AP reads `True when <expr>. <prose>`. The expression decides the value
+    and belongs on a projected screen; the prose explains it and belongs on hover. That
+    split is most of this pane's word count, and `ruleOf` already knew how to make it."""
+    body = _fn(_page(), "renderAps")
+    assert "const cond = ruleOf(rule) || rule;" in body
+    assert 'title="${esc(rule)}"' in body and "${esc(cond)}" in body
 
 def test_the_cap_belongs_to_tier_two_alone():
     """`max-height:46vh` on every pane is what put nine scrollbars on one page. Tier 1
@@ -2636,7 +2649,10 @@ def test_severity_is_graded_and_not_always_painted_the_same_red():
     assert "no bucket for" in body
     # Null is a reported answer here, not an absence, and not a fault.
     assert "if (s === null) {" in body
-    assert "Null is a reported answer" in body
+    # The distinction survives the cut to the prose: null is a REPORTED answer and is
+    # graded `ok`, while an absent field goes through `absent()`. The sentence saying so
+    # moved to a `title` -- what must not happen is the two collapsing into one render.
+    assert "reported" in body and 'class="ok"' in body
     assert 'absent("verdict.risk.severity"' in body
     # Glyph and word, so the grade survives a photograph of the screen.
     assert "meta.glyph" in body
@@ -2766,7 +2782,7 @@ def test_everything_structural_is_cached_against_the_document_it_came_from():
     # And whether the pane is folded is read off `open`, never off a layout property --
     # a layout read straight after an innerHTML write forces a whole-page reflow.
     plots = _code(_fn(page, "renderPlots"))
-    assert "PLOT_PANE === null || PLOT_PANE.open" in plots
+    assert 'PLOT_PANE.closest("details:not([open])")' in plots
     for layout in ("clientWidth", "offsetParent", "getBoundingClientRect"):
         assert layout not in plots, layout
     # Every drawing, then every label: `drawSpark` reads `clientWidth`, and a layout read

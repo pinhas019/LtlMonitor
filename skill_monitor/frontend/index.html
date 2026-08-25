@@ -364,104 +364,100 @@
   </div>
 </section>
 
-<!-- Tier 2. The detail, in nine panes that fold. Each remembers whether it was left
-     open, per pane and per browser; the three that start closed are the ones an
-     operator consults rather than watches, and closing them is what leaves the band
-     above room to be large. -->
+<!-- Four panels; the verdict is the band above. Everything an operator consults rather
+     than watches is behind one fold at the bottom -- a page read across a room holds
+     about five things, and this one held eleven. -->
 <div class="grid">
 
-  <details class="pane" data-pane="spec" open>
-    <summary><span>1 · description and spec</span>
-      <span><button id="reload">apply · restarts the episode</button></span>
-      <span class="fold"></span></summary>
-    <div class="body">
-      <p id="spec-desc" class="dim wrap" style="margin:0 0 8px"></p>
-      <div id="spec-terminal"></div>
-      <textarea id="spec-text" spellcheck="false"></textarea>
-      <div style="margin-top:6px" id="spec-status"></div>
-    </div>
-  </details>
-
-  <details class="pane" data-pane="config" open>
-    <summary><span>2 · loaded config</span><span class="fold"></span></summary>
-    <div class="body" id="config"></div>
-  </details>
-
-  <details class="pane" data-pane="inputs" open>
-    <summary><span>3 · input data <span class="dim" id="in-note"></span></span>
-      <span class="fold"></span></summary>
-    <div class="body">
-      <div id="inputs"></div>
-      <!-- Every declared key, with what the descriptor says it means. Built once per
-           adapter by renderSchema() -- it is structure, not a tick -- and it is the one
-           place on this page where the units are spelled out rather than hovered. -->
-      <div id="schema"></div>
-      <!-- The echo half. Built by renderEcho() from the adapter's own sources, so the
-           picker offers exactly what this robot declares and nothing this page knows
-           about any particular robot. -->
-      <div id="echo"></div>
-    </div>
-  </details>
-
-  <details class="pane" data-pane="plots">
-    <summary><span>4 · plots <span class="dim">last 180 ticks</span></span>
-      <span class="fold"></span></summary>
-    <div class="body" id="plots"></div>
-  </details>
-
-  <details class="pane" data-pane="aps" open>
-    <summary><span>5 · atomic propositions <span class="dim">rule → keys → value</span></span>
-      <span class="fold"></span></summary>
-    <div class="body" id="aps"></div>
-  </details>
-
-  <details class="pane" data-pane="automaton" open>
-    <summary><span>6 · automaton</span><span class="fold"></span></summary>
-    <!-- A pointer, and deliberately not a second copy. The highlight is a class swap on
-         nodes found by element id (`aut0n3`), so drawing the same graph twice would put
-         two elements under one id in one document and light whichever the browser found
-         first. One drawing, in the band where it can be read. -->
-    <div class="body">
-      <p style="margin:0">the automata are drawn in the <a href="#wall" class="key">wall
-        band</a> at the top of this page, at reading size, with every formula's status
-        beside them.</p>
-      <p class="dim" style="margin:8px 0 0">They are not repeated here. The lit node is a
-        class on a node that is already in the document, found by element id, and two
-        copies of one graph would be two elements under one id — the wrong one would be
-        lit, and nothing on the page would say so.</p>
-    </div>
-  </details>
-
-  <details class="pane" data-pane="phase" open>
-    <summary><span>7 · phase machine <span class="dim">state · timing · guards</span></span>
+  <!-- One machine, not two drawings. A phase fault becomes a failure mode on the same
+       verdict the automata report, so the phase chain and the Büchi graphs are one state
+       machine seen at two heights. The graphs are drawn in the band where they are big
+       enough to read; the phase half and both highlights live here. -->
+  <details class="pane" data-pane="machine" open>
+    <summary><span>state machine</span>
+      <span class="dim small"><a href="#wall" class="key">automata in the band ↑</a></span>
       <span class="fold"></span></summary>
     <div class="body" id="phase"></div>
   </details>
 
-  <details class="pane" data-pane="clock">
-    <summary><span>8 · clock</span><span><button id="step">step</button></span>
+  <details class="pane" data-pane="aps" open>
+    <summary><span>propositions <span class="dim">rule → keys → value</span></span>
+      <span class="fold"></span></summary>
+    <div class="body" id="aps"></div>
+  </details>
+
+  <details class="pane" data-pane="inputs" open>
+    <summary><span>input <span class="dim" id="in-note"></span></span>
+      <span class="fold"></span></summary>
+    <div class="body">
+      <div id="inputs"></div>
+      <p class="dim small" style="margin:6px 0 0">the cloud, the grid map and the paths
+        are geometry; they are looked at in rviz2 — <code>tools/rviz/run.sh</code></p>
+      <!-- The echo half. Built by renderEcho() from the adapter's own sources, so the
+           picker offers exactly what this robot declares. -->
+      <div id="echo"></div>
+    </div>
+  </details>
+
+  <details class="pane" data-pane="clock" open>
+    <summary><span>clock</span><span><button id="step">step</button></span>
       <span class="fold"></span></summary>
     <div class="body"><div id="clock"></div><div id="step-note"></div></div>
   </details>
 
-  <details class="pane" data-pane="timing">
-    <summary><span>9 · timing</span><span class="fold"></span></summary>
-    <div class="body" id="timing"></div>
-  </details>
-
-  <!-- `adapter.warnings` is published so that what the descriptor's own checks found is
-       "visible on the wire rather than only in a log nobody reads" -- `_build_warnings`'
-       own words -- and this console dropped every one of them. For `real_g1` today the
-       list is not empty: it includes the `min_range` fold warning, which is the one that
-       says a transient obstacle can be missed entirely. Open by default, because a
-       warning behind a fold is a warning in a log nobody reads. -->
-  <details class="pane" data-pane="warnings" open>
-    <summary><span>10 · adapter warnings <span class="dim" id="warn-note"></span></span>
-      <span class="fold"></span></summary>
-    <div class="body" id="warnings"></div>
-  </details>
-
 </div>
+
+<!-- Consulted, not watched. One fold, remembered like the panels. Nothing here was
+     deleted: `adapter.warnings` is what surfaced the `min_range` fold gap, and a warning
+     that is gone is worse than one that is a click away. -->
+<details id="more" data-pane="more">
+  <summary><span>everything else</span>
+    <span class="dim small">adapter warnings · config · schema · spec · plots · timing</span>
+    <span class="fold"></span></summary>
+  <div class="grid">
+
+    <details class="pane" data-pane="warnings" open>
+      <summary><span>adapter warnings <span class="dim" id="warn-note"></span></span>
+        <span class="fold"></span></summary>
+      <div class="body" id="warnings"></div>
+    </details>
+
+    <details class="pane" data-pane="config" open>
+      <summary><span>loaded config</span><span class="fold"></span></summary>
+      <div class="body" id="config"></div>
+    </details>
+
+    <details class="pane" data-pane="schema" open>
+      <summary><span>schema <span class="dim">what each key means</span></span>
+        <span class="fold"></span></summary>
+      <div class="body" id="schema"></div>
+    </details>
+
+    <details class="pane" data-pane="spec">
+      <summary><span>description and spec</span>
+        <span><button id="reload">apply · restarts the episode</button></span>
+        <span class="fold"></span></summary>
+      <div class="body">
+        <p id="spec-desc" class="dim wrap" style="margin:0 0 8px"></p>
+        <div id="spec-terminal"></div>
+        <textarea id="spec-text" spellcheck="false"></textarea>
+        <div style="margin-top:6px" id="spec-status"></div>
+      </div>
+    </details>
+
+    <details class="pane" data-pane="plots">
+      <summary><span>plots <span class="dim">last 180 ticks</span></span>
+        <span class="fold"></span></summary>
+      <div class="body" id="plots"></div>
+    </details>
+
+    <details class="pane" data-pane="timing">
+      <summary><span>timing</span><span class="fold"></span></summary>
+      <div class="body" id="timing"></div>
+    </details>
+
+  </div>
+</details>
 
 <script>
 "use strict";
@@ -598,13 +594,13 @@ $("dens-down").onclick = () => setDensity(density() - DENSITY.step);
 $("dens-up").onclick = () => setDensity(density() + DENSITY.step);
 setDensity(density());
 
-/* Which tier-2 panes start closed: the three an operator consults rather than watches.
-   A default and not a policy -- every pane remembers what it was last left as, per pane
-   and per browser, so the same page serves the operator who wants the plots up. */
-const PANE_CLOSED = ["plots", "timing", "clock"];
+/* What starts closed. `more` is the whole consulted-not-watched half, so it is shut on a
+   fresh browser and the page opens as five things. A default and not a policy -- every
+   fold remembers what it was last left as, per fold and per browser. */
+const PANE_CLOSED = ["more", "plots", "timing"];
 const paneKey = name => "skillmon.pane." + name;
 
-for (const pane of document.querySelectorAll("details.pane")) {
+for (const pane of document.querySelectorAll("details.pane, details#more")) {
   const name = pane.dataset.pane;
   if (!name) continue;
   pane.open = STORE.get(paneKey(name),
@@ -2497,7 +2493,11 @@ function renderPlots() {
   // straight after the innerHTML this function and the two before it just wrote, forces
   // a synchronous reflow of the whole page. Measured: it cost more than everything the
   // pane draws when it is open.
-  const visible = PLOT_PANE === null || PLOT_PANE.open;
+  // `closest` and not `.open`: the plots now live inside the `more` fold, so an open
+  // plots pane inside a shut `more` still has no width to draw into. Still no layout
+  // read -- `[open]` is an attribute match, not a measurement.
+  const visible = PLOT_PANE === null
+    || PLOT_PANE.closest("details:not([open])") === null;
   // **Every drawing first, then every label.** `drawSpark` reads `canvas.clientWidth`,
   // and a layout read after a DOM write forces a synchronous reflow: interleaved, ten
   // plots cost ten of them a tick. Batched, the ten reads happen with nothing written
@@ -2657,8 +2657,13 @@ function renderAps() {
     const live = keys.map(k =>
       `<span class="key">${esc(k)}</span>${marks[k] || ""}=${esc(fmt(o.sensors[k]))}`)
       .join(" ");
+    // The condition, not the whole description. A spec's AP reads "True when <expr>.
+    // <prose>" -- the expression is what decides the value and belongs on a projected
+    // screen; the prose explains it and belongs on hover. `ruleOf` already splits them,
+    // and dropping the second half is most of this pane's word count.
+    const cond = ruleOf(rule) || rule;
     return `<tr><td class="wrap">${esc(name)}</td><td>${value}</td>
-      <td class="wrap"><span class="rule">${esc(rule)}</span><br>${live ||
+      <td class="wrap"><span class="rule" title="${esc(rule)}">${esc(cond)}</span><br>${live ||
         '<span class="dim">reads no declared key</span>'}</td></tr>`;
   }).join("");
   $("aps").innerHTML =
@@ -2716,10 +2721,8 @@ function renderAutomaton() {
       S.aut = { key: key, trace: graphs.map(() => []), from: null, last: null };
       box.innerHTML = graphs.map(drawGraph).join("") +
         `<p class="dim small" id="aut-witness" style="margin:2px 0 0"></p>
-         <p class="dim small" style="margin:4px 0 0">◯ ordinary · ◎ accepting · ▢
-           absorbing sink · ▣ accepting and absorbing. The filled node is the state the
-           last verdict reported; shaded nodes are the ones this page has seen it
-           in.</p>`;
+         <p class="dim small" style="margin:4px 0 0">◯ ordinary · ◎ accepting · ▢ sink ·
+           ▣ both · <b>filled</b> now · shaded seen</p>`;
     }
     lightAutomata(graphs, v);
   }
@@ -2772,9 +2775,7 @@ function lightAutomata(graphs, v) {
   if (w) {
     w.textContent = S.aut.from === null
       ? "nothing lit: no state witnessed on this connection yet."
-      : `The shaded path is only what this page witnessed. It begins at step ` +
-        `${S.aut.from}, where this page connected — not at the start of the episode, ` +
-        `which happened before there was anyone here to see it.`;
+      : `shaded: seen since step ${S.aut.from}, when this page connected`;
   }
 }
 
@@ -3291,8 +3292,8 @@ const SEVERITY = {
 function riskSeverity(risk) {
   const s = risk.severity;
   if (s === null) {
-    return `<span class="ok">✔ none</span> <span class="dim">— the monitor graded no
-      risk this tick. Null is a reported answer here and not an absence.</span>`;
+    return `<span class="ok">✔ none</span> <span class="dim" title="Null is a reported
+      answer here, not an absence.">— none graded this tick</span>`;
   }
   if (typeof s !== "string") {
     return absent("verdict.risk.severity",
@@ -3312,9 +3313,9 @@ function riskSeverity(risk) {
    the propositions each one reads. `expr` and the phase name are an operator-supplied
    spec's own text and are escaped like every other wire field. */
 function phaseGuards(phases, i, v) {
-  const head = `<p class="dim" style="margin:10px 0 2px">guards of this phase — the
-    expression as the spec authored it, the truth the monitor reported, and the
-    propositions it reads with their live values</p>`;
+  const head = `<p class="dim small" style="margin:10px 0 2px" title="The expression as
+    the spec authored it, the truth the monitor reported, and the propositions it reads
+    with their live values.">guards of this phase</p>`;
   if (!v) return "";
   if (!("phase_guards" in v)) {
     return head + missing("verdict.phase_guards", "P0, then P4",

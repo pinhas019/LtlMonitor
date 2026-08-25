@@ -32,3 +32,23 @@ Carries `rgb8` and `bgr8` only, and passes the encoding through rather than conv
 it — a depth frame needs a colourisation decision that a transport has no business
 making. Downscales at source, because shipping 230 KB frames over wifi to prove DDS
 could not is its own kind of silly.
+
+## `rviz/`
+
+The monitor's input as geometry. The console shows the numbers; this shows the shapes —
+the depth cloud `min_range` is computed from, the terrain the planner planned on, the
+path, and the commanded waypoint.
+
+    tools/rviz/run.sh
+
+There is no 3D viewport in the console and there should not be: `docs/packages/P7-frontend.md`
+lists one as a non-goal because rviz2 exists and is better at it. This is that decision,
+made runnable.
+
+`run.sh` publishes the `map -> camera_color_optical_frame` static transform before
+starting, because nothing else in the stack does and rviz2's failure without it is an
+empty scene rather than a message naming the missing frame.
+
+The `filtered_map` display needs `grid_map_rviz_plugin`, which on the G1's own host had
+to be built natively — see `g1_gridmap_navigation_refinement.md` in the TRAV repo. Every
+other display is a stock `rviz_default_plugins` one.

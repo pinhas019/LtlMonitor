@@ -1,0 +1,122 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+    Tree Height: 700
+Visualization Manager:
+  Class: ""
+  Name: root
+  Global Options:
+    Background Color: 18; 20; 26
+    Fixed Frame: map
+    Frame Rate: 15
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 20
+      Color: 60; 66; 82
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Axes: true
+      Show Names: false
+      Marker Scale: 0.4
+    # What min_range is computed from, which is what collision_risk is computed from.
+    # If this looks wrong, the SAFETY formula is being evaluated against nonsense.
+    - Class: rviz_default_plugins/PointCloud2
+      Name: depth cloud
+      Enabled: true
+      Topic:
+        Value: /depth_anything/points
+        Depth: 1
+        Reliability Policy: Best Effort
+      Size (m): 0.015
+      Style: Points
+      Color Transformer: AxisColor
+      Axis: Z
+    # The terrain the planner actually planned on -- the same layer the episode bag
+    # records, so a replay of that bag shows exactly this.
+    - Class: grid_map_rviz_plugin/GridMap
+      Name: filtered_map
+      Enabled: true
+      Topic:
+        Value: /filtered_map
+        Depth: 1
+      Show Grid Lines: false
+      Height Layer: elevation_smooth
+      Color Layer: traversability
+      Use Rainbow: true
+    - Class: rviz_default_plugins/Path
+      Name: traversable_path
+      Enabled: true
+      Topic:
+        Value: /traversable_path
+        Depth: 1
+      Color: 78; 201; 160
+      Line Width: 0.03
+    - Class: rviz_default_plugins/Path
+      Name: traversable_path_tg
+      Enabled: true
+      Topic:
+        Value: /traversable_path_tg
+        Depth: 1
+      Color: 106; 169; 255
+      Line Width: 0.03
+    # The commanded goal. This is a planner INPUT, not the planner's opinion of itself --
+    # it is the same topic goal_x/goal_y are read from, and the reason dist_to_goal can
+    # be trusted while nav_state cannot.
+    - Class: rviz_default_plugins/PointStamped
+      Name: next_waypoint
+      Enabled: true
+      Topic:
+        Value: /next_waypoint
+        Depth: 1
+      Color: 224; 178; 90
+      Radius: 0.12
+    - Class: rviz_default_plugins/Odometry
+      Name: odom
+      Enabled: true
+      Topic:
+        Value: /t265/odom/sample
+        Depth: 1
+      Keep: 1
+      Covariance:
+        Value: false
+    - Class: rviz_default_plugins/MarkerArray
+      Name: cmd_vel_markers
+      Enabled: false
+      Topic:
+        Value: /cmd_vel_markers
+        Depth: 1
+    # Off by default: the console's raw echo already shows this frame, bounded and
+    # rate-limited. Turn it on when you want it at full rate instead.
+    - Class: rviz_default_plugins/Image
+      Name: color
+      Enabled: false
+      Topic:
+        Value: /depth_anything/color_image
+        Depth: 1
+        Reliability Policy: Best Effort
+  Global Options:
+    Fixed Frame: map
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 8
+      Pitch: 0.6
+      Yaw: 3.9
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Width: 1400
