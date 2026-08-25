@@ -2351,3 +2351,72 @@ def test_every_shipped_descriptor_ticks_without_data():
         assert state.refreshed_keys() == frozenset(), name
         assert state.sensor_eval() == before, name
         assert state.pending_samples() == 0, name
+
+
+# =============================================================================
+# What the G1 actually publishes, and why each number is that number
+# =============================================================================
+#
+# Every rate below is read off TRAV's own source or measured on the robot -- none is a
+# guess. `expected_hz` is not decoration: without it the data-health report cannot tell
+# a slow topic from a healthy one, and the discarded-samples check does not run at all,
+# so a fold that throws away 9 of every 10 samples does it silently.
+
+#: source id -> (expected_hz, where the number comes from)
+G1_RATES = {
+    # `sportmode_odom_bridge.py` is a pass-through of the G1 firmware's
+    # /odommodestate, so the rate is the firmware's and is not stated anywhere in the
+    # repo. 10 Hz is a deliberate FLOOR, not a measurement: a locomotion state stream
+    # slower than that is broken, so this catches a collapse without false-alarming on
+    # a stream that is really faster. Under-declaring is the safe direction -- it makes
+    # the discarded-samples check under-report rather than cry wolf. Refine it the
+    # first time the robot is on the network to measure.
+    "odom": 10.0,
+    # The Depth-Anything loop measured 74 ms per iteration on the Jetson (~13.5 Hz)
+    # while capturing at --fps 30. Declared below the measurement so a loaded Jetson
+    # does not read as a fault.
+    "points": 10.0,
+    "camera": 10.0,
+    # path_manager publishes status per planning cycle. control_step runs at
+    # `control_hz` (20.0) but only publishes in manual mode; in automatic it publishes
+    # per replan, and `replan_hz` defaults to 5.0. The lower of the two is what a
+    # mission actually sustains.
+    "status": 5.0,
+    # run_visual_goal_matcher.py: `--publish-hz`, default 1.0.
+    "vision": 1.0,
+}
+
+
+def test_the_g1_declares_the_rate_each_source_really_publishes_at():
+    spec = adapter_spec.load("real_g1")
+    by_id = {s.id: s for s in spec.sources}
+    for source_id, expected in G1_RATES.items():
+        assert by_id[source_id].expected_hz == expected, (
+            f"{source_id}: see G1_RATES for where this number comes from")
+
+
+def test_the_commanded_waypoint_declares_no_rate_because_it_has_none():
+    """`/next_waypoint` is a setpoint, published when the planner produces one. A robot
+    holding its current waypoint publishes nothing, and that is not a fault -- so
+    declaring a rate here would report a perfectly healthy run as a slow topic. `last`
+    is also exactly the right fold for a setpoint: there is no transient to miss.
+
+    Read off the descriptor rather than the parsed `Source`, which defaults an unset
+    rate to the tick rate -- so "declared 1.0" and "declared nothing" are the same
+    object afterwards, and only the JSON can tell them apart."""
+    raw = json.loads((skill_monitor.adapters_dir() / "real_g1.json").read_text())
+    goal = {s["id"]: s for s in raw["sources"]}["goal"]
+    assert "expected_hz" not in goal
+
+
+def test_declaring_the_rates_is_what_makes_the_fold_check_run_at_all():
+    """The point of the exercise. With no `expected_hz` the loader can only say it
+    cannot check; with one it can say what is actually being thrown away -- and for
+    `min_range`, which feeds the SAFETY proposition `collision_risk`, that is about 9
+    of every 10 samples at a 1 Hz tick. P2's own spec calls `min` the chosen policy for
+    that key and the descriptor still folds it with `last`; this test exists so that
+    gap is visible in the suite rather than only in a log nobody reads."""
+    warnings = " ".join(adapter_spec.load("real_g1").warnings())
+    assert "min_range" in warnings and "discarded" in warnings, (
+        "the discarded-samples check went quiet -- either a rate was removed or the "
+        "fold was changed; if min_range moved to `min`, retire this test deliberately")
