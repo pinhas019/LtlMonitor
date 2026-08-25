@@ -1,8 +1,164 @@
 # Resume
 
-**Newest session first.** Sessions 1 and 2 below are kept for the decisions they
-record, not for their status lines — every "unpushed", test count and `/ltl/*` topic
-name in them is out of date. Session 3 is the current state.
+**Newest session first.** Sessions 1–3 below are kept for the decisions they record,
+not for their status lines — every "unpushed", test count and `/ltl/*` topic name in
+them is out of date. **Session 4 is the current state.**
+
+---
+
+# Session 4 — replay, and the console cut to five panels (2026-08-25)
+
+Everything is pushed. `git clone git@github.com:pinhas019/LtlMonitor.git` is the whole
+handoff; nothing that matters lives on one disk.
+
+```
+origin  git@github.com:pinhas019/LtlMonitor.git
+dev     cd23f4b       ← PR #33 merged here
+main    fa9796a       ← NOT promoted. dev is 3 commits ahead
+branch  frontend/fix-five-panels   f4c4661   ← PR #34 OPEN against dev
+        python3 -m pytest  →  1228 passed, ~115 s
+        python3 -m skill_monitor.frontend.web --check   (needs node; parses the page)
+```
+
+Fresh machine: Python 3.10 and `pytest`, nothing else. `rclpy` and `spot` are **not**
+installed and are not needed — `tests/ros_stub.py` fakes the ROS layer, so everything in
+`skill_monitor/backend/` is *unrun* code on a dev host. Say so in commits rather than
+implying it was tested. `pip install -e .` fails (setuptools predates PEP 660); the
+package is on `sys.path` via a `.pth` in user site-packages.
+
+## First thing to do
+
+**Merge or close PR #34**, then decide about `main`. `main` has not been promoted since
+session 3; `dev` carries replay and the console work. Promotion is a fast-forward push,
+never a local merge — see *Git rules* below.
+
+## What landed
+
+**Replay** — `skill_monitor/core/recording.py` and `skill_monitor/backend/replay_node.py`,
+with 23 pure tests in `tests/test_recording.py`. P9 names verdict equality between two
+replays of one episode as *the* acceptance test for the agnosticism claim, and nothing
+recorded the episode. The rule is one line and it is a constant, not a judgement:
+
+> **Replay the monitor's inputs (`INPUTS`). Compare its outputs (`OUTPUTS`).**
+
+```bash
+python3 -m skill_monitor.backend.replay_node record run.jsonl        # while it runs
+python3 -m skill_monitor.backend.replay_node play   run.jsonl --diff # exits 1 on a diff
+python3 -m skill_monitor.backend.replay_node info   run.jsonl
+ros2 bag record -o run.bag $(python3 -m skill_monitor.backend.replay_node topics run.jsonl)
+```
+
+Four things about it worth not rediscovering: **no clock runs during a replay** (the
+player publishes the recorded ticks, which is what keeps the tick count independent of
+replay speed — so the clock *and* the evaluator must be stopped, and `play` counts the
+publishers it is competing with and warns); **nothing is ignored in a diff by default,
+including `t`** (a `t` that moved means the replay invented a clock, which is the bug the
+comparison exists to catch); **a missing verdict is not a differing verdict**; and
+`topics` reads the sensor list off the adapter *the run declared*, so the bag line is
+generated per robot and TRAV's topics are hardcoded nowhere.
+
+Docs: [docs/clocking.md](docs/clocking.md#recording-an-episode-and-replaying-it).
+
+**The console is five panels**, after three rounds of the operator saying it was noisy,
+then "super bad". Panels 1–2 are the band (automaton, verdict), 3–5 the grid under it
+(propositions, input, clock). Everything else — the **phase machine included** — is
+behind one fold that starts shut.
+
+| | panel | |
+|---|---|---|
+| 1 | automaton | the spec as a machine, current state lit |
+| 2 | verdict | and why |
+| 3 | propositions | rule → keys → value |
+| 4 | input | per source, with age |
+| 5 | clock | the tick (+ a shut `replay` line) |
+| 6–12 | behind the fold | phases · warnings · config · schema · spec · plots · timing |
+
+Rules that are now pinned by tests, so do not undo them casually:
+
+- **One numbering, three places.** The badge on screen, `/* == 4 · atomic propositions */`
+  in `index.html`, and `**4 —**` in `docs/packages/P7-frontend.md`. Renumber all three or
+  the suite fails. This caught two panels I would have missed.
+- **Three or four words of subtitle, the sentence on `title`.** Capped at eight words per
+  panel. A long-form line on every panel measured 181 words on a 1349-word page.
+- **No fact appears twice.** The header used to repeat verdict/intervention/phase/step
+  from panel 2; it carries `skill` and `tick` only.
+- Panels 1 and 2 are `<section class="pane">` with an `<h2>`, styled by the same rule as
+  a pane's `<summary>`, so the band cannot drift back into unboxed text.
+
+## Traps, measured not guessed
+
+- **The preview tool's screenshot times out on this page** — five attempts, every one.
+  Audit the layout through the DOM instead: walk sibling `getBoundingClientRect()`s and
+  assert no pair intersects. That is what found the real defects (`✖ VIOLATED` at 51px
+  needing 258px of a 213px column and running out over the cell beside it).
+- **`grid-row: 1 / span 99` makes the grid HAVE 99 rows.** 98 empty ones at a 4px gap
+  added 392px of nothing to every cell. Mine, same session.
+- **`pkill -f "port 8799"` kills your own shell** (exit 144) — the pattern matches the
+  shell's own command line. Kill by PID.
+- `getBBox()` on SVG text inside a `<g transform>` is *local*; `getBoundingClientRect()`
+  is absolute. Collision-checking with the first gives false positives on every node.
+
+## Showing somebody the console
+
+```bash
+python3 -m skill_monitor.frontend.web --mock --port 8799        # http://127.0.0.1:8799
+python3 tools/console_snapshot.py capture http://127.0.0.1:8799 run.json 45
+python3 tools/console_snapshot.py build   run.json console.html   # one self-contained file
+```
+
+`tools/console_snapshot.py` records what the *page* was shown and replays it in the
+browser with no server. It is **not** `replay_node.py`, which records ROS topics and
+re-runs the *monitor* — one is a moving screenshot, the other a correctness check.
+
+## Tomorrow: the G1 navigation experiment
+
+**The blocker, stated plainly: [P12](docs/packages/P12-planner-independent-schema.md) is
+designed and not implemented.** `skill_monitor/adapters/real_g1.json` still declares a
+`status` source on `/path_manager/status`, and six of the eight atomic propositions in
+`skill_monitor/specs/formulas_g1.json` (`mission_started`, `path_active`,
+`moving_towards_target`, `nav_stuck`, `mission_finished`, and the phase `exit_condition`s
+built on them) read the planner's self-report. That is the opposite of the standing
+constraint — the monitor is meant to be transparent to the navigation algorithm.
+
+Implementing P12 first is not a morning's work: it needs P2's tick-steps, three new
+extractors, a regenerated spec, and **four uncalibrated knobs** (`arrival_radius`,
+`closing_speed` epsilon, `no_progress` `debounce_s`, the `min_range` height band) that
+P12 itself says need a recorded run before they can be trusted.
+
+So the order is: **run tomorrow as-is, record it, and calibrate P12 off the recording.**
+That is exactly what the recorder was built for, and it turns a compromised run into the
+input P12 is blocked on.
+
+```bash
+# on the robot, alongside perception + the bridge
+python3 -m skill_monitor.backend.replay_node record g1_run1.jsonl
+ros2 bag record -o g1_run1.bag $(python3 -m skill_monitor.backend.replay_node topics g1_run1.jsonl)
+```
+
+Known robot-side facts from session 3, still true:
+
+- **foxy's CycloneDDS cannot parse `SharedMemory` / `Interfaces`** schema elements — the
+  symptom is `rmw_create_node` failing and a subscriber that silently never exists.
+- **Wifi DDS never worked** despite UDP flowing both ways and unicast peers; the fallback
+  is the TCP camera bridge in `tools/camera_bridge.py`.
+- `min_range` folds `last` where P2's spec says `min` — a **SAFETY** gap, visible in the
+  adapter-warnings pane (panel 7), deliberately unchanged on a robot that could not be
+  tested against. Check this before trusting `collision_risk`.
+- TRAV-side: `monitor_logger.py`'s `--config` remap is dead code (flat YAML read against
+  a `path_manager:`-nested file), so `/trav/cmd_vel` is never recorded, and
+  `/filtered_map` is hardcoded.
+- `tools/rviz/run.sh` publishes the `map → camera_color_optical_frame` static transform
+  first. Without it rviz2 shows an empty scene rather than naming the missing frame.
+
+## Git rules (the operator's, and they have bitten before)
+
+- **Merges happen only through a pull request**, then fast-forward. Never `git merge`
+  locally.
+- **Always `git pull --rebase`.**
+- Feature branch → PR into `dev` → `dev` fast-forwards to `main`.
+- `delete_branch_on_merge` is **off** on the repo: it once deleted `dev` when a
+  `dev → main` PR auto-closed, and GitHub flipped the default branch to `main`. Pass
+  `--delete-branch` per merge instead.
 
 ---
 
