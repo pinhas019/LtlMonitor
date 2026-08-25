@@ -110,14 +110,14 @@ takes the streamed frames in between.
 | `/monitor/command` — arm ｜ reset ｜ pause ｜ resume | `POST /api/monitors/{seg}/command`, from the control strip in the header | P4 |
 | `/monitor/load_spec` — the edited spec | `POST .../spec`, replying with `spec_status` | P4 |
 | `/monitor/load_adapter` — the edited descriptor | **none** — `INGRESS_TOPICS` is `{command, spec}` | P0, P6, P3 |
-| `/monitor/raw_echo_request` — which one source to echo, `null` to stop | `POST /api/monitors/{seg}/raw_echo_request`, from the picker in panel 5 | P3 |
+| `/monitor/raw_echo_request` — which one source to echo, `null` to stop | `POST /api/monitors/{seg}/raw_echo_request`, from the picker in panel 4 | P3 |
 | `POST /api/clock/step`, `/api/clock/mode` | proxied under the clock's own paths | P1 |
 
 One of the five has no way onto the wire from a browser. That is not a detail the design
 can defer, because the pane that depends on it — descriptor reload — is otherwise
 specified as if the transport existed. Raw echo was the other one and is no longer:
 `INGRESS_TOPICS` gained `raw_echo_request` and `STREAM_TOPICS` gained `api.RAW_ECHO`, both
-in P6's file and by P6's hand, and panel 5's echo half is built against them.
+in P6's file and by P6's hand, and panel 4's echo half is built against them.
 
 ## Design
 
@@ -135,7 +135,7 @@ the page, with **why beside it** — the driving row's name, its `fault_category
 own `confidence`; the **intervention**, its rung placed on the ladder (`rung 5 of 6`) with
 `category` and `imminence`, both of which were on the wire and rendered nowhere;
 **`verdict.terminal`**, which takes the band over when it is non-null and appeared nowhere
-on this page at all; **phase and step**, the phase reconciled by panel 3's `currentPhase`;
+on this page at all; **phase and step**, the phase reconciled by panel 6's `currentPhase`;
 and **the automata**, promoted out of panel 1 and drawn large with `formulaTable`'s rows
 beside them, so a status and its graph are one reading.
 
@@ -164,7 +164,7 @@ colour is a token in the one `:root` block, so a projector or light theme is one
 **The graph is drawn once, in the band.** The highlight is a class on a node found by
 element id (`aut0n3`); two drawings of one graph would be two elements under one id, the
 wrong one would be lit, and nothing on the page would say so. That is why panel 1 is the
-band itself rather than a pane with a copy in it, and why panel 3 links to it instead of
+band itself rather than a pane with a copy in it, and why panel 6 links to it instead of
 redrawing anything.
 
 **The hot path pays for it.** `keysInRule` compiled one `RegExp` per schema key per AP
@@ -183,15 +183,15 @@ dropped on the floor by this page:
 | field | where it is now | what its absence cost |
 |---|---|---|
 | `verdict.risk.stale_sources` | beside the verdict in the band | a mode is graded on the freshness of the sources feeding its own propositions, so a quiet source de-escalates the rung. The band showed the de-escalation and nothing said why |
-| `verdict.risk.warn` | panel 3, and it now grades `steps to timeout` | the monitor's own "close to a bound" boolean, while the page re-derived a worse one from `steps_to_timeout <= 0` |
-| `verdict.risk.seconds_to_timeout`, `.trigger_confidence` | panel 3's timing table | the bound in seconds, and how much the monitor believed the signal that raised the risk — which is what the stale sources beside the verdict explain |
+| `verdict.risk.warn` | panel 6, and it now grades `steps to timeout` | the monitor's own "close to a bound" boolean, while the page re-derived a worse one from `steps_to_timeout <= 0` |
+| `verdict.risk.seconds_to_timeout`, `.trigger_confidence` | panel 6's timing table | the bound in seconds, and how much the monitor believed the signal that raised the risk — which is what the stale sources beside the verdict explain |
 | `adapter.warnings` | panel 7 | `_build_warnings` publishes these "so they are visible on the wire rather than only in a log nobody reads", and the console put them back in one. For `real_g1` there are fifteen, including the `min_range` fold |
-| `adapter.schema[k].doc`, `.default`, `.debounce_ticks` | a mark on every value in panels 4, 5 and 11, spelled out under panel 5's table and under each plot | **this is where the units live.** `yaw` warns that it wraps; the goal keys warn that `0.0` is the odometry origin and not "no goal". Both were on the wire and invisible |
+| `adapter.schema[k].doc`, `.default`, `.debounce_ticks` | a mark on every value in panels 4, 5 and 11, spelled out under panel 4's table and under each plot | **this is where the units live.** `yaw` warns that it wraps; the goal keys warn that `0.0` is the odometry origin and not "no goal". Both were on the wire and invisible |
 | `adapter.sources[].steps[]` | panel 8, per source | the fold policy decides what a number on this page *is*: `min_range` is folded `last` and not `min`, and `nav_stuck`'s threshold of 10 counts *messages* because its step runs `on: "message"` |
-| `adapter.sources[].max_age_s`, `.tracked` | panel 5 beside `age_s`; panel 8 beside `required` | a threshold with no bound beside it is unreadable, and `required` and `tracked` are different claims — only one was shown |
+| `adapter.sources[].max_age_s`, `.tracked` | panel 4 beside `age_s`; panel 8 beside `required` | a threshold with no bound beside it is unreadable, and `required` and `tracked` are different claims — only one was shown |
 | `manifest.named_failure_modes[].description`, `.formula` | the band's driving-cause cell, and every row of the table beside the automata | the band named `collision_imminent` and nothing on screen said what `collision_imminent` means |
 | `manifest.terminal_success/failure.condition`, `.description` | panel 10 | the console could report that an episode ended without anything saying what ending it that way would have taken |
-| `manifest.execution_phases[].enter_condition`, `precondition`, `invariant`, `progress_condition`, `exit_condition` (+ their `*_fault_category`) | panel 3, as the **fallback** when `verdict.phase_guards` is absent | the structure is on the latched manifest regardless, so a build with no guard reporting can still show what the guards *are* — marked as structure and not as this tick's truth |
+| `manifest.execution_phases[].enter_condition`, `precondition`, `invariant`, `progress_condition`, `exit_condition` (+ their `*_fault_category`) | panel 6, as the **fallback** when `verdict.phase_guards` is absent | the structure is on the latched manifest regardless, so a build with no guard reporting can still show what the guards *are* — marked as structure and not as this tick's truth |
 
 **Absent, null and empty each keep their own sentence.** `adapter.warnings` absent is a
 build that does not report them and is not a clean bill of health; `[]` is "checked, and
@@ -207,7 +207,7 @@ graded now by the buckets `monitor_action.grade_action` uses, with a glyph and a
 as thirty — it grades on `risk.warn` now, the monitor's own boolean, and prints the number
 ungraded and says why where the monitor does not report one. `violations to fault` was amber
 whenever it was positive, so a healthy `5 of 5` read as a warning while `0 of 5` — the fault
-itself — was the only thing that read worse. And panel 5's source-health dot was the page's
+itself — was the only thing that read worse. And panel 4's source-health dot was the page's
 last violation of its own "never colour alone" rule: it carries a glyph and a word now, and
 the rule that turns it amber (`rate_hz < 0.6 × expected_hz`) is printed beside the rate it
 grades instead of living only in the expression.
@@ -260,19 +260,30 @@ other panel explains one input to it or one consequence of it — so it takes th
 the band and everything else is read around it. `tests/test_web_ui.py` pins the three
 numberings against each other; a panel renumbered in one place and not the others fails.
 
+**Five panels are visible, and that is the whole page.**
+
 | | panel | what it shows |
 |---|---|---|
 | **1** | automaton | the spec as a machine, with the state the last verdict reported lit |
 | **2** | verdict | the conclusion, why, and the rung it is asking for |
-| **3** | phase machine | the same run one level up: the phases, with the live one marked |
-| **4** | propositions | the letters panel 1's edges are labelled with, and their truth |
-| **5** | input | every source, its age, and one raw frame on demand |
-| **6** | clock & replay | the tick — and how to record an episode and re-run it |
-| 7–12 | *behind one fold* | adapter warnings · loaded config · schema · spec · plots · timing |
+| **3** | propositions | the letters panel 1's edges are labelled with, and their truth |
+| **4** | input | every source, its age, and one raw frame on demand |
+| **5** | clock | the tick everything above advances on |
+| 6–12 | *behind one fold* | phases · adapter warnings · config · schema · spec · plots · timing |
 
-Every panel carries the same three marks in the same order — the number, the name, and one
-line saying what it shows. A number does not reflow; "the third one" meant a different pane
-depending on how wide the window was, because the grid reflows and the names are jargon.
+Panels 1 and 2 are the band, side by side; 3, 4 and 5 are the grid under it. **The phase
+machine is behind the fold**, and that is the change that hurt: it is a real view, it is
+one click away, and it is not one of the five. Keeping a sixth panel because the sixth
+panel is good is exactly how this page reached eleven.
+
+Every panel carries the same three marks in the same order — the number, the name, and
+**three or four words**, with the sentence on `title`. The long-form version of that line
+on every panel was worse than the bare names it replaced: it was measured at 181 words of
+subtitle on a 1349-word page, and the page is read across a room. It is the same rule the
+AP rules already follow — the condition on screen, the prose on hover.
+
+A number does not reflow; "the third one" meant a different pane depending on how wide the
+window was, because the grid reflows and the names are jargon.
 
 The entries below are in the order the panes were built, which is not reading order; the
 number on each is the one on screen.
@@ -332,7 +343,7 @@ this is the one editor that reaches the wire.
 `terminal_failure`, each as the `condition` in the spec's own expression language and the
 `description` beside it. These are the **criteria**, not a live truth — whether a run has
 reached one is `verdict.terminal`, in the band at the top, and nothing here evaluates a
-condition for the same reason panel 3 does not evaluate a guard. Until the band landed the
+condition for the same reason panel 6 does not evaluate a guard. Until the band landed the
 console showed neither the outcome nor what would have produced it.
 
 **The descriptor is read-only here, and not because it was skipped.** `load_adapter` exists
@@ -372,7 +383,7 @@ declaration by whoever launched the container — not a verified fact. A badge r
 that the monitor inferred would be a lie the first time someone replays a bag through the
 real descriptor, which is a thing this project does on purpose.
 
-**5 — Raw input, per topic.** One row per source from the adapter's `sources`: topic name,
+**4 — Raw input, per topic.** One row per source from the adapter's `sources`: topic name,
 message type, `expected_hz` against measured `rate_hz`, `age_s` against the source's own
 declared `max_age_s`, `samples_this_tick`, `refreshed`, `dropped`. A source below its
 expected rate renders as an alert, not as a number to notice — as a glyph, a word and a
@@ -481,7 +492,7 @@ against P12's keys, not P3's, and it renders when they exist.
 reading of data that already exists — the monitor should not grow a renderer to prove it can.
 The shipped visualisation stack (`sim/Dockerfile.foxglove`) is where a human looks at depth.
 
-**4 — Which AP is evaluated against which data.** For each AP: its rule, the sensor keys the
+**3 — Which AP is evaluated against which data.** For each AP: its rule, the sensor keys the
 rule references, the live value of each of those keys, and the resulting boolean — or its
 name in `unknown_aps`, which is the case that matters, because an AP that could not be
 evaluated is not an AP that is false.
@@ -492,7 +503,7 @@ exactly this, because it is how a pushed spec is validated against the schema. P
 the map on the manifest rather than making every client re-parse the rules and drift from
 the validator.
 
-Each live key carries the same documentation mark panel 5 carries, because this is the pane
+Each live key carries the same documentation mark panel 4 carries, because this is the pane
 where a rule is compared with the numbers under it and reading `dist_to_goal`'s doc changes
 what the comparison means. The footer's `confidence` is labelled **the observation's** — how
 much of this tick's data arrived — and says in as many words that it is neither the
@@ -548,7 +559,7 @@ whole story.** `verdict.failure_modes[]` carries the spec's named modes *and* th
 machine's own faults, synthesised as
 `phase:<phase>:<invariant｜timeout｜progress｜precondition>` — a stable name per
 (phase, kind) precisely so a consumer can key on it.
-Those never appear in `formulas[]` and have no automaton to light up — **panel 3 is where
+Those never appear in `formulas[]` and have no automaton to light up — **panel 6 is where
 they come from**, and it is the pane that can say which guard of which phase a
 `phase:<phase>:<invariant>` row is about. Each entry carries a
 `fault_category` from a closed vocabulary (`SAFETY`, `INVARIANT`, `TIMEOUT`, `PROGRESS`),
@@ -580,7 +591,7 @@ ladder was applied to and a second grader in a browser would report a rung the m
 chose. When no row is VIOLATED it says what the verdict rests on instead of naming a cause
 it does not have.
 
-**3 — The phase machine, with the phase we are in, its budget, and the live truth of its
+**6 — The phase machine, with the phase we are in, its budget, and the live truth of its
 guards.** Directly after panel 1 because the two are one subject seen at two levels: the
 Büchi automata answer "is this property still holding", and the layer above them answers
 "which phase are we in, how long has it got, and which of its guards is about to end it".
@@ -640,7 +651,7 @@ invariant reading a proposition blinded by a stale sensor has not been broken, i
 been evaluated, and a pane that flattens the two turns a dead camera into a safety
 violation. Same rule one level down for the propositions themselves: one named in
 `observation.unknown_aps`, or absent from `ap_values` entirely, renders UNKNOWN and not
-false, exactly as in panel 4.
+false, exactly as in panel 3.
 
 **The page does not evaluate a guard expression, and that is a rule rather than an
 omission.** `phase_guards[].value` is what the monitor actually acted on; a second evaluator
@@ -666,7 +677,7 @@ is the machine between phases — no phase active, so no guards to report. A `ve
 of null draws the machine with **nothing** highlighted, for the same reason a null `state`
 lights nothing in panel 1.
 
-**6 — Clock and replay.** `seq`, `t`, `t0` as a wall time, effective `tick_hz`, `mode`, and
+**5 — Clock and replay.** `seq`, `t`, `t0` as a wall time, effective `tick_hz`, `mode`, and
 `missed_ticks` from the verdict. `seq`/`t`/`t0`/`tick_hz`/`mode` arrive on the monitor
 stream, on `/monitor/tick`, which is why that topic had to join `STREAM_TOPICS`. Until the
 first pulse arrives the pane says it has seen no tick rather than showing a zero, and it
@@ -778,7 +789,7 @@ draws no track until then.
 | `/monitor/load_adapter` and `/monitor/adapter_status` as constants, each with a `VALIDATORS` entry, and `adapter_status` in `api.LATCHED_TOPICS` | **P0** | api.md is explicit: topic names are "declared once as constants in `core/api.py`. Nothing else in the repo may contain a `/monitor/...` string literal". The gateway's ingress routes call `validate_for_topic`, and an unregistered topic there is itself a problem, not a pass |
 | the `load_adapter` ingress route — an `INGRESS_TOPICS` entry | **P6** | `gateway.py` is P6's file. The *GET* for `adapter_status` costs nothing once the constant lands, because `LATCHED_ROUTES` is derived from `api.LATCHED_TOPICS` |
 | validate-and-answer for a pushed descriptor | **P3** | mirroring `load_spec`/`spec_status` exactly — same shape, same latched status |
-| ~~the `raw_echo_request` ingress route and a way to read `/monitor/raw_echo`~~ | **P6 alone** | **landed.** `INGRESS_TOPICS` gained the verb and `STREAM_TOPICS` gained `api.RAW_ECHO`; the summary convention that rides on the opaque `summary` is P3's, in `backend/adapters/raw_echo.py`. Panel 5's echo half is built against both |
+| ~~the `raw_echo_request` ingress route and a way to read `/monitor/raw_echo`~~ | **P6 alone** | **landed.** `INGRESS_TOPICS` gained the verb and `STREAM_TOPICS` gained `api.RAW_ECHO`; the summary convention that rides on the opaque `summary` is P3's, in `backend/adapters/raw_echo.py`. Panel 4's echo half is built against both |
 
 **Two rows left this table by being built rather than by being asked for.** Static-file
 serving was a P6 ask and is now `Gateway(static_dir=...)`, off by default; `api.TICK` on
@@ -1002,7 +1013,7 @@ gates `formulas[].state` on the validator's own answer rather than on a flag —
 field to open, and a mock that emitted it early would be publishing frames the shipped
 validators reject.
 
-**Panel 3's frames** — `test_the_guards_reported_are_the_ones_the_phase_declares` (the
+**Panel 6's frames** — `test_the_guards_reported_are_the_ones_the_phase_declares` (the
 phase's own guards, in the spec's own words, and no padded-out set);
 `test_a_guard_is_true_of_the_propositions_on_its_own_frame`, which walks a whole episode so
 that a guard the pane shows as true is true of the propositions shown beside it, and which
@@ -1018,7 +1029,7 @@ highlights by; `test_the_bound_the_pane_measures_against_belongs_to_the_phase_it
 `test_the_mock_sends_phase_guards_the_moment_the_contract_admits_it`, which gates the field
 on the validator's own answer for the same reason `formulas[].state` is gated that way.
 
-**Panel 3's degrade paths, read off the page** —
+**Panel 6's degrade paths, read off the page** —
 `test_the_page_names_the_field_and_its_owner_when_there_is_no_phase_machine` (and that an
 absent `execution_phases` and an empty one keep their own sentences);
 `test_the_page_says_no_guard_truth_is_reported_rather_than_evaluating_the_guards`, which
@@ -1084,7 +1095,7 @@ second implementation is exactly where the decimal-point bug lived three times b
 
 Panel 1's drawing is in the same bucket, and `tests/test_web_ui.py` says so at the top: the
 frames it renders from are asserted there, and the layout, the shape coding, the class-swap
-highlight and the witnessed-path caption were checked by hand against `--mock`. Panel 3 is
+highlight and the witnessed-path caption were checked by hand against `--mock`. Panel 6 is
 the same split and the file says so too — the guard frames are asserted, while the vertical
 chain, the caret-and-second-outline highlight, the in-phase bar and the guard table were
 read in a browser. Its guard half needed one extra step to look at at all: this build's

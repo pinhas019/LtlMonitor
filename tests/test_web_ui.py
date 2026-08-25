@@ -872,10 +872,10 @@ def test_the_page_renders_an_unevaluated_guard_as_its_own_thing():
 PANELS = [
     (1,  "automaton",            "1 · automaton"),
     (2,  "verdict",              None),
-    (3,  "phase machine",        "3 · phase machine"),
-    (4,  "propositions",         "4 · atomic propositions"),
-    (5,  "input",                "5 · input data"),
-    (6,  "clock &amp; replay",   "6 · clock and replay"),
+    (3,  "propositions",         "3 · atomic propositions"),
+    (4,  "input",                "4 · input data"),
+    (5,  "clock",                "5 · clock and replay"),
+    (6,  "phase machine",        "6 · phase machine"),
     (7,  "adapter warnings",     "7 · adapter warnings"),
     (8,  "loaded config",        "8 · loaded config"),
     (9,  "schema",               None),
@@ -919,18 +919,22 @@ def test_no_panel_is_numbered_twice_or_left_out():
 
 
 def test_every_pane_says_what_it_is_for_and_not_only_what_it_is_called():
-    """`propositions` and `automaton` are jargon. The one-line subtitle is what makes the
-    page readable to somebody who did not write it, so it is structural and not
-    decorative: a pane may not ship without one."""
+    """`propositions` and `automaton` are jargon, so the name alone is not enough. But the
+    long-form line on every panel was worse than the bare names -- 181 words of subtitle on
+    a 1349-word page, on a page read across a room. Three or four words on screen, the
+    sentence on `title`: the same rule the AP rules follow."""
     page = _page()
-    summaries = re.findall(r"<summary>(.*?)</summary>", page, re.S)
-    # The ten panes, plus the one fold six of them sit behind. Panels 1 and 2 are the
-    # band and carry the same three marks as a `.cap` rather than as a summary.
-    assert len(summaries) == 11
-    for summary in summaries:
+    panes = re.findall(r'<details class="pane"[^>]*>\s*<summary>(.*?)</summary>', page, re.S)
+    assert len(panes) == 10
+    for summary in panes:
         assert 'class="num"' in summary, summary[:80]
         assert 'class="ttl"' in summary, summary[:80]
-        assert 'class="sub"' in summary, summary[:80]
+        sub = re.search(r'<span class="sub"[^>]*>(.*?)</span>', summary, re.S)
+        assert sub, summary[:80]
+        words = re.sub(r"<[^>]+>", " ", sub.group(1)).split()
+        assert len(words) <= 8, f"{len(words)} words of subtitle: {' '.join(words)}"
+        assert "title=" in sub.group(0) or "href=" in sub.group(1), summary[:80]
+
 
 
 # ================================================= pane 3's raw echo, from the mock's end
@@ -2277,31 +2281,35 @@ def test_the_density_control_is_one_number_and_is_remembered():
 
 def test_the_page_is_five_things_and_the_rest_is_behind_one_fold():
     """Eleven panes competing with the band is what this layout was, and the operator's
-    word for it was "so so noisy".
+    word for it was "so so noisy". Then six, and the word was "super bad".
 
-    Five now: the state machine, the propositions, the input, the clock, and the verdict
-    band above them. Everything consulted rather than watched is behind one fold, which
-    starts shut -- including `adapter.warnings`, which is not deleted, because it is what
-    surfaced the `min_range` fold gap and a warning that is gone is worse than one a
-    click away."""
+    Five now, named by the operator: the automaton with its current state, the clock, the
+    verdict, the input data, and the propositions with their evaluations. Panels 1 and 2
+    are the band; 3, 4 and 5 are the grid under it.
+
+    **The phase machine is behind the fold**, and that is the change that hurt: it is a
+    real view and it is one click away, but it is not one of the five. Keeping a sixth
+    panel because the sixth panel is good is how this page reached eleven. Nothing is
+    deleted -- `adapter.warnings` is what surfaced the `min_range` fold gap, and a warning
+    that is gone is worse than one a click away."""
     page = _page()
-    top = re.findall(r'<details class="pane" data-pane="([a-z]+)"( open)?>',
-                     page.split('<details id="more"')[0])
-    assert [p[0] for p in top] == ["machine", "aps", "inputs", "clock"]
+    band, rest = page.split('<div class="grid">', 1)
+    grid = rest.split('<details id="more"', 1)[0]
+
+    # The band is two of the five, and it is not inside the grid.
+    assert '<section id="wall">' in band
+    assert re.findall(r'<span class="ttl">([^<]+)</span>', band) == ["automaton", "verdict"]
+    # The other three, all open.
+    top = re.findall(r'<details class="pane" data-pane="([a-z]+)"( open)?>', grid)
+    assert [p[0] for p in top] == ["aps", "inputs", "clock"]
     assert all(p[1] for p in top), "every panel starts open; the fold is the `more` one"
-    # The band is the fifth, and it is not inside the grid.
-    assert '<section id="wall">' in page.split('<div class="grid">')[0]
+
     # The rest, behind one control, and none of it deleted.
-    more = page.split('<details id="more"')[1]
+    more = page.split('<details id="more"', 1)[1]
     behind = set(re.findall(r'data-pane="([a-z]+)"', more)) - {"more"}
-    assert behind == {"warnings", "config", "schema", "spec", "plots", "timing"}
-    assert 'const PANE_CLOSED = ["more", "plots", "timing"];' in page
+    assert behind == {"machine", "warnings", "config", "schema", "spec", "plots", "timing"}
+    assert 'const PANE_CLOSED = ["more", "plots", "timing", "replay"];' in page
     assert 'STORE.get(paneKey(name)' in page
-    assert 'pane.addEventListener("toggle"' in page
-    # The fold state is a glyph *and* a word, like every other state on this page.
-    assert 'content:"\\25be open"' in page and 'content:"\\25b8 closed"' in page
-    # A control inside a summary must not fold the pane it acts on.
-    assert page.count("ev.stopPropagation();") == 2
 
 
 def test_a_proposition_shows_its_condition_not_its_whole_description():
