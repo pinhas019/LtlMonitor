@@ -121,6 +121,57 @@ in P6's file and by P6's hand, and pane 3's echo half is built against them.
 
 ## Design
 
+### Two tiers: the wall band, and the panes under it
+
+The console is projected and read across a room while the robot runs, and two things have
+to dominate it: **the automaton with its live state**, and **the verdict with why it is
+that verdict**. Nine equal panes in one grid gave neither of them more room than the clock
+— the header said `VIOLATED` and the row that drove it was the last thing in pane 6, below
+a fold and often two columns away.
+
+**Tier 1 — `<section id="wall">`**, above the grid and outside it, so no pane cap can put
+a scrollbar on it. It carries, at display sizes: the **verdict**, the largest element on
+the page, with **why beside it** — the driving row's name, its `fault_category` and its
+own `confidence`; the **intervention**, its rung placed on the ladder (`rung 5 of 6`) with
+`category` and `imminence`, both of which were on the wire and rendered nowhere;
+**`verdict.terminal`**, which takes the band over when it is non-null and appeared nowhere
+on this page at all; **phase and step**, the phase reconciled by pane 7's `currentPhase`;
+and **the automata**, promoted out of pane 6 and drawn large with `formulaTable`'s rows
+beside them, so a status and its graph are one reading.
+
+The driving row is **chosen and never graded**: a VIOLATED `SAFETY` mode first and then
+any VIOLATED row, which is `manifest.breached_mode`'s own order — but the ladder runs on
+confidences and imminences the page cannot see, so the band names the row, says how many
+others are VIOLATED beside it, and does not claim to be the choice the monitor made. With
+no VIOLATED row it says what the verdict *rests on*, counted off the rows the verdict
+carries, and prints the disagreement rather than resolving it when the verdict word says
+`VIOLATED` anyway.
+
+**Tier 2 — the nine panes**, unchanged in content, now `<details>` that fold. Open/closed
+is remembered per pane and per browser; `plots`, `timing` and `clock` start closed. The
+`max-height:46vh` cap that put nine scrollbars on one page is tier 2's alone now.
+
+**One number for density.** Every size on the page is a `rem` off `:root{font-size}` —
+one literal px size is left in the stylesheet and it is that root — so `A−`/`A+` in the
+header move one number, and the choice is remembered in `localStorage`. The band has its
+own multiplier (`--wall`), applied by redefining the scale for its own subtree, so the one
+control moves both tiers. The drawings are sized in `rem` from that same number with
+`--aut-zoom` as the band's extra multiplier: `AUT`'s geometry is untouched, and a node's
+text went from about 7 effective px in a 430px column to about 18 in the band. Every
+colour is a token in the one `:root` block, so a projector or light theme is one block.
+
+**Pane 6 is a pointer, not a second copy.** The highlight is a class on a node found by
+element id (`aut0n3`); two drawings of one graph would be two elements under one id, the
+wrong one would be lit, and nothing on the page would say so.
+
+**The hot path pays for it.** `keysInRule` compiled one `RegExp` per schema key per AP
+*per observation* (168 a tick on the mock's own spec) and `apsInExpr` one per AP per guard
+*per verdict*; both are now compiled once and keyed on the manifest and adapter, the same
+structural guard `renderAutomaton` and `renderPhases` use. The state banner rebuilt its
+whole paragraph and reassigned `document.title` every tick for a string that moves when an
+operator moves it; it is keyed on the status now, and only the duration is written per
+tick.
+
 ### The nine panes, the strip above them, and what each is actually reading
 
 Numbered as the page numbers them, so a heading here and a heading on screen are the same
