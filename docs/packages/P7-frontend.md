@@ -677,6 +677,17 @@ debugger where one click advances every service by exactly one tick. The step sh
 mode *switch* does not yet, so the pane reports `mode` and does not set it, and a step
 pressed against a free-running clock shows the refusal it got rather than swallowing it.
 
+**And the replay half**, which is why the panel is no longer called "clock": what the mode
+this clock is running in *means*, and the three commands that record an episode and run the
+monitor over it again — see [Recording an episode, and replaying
+it](../clocking.md#recording-an-episode-and-replaying-it). The console **cannot start a
+recording itself and deliberately does not try.** A `POST` that names a path on the machine
+serving this page is a file write chosen by whoever can reach the port, and no amount of
+validation makes that a good idea on a robot. What was actually missing is smaller than a
+button: `replay_node` was discoverable only by somebody who already knew it existed. The
+block is rebuilt when the clock's *mode* changes and not per tick — it is four lines of
+text, and this pane already rewrites a table every pulse.
+
 **Every clock request must carry `X-Skill-Monitor` or it is a 403, reads included.** The
 whole proxied clock surface is gated — see [The rest](#the-rest) — so the rule has to be
 stated as "every clock request" rather than "every mutating call". The page obeys the
