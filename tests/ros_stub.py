@@ -165,6 +165,13 @@ def _qos_module() -> types.ModuleType:
     qos.ReliabilityPolicy = _Policy
     qos.HistoryPolicy = _Policy
     qos.QoSProfile = QoSProfile
+    # `declarative._qos` imports this for a descriptor that spells its qos
+    # 'action_status'. Action-status topics publish on transitions, so a plain
+    # depth misses every status sent before the subscription existed -- the sim
+    # descriptors rely on it, and without it they cannot even be constructed.
+    qos.qos_profile_action_status_default = QoSProfile(
+        depth=1, durability=_Policy.TRANSIENT_LOCAL,
+        reliability=_Policy.RELIABLE, history=_Policy.KEEP_LAST)
     return qos
 
 
@@ -226,9 +233,34 @@ def install() -> types.ModuleType | None:
         geometry = types.ModuleType("geometry_msgs")
         geometry_msg = types.ModuleType("geometry_msgs.msg")
         geometry_msg.PoseStamped = Message
+        geometry_msg.PointStamped = Message
         geometry.msg = geometry_msg
         sys.modules["geometry_msgs"] = geometry
         sys.modules["geometry_msgs.msg"] = geometry_msg
+
+        # Every message type the shipped descriptors name. `DeclarativeAdapter`
+        # resolves these by import when it subscribes, so a node registering a real
+        # descriptor could not be constructed without them -- which is what kept the
+        # evaluator untestable here at all.
+        #
+        # They are all `Message`, and that is this stub's honest limit: it says a type
+        # EXISTS, never what its fields are. A test needing a real Odometry builds the
+        # object it wants and hands it to the fold directly, as `test_adapter_spec`
+        # already does.
+        msg_mod.Float32 = Message
+        msg_mod.Int32 = Message
+        for package, names in (
+            ("nav_msgs", ("Odometry",)),
+            ("sensor_msgs", ("PointCloud2", "LaserScan", "Image")),
+            ("action_msgs", ("GoalStatusArray",)),
+        ):
+            pkg = types.ModuleType(package)
+            pkg_msg = types.ModuleType(package + ".msg")
+            for name in names:
+                setattr(pkg_msg, name, Message)
+            pkg.msg = pkg_msg
+            sys.modules[package] = pkg
+            sys.modules[package + ".msg"] = pkg_msg
 
     if "spot" not in sys.modules:
         # `core/automata` imports it at module scope. Nothing here builds an automaton:

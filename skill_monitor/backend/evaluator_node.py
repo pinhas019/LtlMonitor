@@ -33,6 +33,10 @@ from std_msgs.msg import String
 
 from skill_monitor.backend.adapters.base import SensorAdapter
 
+#: The pre-migration adapter topic. P5 and P7 still read it, so it stays until
+#: they move; `api.ADAPTER` is the contract topic and carries the same document.
+_LEGACY_ADAPTER = "/ltl/adapter"
+
 ADAPTERS: dict[str, str] = {
     # name -> "module:ClassName", imported lazily in _load_adapter so choosing one
     # adapter doesn't require every adapter's dependencies to be importable.
@@ -99,8 +103,30 @@ class GenericClientNode(Node):
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              reliability=ReliabilityPolicy.RELIABLE,
                              history=HistoryPolicy.KEEP_LAST)
-        self.adapter_pub = self.create_publisher(String, "/ltl/adapter", latched)
-        self.adapter_pub.publish(String(data=json.dumps(self.adapter.manifest())))
+        # Both wires, like every other topic mid-migration. `docs/api.md` names P3 the
+        # producer of api.ADAPTER, and until this file's own migration lands it was the
+        # one payload with a subscriber on the new wire and nobody publishing it: the
+        # monitor listens on both, the gateway serves it as a latched GET, and the
+        # console keys its raw-echo source picker on it -- so a console against a real
+        # robot could not name a single source to echo. The legacy topic stays until P5
+        # and P7 stop reading it.
+        # Through the builder, not `json.dumps` of the raw dict. `AdapterSpec.manifest`
+        # says in as many words that it returns "the keyword arguments
+        # `core.api.build_adapter` takes ... so P3 publishes it with
+        # `api.build_adapter(**spec.manifest(), ...)` and the shape cannot drift from
+        # the wire contract" -- and P3 did not, so what went out had no
+        # `schema_version` and failed `api.validate_adapter`. It was never noticed
+        # because nothing validates on receipt.
+        #
+        # `tick_hz` is defaulted rather than required: a hand-written adapter's
+        # `base.manifest()` has no topic map and no rate to report. The declarative
+        # descriptors all carry their own, which wins.
+        described = {"tick_hz": 1.0, **self.adapter.manifest()}
+        manifest = json.dumps(api.build_adapter(**described))
+        self.adapter_pub = self.create_publisher(String, api.ADAPTER, latched)
+        self.adapter_pub.publish(String(data=manifest))
+        self.legacy_adapter_pub = self.create_publisher(String, _LEGACY_ADAPTER, latched)
+        self.legacy_adapter_pub.publish(String(data=manifest))
 
         # Raw echo: opt-in, one source at a time, off until a console asks. The request
         # topic is the only thing that can turn it on, and `{"source_id": null}` is the
