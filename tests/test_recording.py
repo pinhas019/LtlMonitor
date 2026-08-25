@@ -71,7 +71,7 @@ def test_a_frame_that_is_not_json_is_dropped_at_write_time_and_counted():
 def test_a_truncated_recording_is_read_up_to_the_cut():
     """A power cut mid-write leaves a partial last line. Refusing the whole file would
     throw away the part that explains what happened before the cut."""
-    text = [a_line(api.TICK, {"seq": 1}), '{"topic": "/monitor/tick", "payl']
+    text = [a_line(api.TICK, {"seq": 1}), a_line(api.TICK, {"seq": 2})[:34]]
     recording = Recording.parse(text)
 
     assert recording.ticks == 1
