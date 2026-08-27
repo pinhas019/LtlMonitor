@@ -1,0 +1,83 @@
+# The dev loop in a box: the suite, and the console to look at, with nothing behind them.
+#
+#   docker compose -f deploy/docker-compose.test.yml run --rm tests
+#   docker compose -f deploy/docker-compose.test.yml run --rm tests -m pytest -q tests/test_api.py
+#   docker compose -f deploy/docker-compose.test.yml up console    # http://127.0.0.1:8799
+#
+# STANDALONE, and that is the inverse of deploy/docker-compose.dev.yml, whose header
+# opens "applied OVER another stack. Never on its own." This file is never applied over
+# anything. There is no clock, no monitor, no gateway and no robot, because the two
+# things it runs need none: the suite is pure Python and stubs rclpy (tests/ros_stub.py),
+# and the console runs with --mock, which fabricates every value in-process. Overlaying
+# this onto a real stack would give you a second frontend on a port the stack does not
+# know about, which is not a use anyone has.
+#
+# Relative paths below resolve against the PROJECT directory, which is the directory of
+# the FIRST -f file -- the same trap deploy/docker-compose.dev.yml names. Since this
+# file is meant to be the only -f, `..` is the repo root and `context: ..` is the same
+# build context every other stack here uses. Passing it second, after a first -f from
+# some other depth, would mount and build the wrong tree.
+#
+# The default bridge network, NOT `network_mode: host`. Every other stack in deploy/
+# uses host networking because the ROS services have to share a DDS domain and a
+# loopback. Nothing here talks DDS, and host networking is not implemented on Docker
+# Desktop for Windows -- which is the machine that needed this file in the first place.
+# A published port works on every platform; host mode would have made the console
+# unreachable on exactly the host that motivated it.
+
+x-test-image: &test-image
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.test
+  image: skill-monitor/test:${TAG:-dev}
+  # The repo, live, and the whole point of the image having no COPY: `run --rm tests`
+  # runs the working tree as it is on disk this second, with no rebuild between an edit
+  # and a result. See the header of deploy/Dockerfile.test for why this one image breaks
+  # the self-contained-versioned-unit rule that the deployed images keep.
+  volumes:
+    - "..:/app"
+  working_dir: /app
+
+services:
+
+  # The contract. `python -m pytest` is the image's CMD, so no `command` here -- and
+  # anything after `run --rm tests` replaces it, because the ENTRYPOINT is the
+  # interpreter rather than pytest.
+  #
+  # A JOB, not a service: `up` would start it, watch it exit 0 and report it as a
+  # crashed container. Run it.
+  tests:
+    <<: *test-image
+
+  # The console, --mock, for looking at the page while working on it.
+  #
+  # --mock is why python:3.10-slim is enough here where deploy/Dockerfile.skill_center
+  # needed ros:humble: without --mock that image builds a real rclpy bus to read the
+  # graph, and with it there is no ROS at all and every value on the page is fabricated
+  # (the page says so).
+  #
+  # SECURITY, stated rather than half-built, exactly as in deploy/Dockerfile.gateway and
+  # deploy/Dockerfile.skill_center: this console has NO AUTHENTICATION, and anything
+  # that can reach the port can reset a live mission. Two halves, and they are not the
+  # same decision:
+  #
+  #   * `--host 0.0.0.0` is the "one explicit edit" those headers keep naming, and it is
+  #     made here deliberately. On a bridge network the container has its own loopback,
+  #     and a console bound to 127.0.0.1 inside it answers nobody -- the published port
+  #     maps to a socket in the container that is not listening. That failure is the
+  #     correct default for a deployed image and useless for this one.
+  #   * `127.0.0.1:8799:8080` on the HOST side is what keeps that decision contained.
+  #     The bind address in the published port, not the one in the command, is what
+  #     decides who can reach an unauthenticated control surface. Written as `8799:8080`
+  #     it would be on every interface of the developer's machine, which on a
+  #     university LAN means everyone. Do not shorten it.
+  #
+  # 8799 rather than 8080 or 8081 so that it cannot collide with a gateway or console
+  # already running on the host from one of the other stacks -- the situation this is
+  # most likely to be started in.
+  console:
+    <<: *test-image
+    command: ["-m", "skill_monitor.frontend.web",
+              "--mock", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "127.0.0.1:8799:8080"

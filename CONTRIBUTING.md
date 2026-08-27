@@ -75,10 +75,36 @@ shows the diff.
 
 ## Tests
 
-`python3 -m pytest` must pass before a merge. Everything under `tests/` is pure
-Python: no ROS, no sockets, no hardware, no live LLM. A change that can only be
-checked on the robot still gets its logic extracted into `core/` and tested there —
-that is why `core/` exists.
+The suite must pass before a merge, and **the command that says so is the container
+one**:
+
+```bash
+docker compose -f deploy/docker-compose.test.yml run --rm tests
+```
+
+A host `python3 -m pytest` is the fast path, and the right thing to run while working
+— it needs nothing but pytest and it is quicker. It is simply not the contract, because
+it answers a question about the laptop as much as about the branch. On the Windows
+machine that prompted this, the suite ran 1217 passed, 4 failed, and all four were a
+`Path.read_text()` with no `encoding=`, resolving to that host's cp1255 ANSI codepage
+and choking on the UTF-8 em-dashes in `docs/api.md`. Nothing in the code was wrong; the
+*host* decided the encoding. The image pins the interpreter — `python:3.10-slim`, the
+floor of `requires-python` and the version `ros:humble` ships, so the tests run what the
+deployed images run — and it pins the locale with it, which is how a green suite becomes
+a property of the repo rather than of a machine. It also installs `node`, so the three
+page-syntax tests that have skipped on every machine in this project's history finally
+execute; see the header of `deploy/Dockerfile.test`.
+
+**CI is what decides.** `.github/workflows/tests.yml` runs exactly that compose command
+on every push and pull request, and its verdict — not a local run of either kind — is
+what makes a branch mergeable. The same standard the docs are held to, applied to the
+development environment: verified, not asserted.
+
+Everything under `tests/` is pure Python: no ROS, no sockets, no hardware, no live LLM.
+That is also why the test image is `python:3.10-slim` and not `ros:humble` — a suite
+that must not touch ROS should not be able to. A change that can only be checked on the
+robot still gets its logic extracted into `core/` and tested there — that is why `core/`
+exists.
 
 The GUI has two headless checks that need no display:
 
