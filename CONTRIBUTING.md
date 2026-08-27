@@ -45,20 +45,39 @@ alone — a manifest nobody reads is dead code.
 
 ### Non-negotiable
 
-1. **Merges happen only through a pull request, and the merge is fast-forward.**
-   Never `git merge` a feature branch into `dev` locally. The PR is the review
-   record; a local merge skips review and leaves nothing showing the change was
-   looked at.
+1. **Merges happen only through a pull request.** `dev` and `main` are both
+   protected and neither accepts a direct push, so this is now enforced rather than
+   remembered. A feature branch merges into `dev` with GitHub's **rebase** merge,
+   which replays the commits onto the tip and keeps `dev` linear — that is what
+   "fast-forward" has always meant in practice here, and `git log --merges dev`
+   shows it: the only merge commits on `dev` predate the convention.
 2. **Pull with `git pull --rebase`, always.** A plain `git pull` manufactures a
    merge bubble and destroys the linear history that makes `git log` and `git
    bisect` readable here.
 3. **Never two live branches touching the same layer.** That is the merge conflict.
-4. **Rebase on `dev` before opening the PR.** Fast-forward is only possible if the
-   branch is already ahead of `dev` and nothing else.
+4. **Rebase on `dev` before opening the PR.** The branch must be ahead of `dev` and
+   nothing else; protection requires it to be up to date before the merge button
+   unlocks, so a stale branch is refused rather than silently merged.
 5. **Push at the end of every session.** An unpushed branch exists on one disk.
    `~/TRAV-metric-map` is the cautionary tale: its long-lived branches reached
    *ahead 10, behind 8* of their remotes, in the repo the robot pulls from.
 6. **A branch you cannot name in one `<type>-<topic>` phrase is two branches.**
+
+### Promoting `dev` to `main`
+
+`main` is protected the same way, so `git push origin dev:main` is refused and
+promotion is a pull request from `dev` into `main`, merged with a **merge commit**.
+
+That is a deliberate exception to rule 1's rebase, and the reason is worth stating
+because the obvious choice is wrong. GitHub has no fast-forward merge button. Its
+rebase merge rewrites every commit under a new hash, so a promotion PR merged
+that way would leave `main` carrying duplicates of commits that still exist on `dev`
+under different SHAs, and the two branches would diverge permanently from the first
+release onward. A merge commit keeps `dev`'s commits as literal ancestors of `main`,
+which is what makes `git log main..dev` mean "not yet released" rather than "renamed".
+
+So `main` alone allows merge commits and `dev` does not. The cost is one merge bubble
+per release; the alternative was a second copy of the entire history.
 
 ### Not doing
 
