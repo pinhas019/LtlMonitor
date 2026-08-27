@@ -75,8 +75,8 @@ behind one fold that starts shut.
 
 Rules that are now pinned by tests, so do not undo them casually:
 
-- **One numbering, three places.** The badge on screen, `/* == 4 · atomic propositions */`
-  in `index.html`, and `**4 —**` in `docs/packages/P7-frontend.md`. Renumber all three or
+- **One numbering, three places.** The badge on screen, `/* == 3 · atomic propositions */`
+  in `index.html`, and `**3 —**` in `docs/packages/P7-frontend.md`. Renumber all three or
   the suite fails. This caught two panels I would have missed.
 - **Three or four words of subtitle, the sentence on `title`.** Capped at eight words per
   panel. A long-form line on every panel measured 181 words on a 1349-word page.
