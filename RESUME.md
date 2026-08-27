@@ -17,8 +17,8 @@ the whole handoff; nothing that matters lives on one disk.
 origin  https://github.com/pinhas019/LtlMonitor.git
 dev     72d7b4f       ← PRs #34 #35 #36 #37 #38 #39 all landed here today
 main    a50ae2d       ← PROMOTED today, PR #40, sixteen commits, merged with the merge
-                        commit button. `git rev-list main..dev` is empty, which is the
-                        only thing that proves the right button was pressed
+                        commit button. `git rev-list main..dev` is empty, which is how
+                        you know the right button was pressed
 branch  none outstanding. `git ls-remote --heads origin` is dev and main
 
 docker compose -f deploy/docker-compose.test.yml run --rm tests
@@ -30,11 +30,12 @@ python -m pytest                (this host, no PYTHONUTF8)
 
 ## First thing to do
 
-**Nothing about the toolchain. Go and run the robot.** `main` is promoted, the remote is
-two branches, no PR is open and both ways of running the suite are green. Everything this
-session built was in service of the G1 navigation experiment at the bottom of this entry,
-and that experiment is now the only thing in the way of it. Session 4 below says how; the
-short version is *run as-is, record it, calibrate P12 off the recording*.
+**Nothing about the toolchain. Go and run the robot.** `main` is promoted and both ways
+of running the suite are green. Everything this session built was in service of the G1
+navigation experiment at the bottom of this entry, and nothing stands in front of it any
+more. Session 4's *Tomorrow: the G1 navigation experiment* is where the runnable commands
+and the robot-side gotchas are; the short version is *run as-is, record it, calibrate P12
+off the recording*.
 
 If you are picking this up on a new machine, the whole setup is: install Docker, clone,
 and run the compose line above. There is no third step.
@@ -216,9 +217,8 @@ pressed and `main` now carries duplicates.
 
 This ran once, on PR #40, and the procedure holds: `main` is `a50ae2d`, a merge commit
 whose second parent is `72d7b4f`, `git rev-list main..dev` returns nothing, `dev` still
-exists and the default branch is still `dev`. Those last two are checked on purpose —
-they are the exact pair that went wrong the time a promotion PR auto-closed and took
-`dev` with it. (`delete_branch_on_merge` is still off,
+exists and the default branch is still `dev`. Those last two are checked on purpose, for
+the reason the parenthetical below gives. (`delete_branch_on_merge` is still off,
 deliberately: it once deleted `dev` when a `dev → main` PR auto-closed, and GitHub
 flipped the default branch to `main`.)
 
