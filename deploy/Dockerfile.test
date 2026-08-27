@@ -6,12 +6,17 @@
 #
 # WHY THIS EXISTS. The suite ran 1217 passed / 4 failed on the Windows machine this was
 # written on. All four were `Path.read_text()` with no `encoding=`, which on that host
-# resolves to cp1255 -- the Hebrew ANSI codepage -- and dies on the UTF-8 em-dashes in
+# resolved to cp1255 -- the Hebrew ANSI codepage -- and died on the UTF-8 em-dashes in
 # docs/api.md and skill_monitor/backend/evaluator_node.py. Nothing in the code was
-# wrong; the HOST decided the encoding, and the same tree is green on Linux and red
-# here. (The encoding bug itself is being fixed separately, and should be: a container
-# that hides a locale bug is worse than no container. This image exists so that the
-# NEXT one is caught by a machine rather than by a person on a Tuesday.)
+# wrong; the HOST decided the encoding, and the same tree was green on Linux and red
+# there.
+#
+# Those four were fixed rather than papered over -- a container that hides a locale bug
+# is worse than no container -- and tests/test_portability.py now refuses a new
+# unencoded read, so that bug is closed at the source as well as pinned here. What this
+# image is for is the NEXT one, which will not be a locale and will not be predicted:
+# an environment nobody chose is an environment nobody can debug, and pinning it turns
+# the surprise into a red CI run rather than a person losing a Tuesday.
 #
 # python:3.10-slim, and NOT ros:humble. Everything under tests/ is pure Python by
 # design -- no ROS, no sockets, no hardware, no live LLM -- and tests/ros_stub.py fakes
