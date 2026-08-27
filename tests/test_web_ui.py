@@ -868,7 +868,7 @@ def test_the_page_renders_an_unevaluated_guard_as_its_own_thing():
 #: said across a room, written in a commit and grepped for all land on the same panel.
 #: Two panels have no section marker of their own and say so here rather than being
 #: quietly skipped: the verdict rail is rendered by the band's own `renderWall*`, and the
-#: schema list is built by panel 5's code because it documents panel 5's keys.
+#: schema list is built by panel 4's code because it documents panel 4's keys.
 PANELS = [
     (1,  "automaton",            "1 · automaton"),
     (2,  "verdict",              None),
