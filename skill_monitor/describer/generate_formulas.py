@@ -700,7 +700,7 @@ def main():
 
     # Save formulas.json
     try:
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             json.dump(formulas_json, f, indent=2)
         print(f"\n[+] Saved formal specification to: {args.output}")
     except Exception as e:
@@ -713,7 +713,7 @@ def main():
     narrative = generate_skill_description(args.api_url, args.model, formulas_json)
 
     try:
-        with open(args.desc_output, "w") as f:
+        with open(args.desc_output, "w", encoding="utf-8") as f:
             f.write(narrative)
         print(f"[+] Saved skill description to: {args.desc_output}")
     except Exception as e:

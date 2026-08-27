@@ -95,7 +95,7 @@ def load_schema(name: str = "nav") -> dict:
     """key -> prose, read from skill_monitor/adapters/<name>_schema.json."""
     import json
     path = _ADAPTERS_DIR / f"{name}_schema.json"
-    return {k: v.get("doc", "") for k, v in json.loads(path.read_text())["keys"].items()}
+    return {k: v.get("doc", "") for k, v in json.loads(path.read_text(encoding="utf-8"))["keys"].items()}
 
 
 _ADAPTERS_DIR = Path(__file__).resolve().parents[2] / "adapters"

@@ -1173,7 +1173,7 @@ def load(name_or_path) -> AdapterSpec:
     if not path.exists():
         raise FileNotFoundError(
             f"no adapter descriptor {path.name!r} (have: {available()})")
-    raw = json.loads(path.read_text())
+    raw = json.loads(path.read_text(encoding="utf-8"))
     return from_dict(raw, base_dir=path.parent)
 
 
@@ -1188,7 +1188,7 @@ def _read_fragment(fragment, base_dir: Path, label: str, adapter: str) -> dict:
             f"inline {{key: {{doc, default}}}} dict, got {type(fragment).__name__}")
     path = base_dir / fragment
     try:
-        loaded = json.loads(path.read_text())
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ValueError(
             f"adapter {adapter!r}: schema fragment {label} names {fragment!r}, which "

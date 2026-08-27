@@ -455,7 +455,7 @@ def test_the_adapter_example_in_the_wire_doc_still_validates():
     doc is what someone writes a producer against."""
     import re
 
-    doc = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "api.md").read_text()
+    doc = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "api.md").read_text(encoding="utf-8")
     section = doc[doc.index("## `/monitor/adapter`"):]
     block = re.search(r"```json\n(.*?)\n```", section, re.S)
     assert block, "the /monitor/adapter section lost its example"
@@ -813,7 +813,7 @@ def test_the_verdict_example_in_the_wire_doc_still_validates():
     block the validator rejects means the doc and the code disagree about the payload."""
     import re
 
-    doc = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "api.md").read_text()
+    doc = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "api.md").read_text(encoding="utf-8")
     section = doc[doc.index("## `/monitor/verdict`"):]
     block = re.search(r"```json\n(.*?)\n```", section, re.S)
     assert block, "the /monitor/verdict section lost its example"
@@ -935,7 +935,7 @@ def test_a_payload_from_a_future_schema_version_is_reported():
 def test_api_imports_no_ros():
     """core/ must be importable on a laptop with no ROS: the spec generator, the
     contract oracle and every unit test depend on it."""
-    source = (REPO / "skill_monitor" / "core" / "api.py").read_text()
+    source = (REPO / "skill_monitor" / "core" / "api.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     imported = set()
     for node in ast.walk(tree):
@@ -984,7 +984,7 @@ def _topic_literals(path: pathlib.Path) -> list[tuple[int, str]]:
     code correct, and the docs are P9's to update. Everything else -- including a help
     string a user copies and pastes -- counts.
     """
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     docstrings = set()
     for node in ast.walk(tree):
         body = getattr(node, "body", None)

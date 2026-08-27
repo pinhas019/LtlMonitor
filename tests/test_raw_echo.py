@@ -153,7 +153,7 @@ ECHO_DESCRIPTOR = {
 @pytest.fixture
 def adapter(tmp_path):
     path = tmp_path / "echo_test.json"
-    path.write_text(json.dumps(ECHO_DESCRIPTOR))
+    path.write_text(json.dumps(ECHO_DESCRIPTOR), encoding="utf-8")
     return DeclarativeAdapter(descriptor=str(path))
 
 

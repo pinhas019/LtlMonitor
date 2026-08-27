@@ -38,7 +38,7 @@ def _validate_and_summarize(formulas_path: Path) -> int:
       - Per-phase preconditions, invariants, and timing bounds
     """
     try:
-        data = json.loads(formulas_path.read_text())
+        data = json.loads(formulas_path.read_text(encoding="utf-8"))
     except Exception as e:
         print(f"  {RED}✘  Could not parse formulas.json: {e}{RESET}", file=sys.stderr)
         return 1

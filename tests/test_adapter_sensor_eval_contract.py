@@ -20,7 +20,7 @@ from skill_monitor import spec_path
 import skill_monitor.core.spec_contract as spec_contract
 from skill_monitor.backend.adapters.base import NAV_SCHEMA
 
-SPEC = json.loads(spec_path("g1").read_text())
+SPEC = json.loads(spec_path("g1").read_text(encoding="utf-8"))
 
 def test_every_rule_ap_only_references_canonical_sensor_keys():
     unknown = set()

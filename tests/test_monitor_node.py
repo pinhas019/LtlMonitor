@@ -603,7 +603,7 @@ def test_the_node_halts_exactly_when_the_token_it_published_says_halt():
 # =============================================================================
 
 def _g1_spec() -> dict:
-    return json.loads(skill_monitor.spec_path("g1").read_text())
+    return json.loads(skill_monitor.spec_path("g1").read_text(encoding="utf-8"))
 
 
 def test_a_phase_invariant_breach_reaches_the_intervention_token():
@@ -847,7 +847,7 @@ def test_the_stub_stands_aside_for_an_installed_but_unimported_rclpy(tmp_path,
     save it, because skipif suppresses tests while `install()` runs at module scope."""
     real = tmp_path / "rclpy"
     real.mkdir()
-    (real / "__init__.py").write_text("_is_the_real_thing = True\n")
+    (real / "__init__.py").write_text("_is_the_real_thing = True\n", encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
 
     saved = {name: sys.modules[name] for name in _ROS_MODULES if name in sys.modules}
