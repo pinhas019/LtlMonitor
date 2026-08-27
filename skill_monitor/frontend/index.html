@@ -78,7 +78,7 @@
      A number does not reflow.
 
      The numbering is ONE numbering. `/* == 3 · propositions */` in the script below is
-     the panel labelled `4` on screen, so a number said across a room, written in a
+     the panel labelled `3` on screen, so a number said across a room, written in a
      commit and grepped for in this file all land on the same thing. */
   .cap { display:flex; gap:9px; align-items:baseline; flex-wrap:wrap;
          padding-bottom:7px; margin-bottom:9px; border-bottom:1px solid var(--line); }
@@ -578,7 +578,7 @@
 
     <details class="pane" data-pane="schema" open>
       <summary><span class="num">9</span><span class="ttl">schema</span>
-        <span class="sub" title="What each key in panel 3 means, in what units, what it
+        <span class="sub" title="What each key in panel 4 means, in what units, what it
           defaults to, and what the descriptor warns about it.">what each key means ⓘ</span>
         <span class="fold"></span></summary>
       <div class="body" id="schema"></div>
@@ -2611,7 +2611,7 @@ function clearPlots() {
 function renderPlots() {
   const a = S.adapter; if (!a) return;
   const plotted = adapterStruct().keys.filter(k => PLOTS.counts[k] > 0).sort();
-  const key = plotted.join("");
+  const key = plotted.join(" ");
   if (key !== PLOTS.key) {
     PLOTS.key = key;
     PLOTS.keys = plotted;

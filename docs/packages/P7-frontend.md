@@ -186,7 +186,7 @@ dropped on the floor by this page:
 | `verdict.risk.warn` | panel 6, and it now grades `steps to timeout` | the monitor's own "close to a bound" boolean, while the page re-derived a worse one from `steps_to_timeout <= 0` |
 | `verdict.risk.seconds_to_timeout`, `.trigger_confidence` | panel 6's timing table | the bound in seconds, and how much the monitor believed the signal that raised the risk — which is what the stale sources beside the verdict explain |
 | `adapter.warnings` | panel 7 | `_build_warnings` publishes these "so they are visible on the wire rather than only in a log nobody reads", and the console put them back in one. For `real_g1` there are fifteen, including the `min_range` fold |
-| `adapter.schema[k].doc`, `.default`, `.debounce_ticks` | a mark on every value in panels 4, 5 and 11, spelled out under panel 4's table and under each plot | **this is where the units live.** `yaw` warns that it wraps; the goal keys warn that `0.0` is the odometry origin and not "no goal". Both were on the wire and invisible |
+| `adapter.schema[k].doc`, `.default`, `.debounce_ticks` | a mark on every value in panels 3, 4 and 11, spelled out under panel 4's table and under each plot | **this is where the units live.** `yaw` warns that it wraps; the goal keys warn that `0.0` is the odometry origin and not "no goal". Both were on the wire and invisible |
 | `adapter.sources[].steps[]` | panel 8, per source | the fold policy decides what a number on this page *is*: `min_range` is folded `last` and not `min`, and `nav_stuck`'s threshold of 10 counts *messages* because its step runs `on: "message"` |
 | `adapter.sources[].max_age_s`, `.tracked` | panel 4 beside `age_s`; panel 8 beside `required` | a threshold with no bound beside it is unreadable, and `required` and `tracked` are different claims — only one was shown |
 | `manifest.named_failure_modes[].description`, `.formula` | the band's driving-cause cell, and every row of the table beside the automata | the band named `collision_imminent` and nothing on screen said what `collision_imminent` means |
@@ -253,9 +253,9 @@ Numbered as the page numbers them, so a heading here and a heading on screen are
 heading. The state banner and the control strip carry no number: they are in the sticky
 header rather than in the grid, for the reason below.
 
-The numbering is **reading order**, and it is the only numbering: `/* == 4 · atomic
-propositions */` in `index.html` is the panel labelled `4` on screen and the entry headed
-`**4 —**` here. Panel 1 is the automaton, because the spec *is* that machine and every
+The numbering is **reading order**, and it is the only numbering: `/* == 3 · atomic
+propositions */` in `index.html` is the panel labelled `3` on screen and the entry headed
+`**3 —**` here. Panel 1 is the automaton, because the spec *is* that machine and every
 other panel explains one input to it or one consequence of it — so it takes the width of
 the band and everything else is read around it. `tests/test_web_ui.py` pins the three
 numberings against each other; a panel renumbered in one place and not the others fails.

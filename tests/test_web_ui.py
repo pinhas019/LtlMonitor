@@ -908,6 +908,56 @@ def test_the_number_on_screen_is_the_number_in_the_script_and_in_the_doc():
         assert f"**{number} — " in doc, f"{number} — {title} is not in P7's doc"
 
 
+#: The three sentences that state the numbering convention by *quoting* one panel as a
+#: worked example, rather than by being one of the three marks the test above pins.
+#:
+#: Each is anchored on its own opening words, because a sentence that has been reworded
+#: away should fail loudly here rather than silently stop being checked.
+WORKED_EXAMPLES = [
+    ("skill_monitor/frontend/index.html",
+     r"The numbering is ONE numbering\..*?same thing\."),
+    ("docs/packages/P7-frontend.md",
+     r"The numbering is \*\*reading order\*\*.*?here\."),
+    ("RESUME.md",
+     r"\*\*One numbering, three places\.\*\*.*?P7-frontend\.md`\."),
+]
+
+#: How a panel number is cited inside one of those sentences: the script's banner, the
+#: badge on screen, the doc's entry heading.
+CITATIONS = [
+    r"/\* == (\d+) · [a-z ]+ \*/",
+    r"labelled `(\d+)`",
+    r"\*\*(\d+) —\*\*",
+]
+
+
+def test_the_sentences_that_teach_the_numbering_cite_a_panel_that_still_exists():
+    """The pin above catches a panel renumbered in one of its three homes. It does not
+    look at the prose that quotes the convention, so a renumber updates every pinned mark,
+    passes, and leaves the sentence stating the rule citing the old panel -- which is how
+    `/* == 3 · propositions */ ... is the panel labelled `4` on screen` came to contradict
+    itself inside the comment that exists to explain it."""
+    root = web.HERE.parents[1]
+    by_number = {number: title for number, title, _ in PANELS}
+    for name, anchor in WORKED_EXAMPLES:
+        text = (root / name).read_text(encoding="utf-8")
+        found = re.search(anchor, text, re.S)
+        assert found, f"{name}: the sentence that states the numbering rule is gone"
+        example = " ".join(found.group(0).split())
+
+        banner = re.search(r"/\* == (\d+) · ([a-z ]+) \*/", example)
+        assert banner, f"{name}: no `/* == N · name */` to work from: {example}"
+        number, panel = int(banner.group(1)), banner.group(2)
+        # The example has to name a real panel: the right number *and* the right panel,
+        # so a sentence that says "4 · atomic propositions" when 4 is `input` fails too.
+        assert by_number.get(number), f"{name}: there is no panel {number}"
+        assert by_number[number] in panel, (
+            f"{name}: panel {number} is `{by_number[number]}`, not `{panel}`")
+
+        cited = [int(n) for pattern in CITATIONS for n in re.findall(pattern, example)]
+        assert set(cited) == {number}, f"{name}: cites panels {sorted(set(cited))}"
+
+
 def test_no_panel_is_numbered_twice_or_left_out():
     """The failure mode of a hand-kept list: two panels labelled `5` reads as one panel
     that moved, and nothing on the page says otherwise."""
