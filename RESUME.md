@@ -15,10 +15,13 @@ the whole handoff; nothing that matters lives on one disk.
 
 ```
 origin  https://github.com/pinhas019/LtlMonitor.git
-dev     72d7b4f       ← PRs #34 #35 #36 #37 #38 #39 all landed here today
+dev     72d7b4f       ← PRs #34 #35 #36 #37 #38 #39 all landed here today. This entry
+                        was corrected twice after that SHA was written, so dev is a few
+                        commits past it by the time you read this. `git log --oneline`
+                        is the only current answer; treat the SHA as "roughly here"
 main    a50ae2d       ← PROMOTED today, PR #40, sixteen commits, merged with the merge
-                        commit button. `git rev-list main..dev` is empty, which is how
-                        you know the right button was pressed
+                        commit button. `git rev-list main..dev` was empty immediately
+                        after, which is how you know the right button was pressed
 branch  none outstanding. `git ls-remote --heads origin` is dev and main
 
 docker compose -f deploy/docker-compose.test.yml run --rm tests
