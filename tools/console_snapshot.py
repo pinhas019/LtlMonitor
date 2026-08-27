@@ -23,12 +23,10 @@ its own, so a capture off the G1 renders the same way this one does.
 """
 
 import json
+import pathlib
 import sys
 import time
 import urllib.request
-
-from skill_monitor.backend.gateway import ws_connect
-from skill_monitor.core import api
 
 HDR = {"X-Skill-Monitor": "1"}
 
@@ -115,6 +113,13 @@ def _post(base, path, body):
 
 
 def capture(base, out, seconds):
+    # Imported here and not at module scope: `build` is fully offline -- a recording and
+    # `index.html` -- and importing the gateway for it made the whole tool unrunnable
+    # from a checkout that is not on `sys.path`. `capture` genuinely needs both, so it
+    # still fails loudly, and only when it is the half being asked for.
+    from skill_monitor.backend.gateway import ws_connect
+    from skill_monitor.core import api
+
     monitors = _get(base, "/api/monitors")
     if not monitors.get("monitors"):
         raise SystemExit(f"{base}: the gateway has discovered no monitor to record")
@@ -151,7 +156,7 @@ def capture(base, out, seconds):
             frames.append({"topic": frame["topic"], "payload": frame["payload"]})
     ws.close()
 
-    with open(out, "w") as fh:
+    with open(out, "w", encoding="utf-8") as fh:
         json.dump({"frames": frames, "latched": latched, "ns": ns,
                    "topics": {"tick": api.TICK, "obs": api.OBSERVATION,
                               "verdict": api.VERDICT, "status": api.MONITOR_STATUS,
@@ -165,21 +170,27 @@ def capture(base, out, seconds):
 
 
 def build(recording, out):
-    here = __file__.rsplit("/", 2)[0]
-    page = open(f"{here}/skill_monitor/frontend/index.html").read()
-    cap = open(recording).read()
+    here = pathlib.Path(__file__).resolve().parents[1]
+    page = (here / "skill_monitor" / "frontend" / "index.html").read_text(encoding="utf-8")
+    cap = pathlib.Path(recording).read_text(encoding="utf-8")
 
-    # Head and body only. An artifact host supplies the skeleton; a browser opening the
-    # file directly does not care.
+    # Head and body only: an artifact host supplies the skeleton. The charset stays in
+    # it. Over `file://` -- which is how the docstring and `RESUME.md` both say to open
+    # the result -- there is no HTTP header to say utf-8, and the page is full of `ⓘ ✖ ·
+    # — Büchi`, so stripping it rendered a wall of mojibake. A host that wraps this in
+    # its own skeleton gets the same declaration twice, which costs nothing.
     body = (page.split("<head>", 1)[1].split("</head>", 1)[0]
             + page.split("<body>", 1)[1].rsplit("</body>", 1)[0])
-    body = body.replace('<meta charset="utf-8">', "")
 
-    shim = SHIM % cap
+    # `json.dumps` does not escape `/`, so a payload that ever recorded the text
+    # `</script>` would close the shim's own block and the rest of the file would be
+    # read as markup. The snapshot is made to be sent to somebody; it has to survive
+    # its own contents.
+    shim = SHIM % cap.replace("</", "<\\/")
     out_html = body.replace('<script>\n"use strict";', shim + '<script>\n"use strict";', 1)
     if shim not in out_html:
         raise SystemExit("the page's script tag moved; the shim has nowhere to go")
-    with open(out, "w") as fh:
+    with open(out, "w", encoding="utf-8") as fh:
         fh.write(out_html)
     print(f"{out}: {len(out_html)} bytes", file=sys.stderr)
 
