@@ -1,0 +1,49 @@
+# What never enters a build context.
+#
+# There was no .dockerignore here until deploy/Dockerfile.test needed one, and every
+# image in deploy/ (and sim/) builds with `context: ..` -- the repo ROOT, not the
+# directory the Dockerfile lives in. So every `docker compose build` has been tarring up
+# the whole checkout and sending it to the daemon before reading the first COPY, and
+# the COPYs only ever take skill_monitor/ and pyproject.toml.
+#
+# Two entries below are the reason this file exists rather than being tidiness:
+#
+#   .git      2.2 MB of history that no image has ever needed.
+#   .claude/  13 MB when this was written, and unbounded, because .claude/worktrees/
+#             holds ENTIRE SECOND CHECKOUTS of this repo -- one per concurrent agent,
+#             each with its own .git. .gitignore already refuses to commit them; that
+#             does nothing for a build context, which is a filesystem walk and not a
+#             git operation. Without this file a build from inside a worktree session
+#             ships the other agents' branches into the daemon.
+#
+# Nothing here excludes anything an image COPYs. Adding skill_monitor/, pyproject.toml
+# or specs to this file breaks every deployed image silently -- the build succeeds and
+# the container starts without the package.
+.git
+.gitignore
+.claude
+
+# Build leftovers of the host's interpreter. On the test image these would be Windows
+# CPython 3.13 bytecode arriving in a Linux 3.10 container, which is at best ignored;
+# deploy/Dockerfile.test also sets PYTHONDONTWRITEBYTECODE so the reverse cannot happen.
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+
+# Editor and environment state, which is per-machine by definition.
+.vscode/
+.idea/
+.venv/
+venv/
+*.egg-info/
+
+# Recordings and outputs. These are what the stacks mount at /data at RUN time; a copy
+# baked into an image at build time is a stale duplicate of a volume, and episode logs
+# are the one thing here that grows without a bound.
+data/
+output/
+scratch/
+*.jsonl
+*.bag
