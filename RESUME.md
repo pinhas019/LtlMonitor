@@ -30,8 +30,8 @@ python -m pytest                    (on this Windows host, today)
 
 **Promote `dev` to `main`.** Eleven commits, three PRs merged today, and `main` has not
 moved since 2026-08-25 (`fa9796a`, the release of PR #32). It is a pull request now, not
-a push, and there is one repo setting standing in front of it — read *Git rules* below
-before opening it, because the wrong merge button here is not reversible by a revert.
+a push, and it must be merged with the **merge commit** button — read *Git rules* below
+before opening it, because the wrong button here is not reversible by a revert.
 
 ## The dev loop is in a container, and that is the contract
 
@@ -165,17 +165,21 @@ A merge commit keeps `dev`'s commits as literal ancestors, which is what makes
 merge commits — that is exactly why `required_linear_history` is off on `main` and on for
 `dev`. Session 4's "dev fast-forwards to main" is wrong twice over.
 
-**The trap, measured today and not yet fixed:** the repo's own merge-button settings are
-`allow_merge_commit: false`, `allow_rebase_merge: true`, `allow_squash_merge: false`.
+**A trap that was found and closed today, worth knowing existed.** The protection above
+was set before anyone checked the repo's merge-button settings, which were
+`allow_merge_commit: false`, `allow_rebase_merge: true`. So the rule said promotion must
+be a merge commit while the only button GitHub would offer on that PR was *Rebase and
+merge* — the one thing that must never happen. `allow_merge_commit` is **on** now, and
+`dev`'s `required_linear_history` still refuses merge commits there, so enabling it
+repo-wide did not loosen `dev`. Confirm before promoting rather than trusting this line:
 
 ```bash
 gh api repos/pinhas019/LtlMonitor --jq '{allow_merge_commit,allow_rebase_merge,allow_squash_merge}'
 ```
 
-So the only button a `dev → main` PR currently offers is *Rebase and merge* — the one
-thing the paragraph above says must never happen. **Turn on "Allow merge commits" in
-Settings → General → Pull Requests before opening the promotion PR**, and merge with
-`gh pr merge --merge --delete-branch=false`. (`delete_branch_on_merge` is still off,
+Then merge the promotion with `gh pr merge --merge --delete-branch=false`, and check
+afterwards that `git rev-list main..dev` is empty — if it is not, the wrong button was
+pressed and `main` now carries duplicates. (`delete_branch_on_merge` is still off,
 deliberately: it once deleted `dev` when a `dev → main` PR auto-closed, and GitHub
 flipped the default branch to `main`.)
 
