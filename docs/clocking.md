@@ -196,6 +196,53 @@ proves nor refutes the property". That is the *normal, expected* state of a heal
 member to that enum and do not rename it**: introduce a separate per-AP `TRUE|FALSE|UNKNOWN`
 and a per-tick `DECIDED|UNDECIDED`, and let the verdict carry both.
 
+## Recording an episode, and replaying it
+
+[P9](packages/P9-docs.md) names one acceptance test for the hardware-agnosticism claim:
+two replays of one episode must produce **the same verdict**. Nothing recorded the
+episode, so nothing could be compared — `/monitor/observation` had no recorder and
+`/monitor/verdict` had no recorder.
+
+`core/recording.py` is the format and the rule:
+
+> **Replay the monitor's inputs. Compare its outputs.**
+
+Which is which is a constant and not a judgement — `INPUTS` is `adapter`, `tick`,
+`observation`, `command`, `load_spec`; `OUTPUTS` is `verdict`, `manifest`, `spec_status`,
+`status`. Replaying an output would be circular: push the recorded verdicts back onto
+`/monitor/verdict` and of course they match. Replaying `manifest` would be worse than
+circular, because the monitor *publishes* it from the spec it loaded and a second producer
+on a latched topic is a race the console renders as a fact.
+
+```bash
+python3 -m skill_monitor.backend.replay_node record run.jsonl        # while it runs
+python3 -m skill_monitor.backend.replay_node play run.jsonl --diff   # afterwards
+```
+
+**A replay publishes the recorded ticks, so no clock runs during one.** That is what makes
+invariant 2 above hold end to end: the tick count of a replay cannot depend on how fast the
+replay went, because the replay is not generating ticks at all. It also means the clock and
+the evaluator must be stopped — both are input producers, and two producers on
+`/monitor/tick` interleave into a stream that is neither run. `play` counts the publishers
+it is competing with and says so rather than letting it show up as a diff.
+
+**Nothing is ignored in a diff by default, including `t`.** A replay republishes the
+recorded ticks, so the time base *is* the recorded one; a `t` that moved means the replay
+invented a clock, which is exactly the bug the comparison exists to catch. `--ignore PATH`
+exists for a difference someone has looked at and decided is expected, not to make a first
+run pass.
+
+A **missing** verdict is kept apart from a **differing** one. A tick the replay answered
+nothing for is a monitor that stopped stepping, and reporting that as "every field differs"
+would bury one failure under a hundred lines of noise.
+
+**Why not `ros2 bag`.** For the sensor topics, use one — that is what rviz2 and Isaac
+replay from, and `replay_node topics run.jsonl` writes the record line off the adapter the
+run declared, so it is that robot's topic list and not a fixed one. A bag cannot do the job
+for the monitor stream: it replays on *wall* time, which reintroduces exactly the
+dependency this document exists to remove, and its payloads are serialized CDR, so a diff
+between two runs is a diff of bytes rather than of `intervention.action`.
+
 ## The episode fold
 
 An episode verdict folds its ticks and carries a **coverage count**: how many ticks were

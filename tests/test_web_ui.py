@@ -222,10 +222,10 @@ def test_a_symlink_out_of_the_directory_is_not_a_way_in(tmp_path, monkeypatch):
     """Resolved-path comparison, not string inspection: `evil.html` is a legal name and
     a legal extension, and only the resolve catches where it points."""
     secret = tmp_path / "secret.html"
-    secret.write_text("<b>not yours</b>")
+    secret.write_text("<b>not yours</b>", encoding="utf-8")
     served_dir = tmp_path / "static"
     served_dir.mkdir()
-    (served_dir / "index.html").write_text("ok")
+    (served_dir / "index.html").write_text("ok", encoding="utf-8")
     try:
         (served_dir / "evil.html").symlink_to(secret)
     except (OSError, NotImplementedError):       # pragma: no cover -- no symlinks here
@@ -861,19 +861,130 @@ def test_the_page_renders_an_unevaluated_guard_as_its_own_thing():
     assert "unknown_aps" in page and "hasOwnProperty.call(o.ap_values, name)" in page
 
 
-def test_the_panes_are_numbered_the_way_the_page_lays_them_out():
-    """The two automaton views belong together, so the phase machine is pane 7 and the
-    clock and timing moved down. A heading here and a heading on screen are the same
-    heading, and `docs/packages/P7-frontend.md` numbers them the same way."""
+#: The panels, in the order the page lays them out.
+#:
+#: One number has to mean one thing in three places -- the badge on screen, the section
+#: marker in `index.html`'s script, and the entry heading in P7's doc -- so that a number
+#: said across a room, written in a commit and grepped for all land on the same panel.
+#: Two panels have no section marker of their own and say so here rather than being
+#: quietly skipped: the verdict rail is rendered by the band's own `renderWall*`, and the
+#: schema list is built by panel 4's code because it documents panel 4's keys.
+PANELS = [
+    (1,  "automaton",            "1 · automaton"),
+    (2,  "verdict",              None),
+    (3,  "propositions",         "3 · atomic propositions"),
+    (4,  "input",                "4 · input data"),
+    (5,  "clock",                "5 · clock and replay"),
+    (6,  "phase machine",        "6 · phase machine"),
+    (7,  "adapter warnings",     "7 · adapter warnings"),
+    (8,  "loaded config",        "8 · loaded config"),
+    (9,  "schema",               None),
+    (10, "description and spec", "10 · description and spec"),
+    (11, "plots",                "11 · plots"),
+    (12, "timing",               "12 · timing"),
+]
+
+
+def test_every_panel_says_which_number_it_is():
+    """A number does not reflow. "The third one" meant a different pane depending on how
+    wide the reader's window was, because the grid is `auto-fit` -- and the names are
+    jargon, so there was nothing else to point at anything with."""
     page = _page()
-    for heading in ("6 · automaton", "7 · phase machine", "8 · clock", "9 · timing"):
-        assert heading in page, heading
-    assert "8 · timing" not in page
-    assert "7 · clock" not in page
+    for number, title, _ in PANELS:
+        assert f'<span class="num">{number}</span>' in page, number
+        assert f'<span class="ttl">{title}</span>' in page, title
+
+
+def test_the_number_on_screen_is_the_number_in_the_script_and_in_the_doc():
+    """The regression this replaces: the script's section markers were the ORIGINAL pane
+    order and the page had been re-laid-out twice under them, so `/* == 6 · automaton */`
+    described the panel a reader would have called the first one."""
+    page = _page()
     doc = (web.HERE.parents[1] / "docs" / "packages" / "P7-frontend.md").read_text(
         encoding="utf-8")
-    assert "**7 — The phase machine" in doc
-    assert "**8 — Clock.**" in doc
+    for number, title, marker in PANELS:
+        if marker is not None:
+            assert f"/* == {marker} " in page, marker
+        assert f"**{number} — " in doc, f"{number} — {title} is not in P7's doc"
+
+
+#: The three sentences that state the numbering convention by *quoting* one panel as a
+#: worked example, rather than by being one of the three marks the test above pins.
+#:
+#: Each is anchored on its own opening words, because a sentence that has been reworded
+#: away should fail loudly here rather than silently stop being checked.
+WORKED_EXAMPLES = [
+    ("skill_monitor/frontend/index.html",
+     r"The numbering is ONE numbering\..*?same thing\."),
+    ("docs/packages/P7-frontend.md",
+     r"The numbering is \*\*reading order\*\*.*?here\."),
+    ("RESUME.md",
+     r"\*\*One numbering, three places\.\*\*.*?P7-frontend\.md`\."),
+]
+
+#: How a panel number is cited inside one of those sentences: the script's banner, the
+#: badge on screen, the doc's entry heading.
+CITATIONS = [
+    r"/\* == (\d+) · [a-z ]+ \*/",
+    r"labelled `(\d+)`",
+    r"\*\*(\d+) —\*\*",
+]
+
+
+def test_the_sentences_that_teach_the_numbering_cite_a_panel_that_still_exists():
+    """The pin above catches a panel renumbered in one of its three homes. It does not
+    look at the prose that quotes the convention, so a renumber updates every pinned mark,
+    passes, and leaves the sentence stating the rule citing the old panel -- which is how
+    `/* == 3 · propositions */ ... is the panel labelled `4` on screen` came to contradict
+    itself inside the comment that exists to explain it."""
+    root = web.HERE.parents[1]
+    by_number = {number: title for number, title, _ in PANELS}
+    for name, anchor in WORKED_EXAMPLES:
+        text = (root / name).read_text(encoding="utf-8")
+        found = re.search(anchor, text, re.S)
+        assert found, f"{name}: the sentence that states the numbering rule is gone"
+        example = " ".join(found.group(0).split())
+
+        banner = re.search(r"/\* == (\d+) · ([a-z ]+) \*/", example)
+        assert banner, f"{name}: no `/* == N · name */` to work from: {example}"
+        number, panel = int(banner.group(1)), banner.group(2)
+        # The example has to name a real panel: the right number *and* the right panel,
+        # so a sentence that says "4 · atomic propositions" when 4 is `input` fails too.
+        assert by_number.get(number), f"{name}: there is no panel {number}"
+        assert by_number[number] in panel, (
+            f"{name}: panel {number} is `{by_number[number]}`, not `{panel}`")
+
+        cited = [int(n) for pattern in CITATIONS for n in re.findall(pattern, example)]
+        assert set(cited) == {number}, f"{name}: cites panels {sorted(set(cited))}"
+
+
+def test_no_panel_is_numbered_twice_or_left_out():
+    """The failure mode of a hand-kept list: two panels labelled `5` reads as one panel
+    that moved, and nothing on the page says otherwise."""
+    numbers = [n for n, _, _ in PANELS]
+    assert numbers == sorted(numbers) == list(range(1, 13))
+    page = _page()
+    for number in numbers:
+        assert page.count(f'<span class="num">{number}</span>') == 1, number
+
+
+def test_every_pane_says_what_it_is_for_and_not_only_what_it_is_called():
+    """`propositions` and `automaton` are jargon, so the name alone is not enough. But the
+    long-form line on every panel was worse than the bare names -- 181 words of subtitle on
+    a 1349-word page, on a page read across a room. Three or four words on screen, the
+    sentence on `title`: the same rule the AP rules follow."""
+    page = _page()
+    panes = re.findall(r'<details class="pane"[^>]*>\s*<summary>(.*?)</summary>', page, re.S)
+    assert len(panes) == 10
+    for summary in panes:
+        assert 'class="num"' in summary, summary[:80]
+        assert 'class="ttl"' in summary, summary[:80]
+        sub = re.search(r'<span class="sub"[^>]*>(.*?)</span>', summary, re.S)
+        assert sub, summary[:80]
+        words = re.sub(r"<[^>]+>", " ", sub.group(1)).split()
+        assert len(words) <= 8, f"{len(words)} words of subtitle: {' '.join(words)}"
+        assert "title=" in sub.group(0) or "href=" in sub.group(1), summary[:80]
+
 
 
 # ================================================= pane 3's raw echo, from the mock's end
@@ -2070,23 +2181,24 @@ def test_the_band_shows_the_rung_the_category_and_the_imminence():
     assert "none reported" in body
     # A verdict with no intervention block at all names the field and its owner.
     assert 'missing("verdict.intervention", "P4"' in body
-    # The three confidences on this page are different numbers; this one says which.
-    assert "the intervention's own" in body
+    # The three confidences on this page are different numbers; this one says which,
+    # on `title` rather than as a line of the band -- it is the same sentence every tick.
+    assert "The intervention's own confidence" in body
     # And no imminence is derived here from anything.
     assert "steps_to_timeout" not in body
 
 
-def test_the_automata_are_in_the_band_and_pane_six_points_at_them():
-    """Promoted out of the pane and drawn once. Pane 6 keeps its heading and becomes a
-    pointer, because the highlight is a class on a node found by element id: two copies
-    of one graph would be two elements under `aut0n3`, the wrong one would be lit, and
-    nothing on the page would say so."""
+def test_the_automata_are_the_main_panel_and_are_drawn_once():
+    """Drawn in the band and nowhere else. The highlight is a class on a node found by
+    element id: two copies of one graph would be two elements under `aut0n3`, the wrong
+    one would be lit, and nothing on the page would say so. So panel 1 IS the band, and
+    panel 3 points at it rather than redrawing anything."""
     page = _page()
     body = _fn(page, "renderAutomaton")
     assert 'const box = $("wall-graphs");' in body
     assert '$("wall-rows").innerHTML = formulaTable(v);' in body
-    assert 'id="automaton"' not in page                     # the pane no longer draws
-    assert "6 · automaton" in page                          # and still says what it is
+    assert 'id="automaton"' not in page                     # no pane draws it
+    assert "1 · automaton" in page                          # and it says what it is
     assert 'href="#wall"' in page
     # The layout is untouched -- the drawing is *sized* from the scale, not re-laid-out.
     assert "const AUT = { R: 15, COL: 136, ROW: 66, PAD: 34, TOP: 70 };" in page
@@ -2192,7 +2304,11 @@ def test_the_drawings_are_sized_from_the_number_the_stylesheet_declares():
     assert f"const REM = {root.group(1)};" in page
     assert "max-width:100%;height:auto`;" in page          # allowed to shrink, never
     assert "var(--aut-zoom,1)" in page                     # to stretch
+    # The band's multiplier and no more. Going past it made the widest graph fill the
+    # column and blew a two-state safety automaton up to 781x377 -- size on a dashboard
+    # reads as importance, and `drawGraph` sizes per graph precisely so it does not.
     assert "#wall .aut-view { --aut-zoom:var(--wall); }" in _style(page)
+    assert "grid-template-columns:minmax(0,7fr) minmax(0,5fr)" in _style(page)
 
 
 def test_the_density_control_is_one_number_and_is_remembered():
@@ -2214,33 +2330,87 @@ def test_the_density_control_is_one_number_and_is_remembered():
     assert "localStorage" not in _fn(page, "setDensity")   # only ever through STORE
 
 
+def test_the_band_panels_are_boxes_like_every_other_panel():
+    """Panels 1 and 2 were bare `<div>`s with a caption on the page background, while 3,
+    4 and 5 were bordered boxes with a header. So the top half of the console read as
+    loose text beside a diagram and the bottom half read as panels, and "what is where"
+    had no answer above the fold. One vocabulary for all five."""
+    page = _page()
+    band = page.split('<div class="grid">')[0]
+    panes = re.findall(r'<section class="pane">\s*<h2>(.*?)</h2>', band, re.S)
+    assert len(panes) == 2
+    for head in panes:
+        assert 'class="num"' in head and 'class="ttl"' in head and 'class="sub"' in head
+    # The same rule that styles a pane's summary styles these, so they cannot drift.
+    assert "section > h2, details.pane > summary {" in _style(page)
+
+
+def test_the_verdict_is_four_labelled_rows_in_one_column():
+    """It was an `auto-fit` grid: three columns of 213px inside a 666px rail, cells 255,
+    309, 568 and 276px tall, and `where` wrapping onto a second row *under* `verdict`.
+    Four things scattered rather than four things in order.
+
+    One column, a fixed label column, a rule between rows. Every row the same shape,
+    which is the whole of what makes a block of text scannable by somebody who did not
+    write it."""
+    page = _page()
+    style = _style(page)
+    assert "#wall .cell { display:grid; grid-template-columns:9.5rem minmax(0,1fr);" in style
+    assert "repeat(auto-fit,minmax(15rem,1fr))" not in style
+    # Row 1 of column 1 and nothing else. `span 99` made the grid HAVE 99 rows, and 98
+    # empty ones at a 4px gap added 392px of nothing to every cell.
+    assert "#wall .cell > .lead { grid-column:1; grid-row:1;" in style
+    assert "grid-row:1 / span" not in style
+    # And the hero fits its column: at 1.8 it was 51px, and `✖ VIOLATED` needed 258px
+    # of a 213px column and ran out over the cell beside it.
+    assert "font-size:calc(var(--t-xl) * 1.25); font-weight:700;" in style
+    assert "overflow-wrap:anywhere" in style.split("#wall .big")[1].split("}")[0]
+
+
+def test_the_header_does_not_repeat_the_panel_under_it():
+    """It carried verdict, intervention, phase, step and tick as well -- all of which
+    panels 2 and 5 say, larger and with their evidence beside them. Two places showing
+    `VIOLATED` is not twice as clear: it is a reader wondering which one is real."""
+    page = _page()
+    head = page.split("<header>")[1].split("</header>")[0]
+    for gone in ("h-verdict", "h-action", "h-phase", "h-step"):
+        assert gone not in page, gone
+    assert 'id="h-skill"' in head and 'id="h-tick"' in head
+    body = _fn(page, "renderHeader")
+    assert "verdictClass" not in body and "intervention" not in body
+
+
 def test_the_page_is_five_things_and_the_rest_is_behind_one_fold():
     """Eleven panes competing with the band is what this layout was, and the operator's
-    word for it was "so so noisy".
+    word for it was "so so noisy". Then six, and the word was "super bad".
 
-    Five now: the state machine, the propositions, the input, the clock, and the verdict
-    band above them. Everything consulted rather than watched is behind one fold, which
-    starts shut -- including `adapter.warnings`, which is not deleted, because it is what
-    surfaced the `min_range` fold gap and a warning that is gone is worse than one a
-    click away."""
+    Five now, named by the operator: the automaton with its current state, the clock, the
+    verdict, the input data, and the propositions with their evaluations. Panels 1 and 2
+    are the band; 3, 4 and 5 are the grid under it.
+
+    **The phase machine is behind the fold**, and that is the change that hurt: it is a
+    real view and it is one click away, but it is not one of the five. Keeping a sixth
+    panel because the sixth panel is good is how this page reached eleven. Nothing is
+    deleted -- `adapter.warnings` is what surfaced the `min_range` fold gap, and a warning
+    that is gone is worse than one a click away."""
     page = _page()
-    top = re.findall(r'<details class="pane" data-pane="([a-z]+)"( open)?>',
-                     page.split('<details id="more"')[0])
-    assert [p[0] for p in top] == ["machine", "aps", "inputs", "clock"]
+    band, rest = page.split('<div class="grid">', 1)
+    grid = rest.split('<details id="more"', 1)[0]
+
+    # The band is two of the five, and it is not inside the grid.
+    assert '<section id="wall">' in band
+    assert re.findall(r'<span class="ttl">([^<]+)</span>', band) == ["automaton", "verdict"]
+    # The other three, all open.
+    top = re.findall(r'<details class="pane" data-pane="([a-z]+)"( open)?>', grid)
+    assert [p[0] for p in top] == ["aps", "inputs", "clock"]
     assert all(p[1] for p in top), "every panel starts open; the fold is the `more` one"
-    # The band is the fifth, and it is not inside the grid.
-    assert '<section id="wall">' in page.split('<div class="grid">')[0]
+
     # The rest, behind one control, and none of it deleted.
-    more = page.split('<details id="more"')[1]
+    more = page.split('<details id="more"', 1)[1]
     behind = set(re.findall(r'data-pane="([a-z]+)"', more)) - {"more"}
-    assert behind == {"warnings", "config", "schema", "spec", "plots", "timing"}
-    assert 'const PANE_CLOSED = ["more", "plots", "timing"];' in page
+    assert behind == {"machine", "warnings", "config", "schema", "spec", "plots", "timing"}
+    assert 'const PANE_CLOSED = ["more", "plots", "timing", "replay"];' in page
     assert 'STORE.get(paneKey(name)' in page
-    assert 'pane.addEventListener("toggle"' in page
-    # The fold state is a glyph *and* a word, like every other state on this page.
-    assert 'content:"\\25be open"' in page and 'content:"\\25b8 closed"' in page
-    # A control inside a summary must not fold the pane it acts on.
-    assert page.count("ev.stopPropagation();") == 2
 
 
 def test_a_proposition_shows_its_condition_not_its_whole_description():
@@ -2410,7 +2580,7 @@ def test_the_band_says_which_sources_went_quiet_beside_the_verdict():
     assert "risk.stale_sources" in body
     assert "Array.isArray(stale)" in body                  # a non-array is its own case
     assert "if (!stale.length) {" in body                  # and so is empty
-    assert "no stale\n      source" in body
+    assert "every source\n      fresh" in body
     assert 'absent("verdict.risk.stale_sources"' in body
     # The names come off the wire and are escaped like everything else.
     assert "stale.map(s => `<b>${txt(s)}</b>`)" in body
@@ -2629,8 +2799,9 @@ def test_the_three_confidences_are_each_labelled_as_whose():
     assert "mode conf" in table
     assert "conf</th>" not in table.replace("mode conf</th>", "")
     assert "neither the intervention's confidence above nor the" in table
-    # The band's was labelled in pass 1 and stays labelled.
-    assert "the intervention's own" in _fn(page, "renderWallAction")
+    # The band's was labelled in pass 1 and stays labelled, on `title` rather than as a
+    # line of the band -- it is the same sentence every tick.
+    assert "The intervention's own confidence" in _fn(page, "renderWallAction")
 
 
 def test_severity_is_graded_and_not_always_painted_the_same_red():

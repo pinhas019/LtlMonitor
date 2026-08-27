@@ -51,7 +51,7 @@ def page_syntax_problems(page: pathlib.Path | None = None) -> list[str]:
     if node is None:
         return ["node is not installed, so the page's JavaScript was not checked"]
 
-    blocks = _SCRIPT.findall(page.read_text())
+    blocks = _SCRIPT.findall(page.read_text(encoding="utf-8"))
     if not blocks:
         return [f"{page}: no <script> block to check"]
 

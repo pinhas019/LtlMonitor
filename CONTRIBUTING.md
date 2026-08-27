@@ -45,20 +45,39 @@ alone — a manifest nobody reads is dead code.
 
 ### Non-negotiable
 
-1. **Merges happen only through a pull request, and the merge is fast-forward.**
-   Never `git merge` a feature branch into `dev` locally. The PR is the review
-   record; a local merge skips review and leaves nothing showing the change was
-   looked at.
+1. **Merges happen only through a pull request.** `dev` and `main` are both
+   protected and neither accepts a direct push, so this is now enforced rather than
+   remembered. A feature branch merges into `dev` with GitHub's **rebase** merge,
+   which replays the commits onto the tip and keeps `dev` linear — that is what
+   "fast-forward" has always meant in practice here, and `git log --merges dev`
+   shows it: the only merge commits on `dev` predate the convention.
 2. **Pull with `git pull --rebase`, always.** A plain `git pull` manufactures a
    merge bubble and destroys the linear history that makes `git log` and `git
    bisect` readable here.
 3. **Never two live branches touching the same layer.** That is the merge conflict.
-4. **Rebase on `dev` before opening the PR.** Fast-forward is only possible if the
-   branch is already ahead of `dev` and nothing else.
+4. **Rebase on `dev` before opening the PR.** The branch must be ahead of `dev` and
+   nothing else; protection requires it to be up to date before the merge button
+   unlocks, so a stale branch is refused rather than silently merged.
 5. **Push at the end of every session.** An unpushed branch exists on one disk.
    `~/TRAV-metric-map` is the cautionary tale: its long-lived branches reached
    *ahead 10, behind 8* of their remotes, in the repo the robot pulls from.
 6. **A branch you cannot name in one `<type>-<topic>` phrase is two branches.**
+
+### Promoting `dev` to `main`
+
+`main` is protected the same way, so `git push origin dev:main` is refused and
+promotion is a pull request from `dev` into `main`, merged with a **merge commit**.
+
+That is a deliberate exception to rule 1's rebase, and the reason is worth stating
+because the obvious choice is wrong. GitHub has no fast-forward merge button. Its
+rebase merge rewrites every commit under a new hash, so a promotion PR merged
+that way would leave `main` carrying duplicates of commits that still exist on `dev`
+under different SHAs, and the two branches would diverge permanently from the first
+release onward. A merge commit keeps `dev`'s commits as literal ancestors of `main`,
+which is what makes `git log main..dev` mean "not yet released" rather than "renamed".
+
+So `main` alone allows merge commits and `dev` does not. The cost is one merge bubble
+per release; the alternative was a second copy of the entire history.
 
 ### Not doing
 
@@ -75,10 +94,43 @@ shows the diff.
 
 ## Tests
 
-`python3 -m pytest` must pass before a merge. Everything under `tests/` is pure
-Python: no ROS, no sockets, no hardware, no live LLM. A change that can only be
-checked on the robot still gets its logic extracted into `core/` and tested there —
-that is why `core/` exists.
+The suite must pass before a merge, and **the command that says so is the container
+one**:
+
+```bash
+docker compose -f deploy/docker-compose.test.yml run --rm tests
+```
+
+A host `python3 -m pytest` is the fast path, and the right thing to run while working
+— it needs nothing but pytest and it is quicker. It is simply not the contract, because
+it answers a question about the laptop as much as about the branch. On the Windows
+machine that prompted this, the suite ran 1217 passed and **4 failed** — all four a
+`Path.read_text()` with no `encoding=`, resolving to that host's cp1255 ANSI codepage
+and choking on the UTF-8 em-dashes in `docs/api.md`. Nothing in the code was wrong; the
+*host* decided the encoding.
+
+Those four are fixed, and `tests/test_portability.py` now fails any new unencoded read,
+so that particular bug cannot come back. The container is not here to hide it — a
+container that hides a locale bug is worse than no container. It is here because the
+*next* environment difference will not be one anybody predicted, and a pinned
+environment is what turns it into a red CI run rather than a lost afternoon. The image
+pins the interpreter — `python:3.10-slim`, the
+floor of `requires-python` and the version `ros:humble` ships, so the tests run what the
+deployed images run — and it pins the locale with it, which is how a green suite becomes
+a property of the repo rather than of a machine. It also installs `node`, so the three
+page-syntax tests that had skipped on every machine in this project's history finally
+execute; see the header of `deploy/Dockerfile.test`.
+
+**CI is what decides.** `.github/workflows/tests.yml` runs exactly that compose command
+on every push and pull request, and its verdict — not a local run of either kind — is
+what makes a branch mergeable. The same standard the docs are held to, applied to the
+development environment: verified, not asserted.
+
+Everything under `tests/` is pure Python: no ROS, no sockets, no hardware, no live LLM.
+That is also why the test image is `python:3.10-slim` and not `ros:humble` — a suite
+that must not touch ROS should not be able to. A change that can only be checked on the
+robot still gets its logic extracted into `core/` and tested there — that is why `core/`
+exists.
 
 The GUI has two headless checks that need no display:
 

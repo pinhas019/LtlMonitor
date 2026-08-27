@@ -8,7 +8,7 @@ import json
 import re
 from skill_monitor import spec_path
 
-SPEC = json.loads(spec_path("g1").read_text())
+SPEC = json.loads(spec_path("g1").read_text(encoding="utf-8"))
 
 # LTL temporal operators + python logical tokens that are NOT atomic propositions.
 _NON_APS = {

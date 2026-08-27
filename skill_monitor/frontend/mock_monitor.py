@@ -665,7 +665,7 @@ class MockBus(MonitorBus):
 
     def __init__(self, spec_name: str = "g1", adapter_name: str = "real_g1",
                  rate_scale: float = 1.0):
-        self.spec = json.loads(skill_monitor.spec_path(spec_name).read_text())
+        self.spec = json.loads(skill_monitor.spec_path(spec_name).read_text(encoding="utf-8"))
         # The descriptor's own manifest, wrapped in the wire envelope it predates.
         described = adapter_spec.load(adapter_name).manifest()
         self.adapter = api.build_adapter(

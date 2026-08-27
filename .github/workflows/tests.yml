@@ -1,0 +1,46 @@
+# The suite, on a machine nobody owns.
+#
+# RESUME.md records session 3's standard as "hardware agnosticism is verified, not
+# asserted" -- the agnosticism section of docs/architecture.md does not claim schema
+# parity, it ships the one-liner that proves it, and docs/packages/P9-docs.md puts it
+# plainly: a doc that cannot be falsified is marketing. This job is that same standard
+# turned on the development environment. CONTRIBUTING.md said the suite must pass
+# before a merge; it did not say where, and "where" turned out to matter -- four tests
+# fail on a Windows host whose ANSI codepage is cp1255 and pass everywhere else. A
+# green run on the author's laptop was an assertion. This is the check.
+#
+# ONE job and NO matrix, deliberately. The interpreter is pinned inside
+# deploy/Dockerfile.test (python:3.10-slim, the floor of pyproject.toml's
+# requires-python and the version ros:humble ships), and pinning it is the entire
+# point: a matrix over host Pythons would be testing the interpreters the project does
+# not deploy, and would still not catch a locale difference, which is what actually
+# broke. If a second environment is ever worth verifying, it belongs in the image or
+# in a second compose service -- not in a matrix over runners.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  suite:
+    # The runner only has to have Docker, which ubuntu-latest does. Everything that
+    # decides the result -- interpreter, node, pytest -- comes from the image, so the
+    # runner image drifting underneath us cannot change a verdict.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same one line a developer runs. Not `pip install pytest && pytest`: a CI
+      # command that differs from the local one is a third environment, and the reason
+      # this file exists is that there were already two.
+      #
+      # `run` and not `up`: the tests service is a job that exits, and `up` would treat
+      # exit 0 as a container that died. `--rm` because the container is the run.
+      # `run` propagates the process's exit code, so a red suite is a red job.
+      #
+      # The compose file bind-mounts `..`, resolved against the directory of the first
+      # -f file -- deploy/ -- so this must be invoked from the repo root, which is where
+      # checkout leaves us.
+      - name: Run the suite in the test container
+        run: docker compose -f deploy/docker-compose.test.yml run --rm tests

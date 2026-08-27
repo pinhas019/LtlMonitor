@@ -34,7 +34,7 @@ def _config_root(base, name, *, specs=None, adapters=None):
             continue
         (root / sub).mkdir()
         for fname in files:
-            (root / sub / fname).write_text(json.dumps({"marker": f"{name}/{sub}"}))
+            (root / sub / fname).write_text(json.dumps({"marker": f"{name}/{sub}"}), encoding="utf-8")
     return root
 
 
@@ -82,7 +82,7 @@ def test_spec_path_and_adapters_dir_honour_the_same_override(tmp_path, monkeypat
     assert skill_monitor.specs_dir() == root / "specs"
     assert skill_monitor.adapters_dir() == root / "adapters"
     assert skill_monitor.spec_path("g1") == root / "specs" / "formulas_g1.json"
-    assert json.loads(skill_monitor.spec_path("g1").read_text())["marker"] == "config/specs"
+    assert json.loads(skill_monitor.spec_path("g1").read_text(encoding="utf-8"))["marker"] == "config/specs"
 
 
 def test_volume_spec_wins_over_the_baked_one_of_the_same_name(tmp_path, monkeypatch):
@@ -92,7 +92,7 @@ def test_volume_spec_wins_over_the_baked_one_of_the_same_name(tmp_path, monkeypa
 
     resolved = skill_monitor.spec_path("g1")
     assert resolved != skill_monitor.PACKAGED_SPECS_DIR / "formulas_g1.json"
-    assert json.loads(resolved.read_text())["marker"] == "config/specs"
+    assert json.loads(resolved.read_text(encoding="utf-8"))["marker"] == "config/specs"
 
 
 def test_a_packaged_only_spec_still_resolves_through_a_mounted_config(tmp_path, monkeypatch):

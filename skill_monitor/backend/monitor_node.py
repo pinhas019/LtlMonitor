@@ -266,7 +266,7 @@ def load_formulas_from_file(path) -> SkillSpec:
         print(f"Error resolving formulas file: {exc}", file=sys.stderr)
         sys.exit(1)
     try:
-        data = json.loads(resolved.read_text())
+        data = json.loads(resolved.read_text(encoding="utf-8"))
     except Exception as exc:
         print(f"Error reading formulas file: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -632,7 +632,7 @@ def save_automaton_image(mon: LTLMonitor, output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         dot_str = mon.export_dot()
         dot_file = output_dir / f"{mon.name}.dot"
-        dot_file.write_text(dot_str)
+        dot_file.write_text(dot_str, encoding="utf-8")
         
         import subprocess
         png_file = output_dir / f"{mon.name}.png"

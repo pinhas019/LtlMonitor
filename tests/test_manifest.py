@@ -17,7 +17,7 @@ from skill_monitor.core.monitor_action import Action
 
 
 def _spec():
-    return json.loads(skill_monitor.spec_path("g1").read_text())
+    return json.loads(skill_monitor.spec_path("g1").read_text(encoding="utf-8"))
 
 
 def _verdict(**overrides):
@@ -202,14 +202,14 @@ def test_a_bare_spec_name_resolves_through_the_config_search_path(tmp_path, monk
     # A mounted volume's spec of the same name wins…
     specs = tmp_path / "specs"
     specs.mkdir()
-    (specs / "formulas_g1.json").write_text("{}")
+    (specs / "formulas_g1.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv(skill_monitor.CONFIG_ENV, str(tmp_path))
     assert manifest.resolve_spec_path("formulas_g1.json") == specs / "formulas_g1.json"
 
     # …but an explicit path to a real file still wins over the search, so a developer
     # can point at a scratch spec anywhere on disk.
     scratch = tmp_path / "scratch.json"
-    scratch.write_text("{}")
+    scratch.write_text("{}", encoding="utf-8")
     assert manifest.resolve_spec_path(scratch) == scratch
 
 

@@ -110,14 +110,14 @@ takes the streamed frames in between.
 | `/monitor/command` — arm ｜ reset ｜ pause ｜ resume | `POST /api/monitors/{seg}/command`, from the control strip in the header | P4 |
 | `/monitor/load_spec` — the edited spec | `POST .../spec`, replying with `spec_status` | P4 |
 | `/monitor/load_adapter` — the edited descriptor | **none** — `INGRESS_TOPICS` is `{command, spec}` | P0, P6, P3 |
-| `/monitor/raw_echo_request` — which one source to echo, `null` to stop | `POST /api/monitors/{seg}/raw_echo_request`, from the picker in pane 3 | P3 |
+| `/monitor/raw_echo_request` — which one source to echo, `null` to stop | `POST /api/monitors/{seg}/raw_echo_request`, from the picker in panel 4 | P3 |
 | `POST /api/clock/step`, `/api/clock/mode` | proxied under the clock's own paths | P1 |
 
 One of the five has no way onto the wire from a browser. That is not a detail the design
 can defer, because the pane that depends on it — descriptor reload — is otherwise
 specified as if the transport existed. Raw echo was the other one and is no longer:
 `INGRESS_TOPICS` gained `raw_echo_request` and `STREAM_TOPICS` gained `api.RAW_ECHO`, both
-in P6's file and by P6's hand, and pane 3's echo half is built against them.
+in P6's file and by P6's hand, and panel 4's echo half is built against them.
 
 ## Design
 
@@ -126,8 +126,8 @@ in P6's file and by P6's hand, and pane 3's echo half is built against them.
 The console is projected and read across a room while the robot runs, and two things have
 to dominate it: **the automaton with its live state**, and **the verdict with why it is
 that verdict**. Nine equal panes in one grid gave neither of them more room than the clock
-— the header said `VIOLATED` and the row that drove it was the last thing in pane 6, below
-a fold and often two columns away.
+— the header said `VIOLATED` and the row that drove it was the last thing in the automaton
+pane, below a fold and often two columns away.
 
 **Tier 1 — `<section id="wall">`**, above the grid and outside it, so no pane cap can put
 a scrollbar on it. It carries, at display sizes: the **verdict**, the largest element on
@@ -135,8 +135,8 @@ the page, with **why beside it** — the driving row's name, its `fault_category
 own `confidence`; the **intervention**, its rung placed on the ladder (`rung 5 of 6`) with
 `category` and `imminence`, both of which were on the wire and rendered nowhere;
 **`verdict.terminal`**, which takes the band over when it is non-null and appeared nowhere
-on this page at all; **phase and step**, the phase reconciled by pane 7's `currentPhase`;
-and **the automata**, promoted out of pane 6 and drawn large with `formulaTable`'s rows
+on this page at all; **phase and step**, the phase reconciled by panel 6's `currentPhase`;
+and **the automata**, promoted out of panel 1 and drawn large with `formulaTable`'s rows
 beside them, so a status and its graph are one reading.
 
 The driving row is **chosen and never graded**: a VIOLATED `SAFETY` mode first and then
@@ -161,9 +161,11 @@ control moves both tiers. The drawings are sized in `rem` from that same number 
 text went from about 7 effective px in a 430px column to about 18 in the band. Every
 colour is a token in the one `:root` block, so a projector or light theme is one block.
 
-**Pane 6 is a pointer, not a second copy.** The highlight is a class on a node found by
+**The graph is drawn once, in the band.** The highlight is a class on a node found by
 element id (`aut0n3`); two drawings of one graph would be two elements under one id, the
-wrong one would be lit, and nothing on the page would say so.
+wrong one would be lit, and nothing on the page would say so. That is why panel 1 is the
+band itself rather than a pane with a copy in it, and why panel 6 links to it instead of
+redrawing anything.
 
 **The hot path pays for it.** `keysInRule` compiled one `RegExp` per schema key per AP
 *per observation* (168 a tick on the mock's own spec) and `apsInExpr` one per AP per guard
@@ -181,15 +183,15 @@ dropped on the floor by this page:
 | field | where it is now | what its absence cost |
 |---|---|---|
 | `verdict.risk.stale_sources` | beside the verdict in the band | a mode is graded on the freshness of the sources feeding its own propositions, so a quiet source de-escalates the rung. The band showed the de-escalation and nothing said why |
-| `verdict.risk.warn` | pane 7, and it now grades `steps to timeout` | the monitor's own "close to a bound" boolean, while the page re-derived a worse one from `steps_to_timeout <= 0` |
-| `verdict.risk.seconds_to_timeout`, `.trigger_confidence` | pane 7's timing table | the bound in seconds, and how much the monitor believed the signal that raised the risk — which is what the stale sources beside the verdict explain |
-| `adapter.warnings` | pane 10 | `_build_warnings` publishes these "so they are visible on the wire rather than only in a log nobody reads", and the console put them back in one. For `real_g1` there are fifteen, including the `min_range` fold |
-| `adapter.schema[k].doc`, `.default`, `.debounce_ticks` | a mark on every value in panes 3, 4 and 5, spelled out under pane 3's table and under each plot | **this is where the units live.** `yaw` warns that it wraps; the goal keys warn that `0.0` is the odometry origin and not "no goal". Both were on the wire and invisible |
-| `adapter.sources[].steps[]` | pane 2, per source | the fold policy decides what a number on this page *is*: `min_range` is folded `last` and not `min`, and `nav_stuck`'s threshold of 10 counts *messages* because its step runs `on: "message"` |
-| `adapter.sources[].max_age_s`, `.tracked` | pane 3 beside `age_s`; pane 2 beside `required` | a threshold with no bound beside it is unreadable, and `required` and `tracked` are different claims — only one was shown |
+| `verdict.risk.warn` | panel 6, and it now grades `steps to timeout` | the monitor's own "close to a bound" boolean, while the page re-derived a worse one from `steps_to_timeout <= 0` |
+| `verdict.risk.seconds_to_timeout`, `.trigger_confidence` | panel 6's timing table | the bound in seconds, and how much the monitor believed the signal that raised the risk — which is what the stale sources beside the verdict explain |
+| `adapter.warnings` | panel 7 | `_build_warnings` publishes these "so they are visible on the wire rather than only in a log nobody reads", and the console put them back in one. For `real_g1` there are fifteen, including the `min_range` fold |
+| `adapter.schema[k].doc`, `.default`, `.debounce_ticks` | a mark on every value in panels 3, 4 and 11, spelled out under panel 4's table and under each plot | **this is where the units live.** `yaw` warns that it wraps; the goal keys warn that `0.0` is the odometry origin and not "no goal". Both were on the wire and invisible |
+| `adapter.sources[].steps[]` | panel 8, per source | the fold policy decides what a number on this page *is*: `min_range` is folded `last` and not `min`, and `nav_stuck`'s threshold of 10 counts *messages* because its step runs `on: "message"` |
+| `adapter.sources[].max_age_s`, `.tracked` | panel 4 beside `age_s`; panel 8 beside `required` | a threshold with no bound beside it is unreadable, and `required` and `tracked` are different claims — only one was shown |
 | `manifest.named_failure_modes[].description`, `.formula` | the band's driving-cause cell, and every row of the table beside the automata | the band named `collision_imminent` and nothing on screen said what `collision_imminent` means |
-| `manifest.terminal_success/failure.condition`, `.description` | pane 1 | the console could report that an episode ended without anything saying what ending it that way would have taken |
-| `manifest.execution_phases[].enter_condition`, `precondition`, `invariant`, `progress_condition`, `exit_condition` (+ their `*_fault_category`) | pane 7, as the **fallback** when `verdict.phase_guards` is absent | the structure is on the latched manifest regardless, so a build with no guard reporting can still show what the guards *are* — marked as structure and not as this tick's truth |
+| `manifest.terminal_success/failure.condition`, `.description` | panel 10 | the console could report that an episode ended without anything saying what ending it that way would have taken |
+| `manifest.execution_phases[].enter_condition`, `precondition`, `invariant`, `progress_condition`, `exit_condition` (+ their `*_fault_category`) | panel 6, as the **fallback** when `verdict.phase_guards` is absent | the structure is on the latched manifest regardless, so a build with no guard reporting can still show what the guards *are* — marked as structure and not as this tick's truth |
 
 **Absent, null and empty each keep their own sentence.** `adapter.warnings` absent is a
 build that does not report them and is not a clean bill of health; `[]` is "checked, and
@@ -205,7 +207,7 @@ graded now by the buckets `monitor_action.grade_action` uses, with a glyph and a
 as thirty — it grades on `risk.warn` now, the monitor's own boolean, and prints the number
 ungraded and says why where the monitor does not report one. `violations to fault` was amber
 whenever it was positive, so a healthy `5 of 5` read as a warning while `0 of 5` — the fault
-itself — was the only thing that read worse. And pane 3's source-health dot was the page's
+itself — was the only thing that read worse. And panel 4's source-health dot was the page's
 last violation of its own "never colour alone" rule: it carries a glyph and a word now, and
 the rule that turns it amber (`rate_hz < 0.6 × expected_hz`) is printed beside the rate it
 grades instead of living only in the expression.
@@ -245,11 +247,46 @@ a box to draw into. The unfolded figure also needed one more fix — `drawSpark`
 ten plots interleaved cost ten reflows a tick. Every drawing happens first and every label
 after it, and the browser reflows once.
 
-### The ten panes, the strip above them, and what each is actually reading
+### The twelve panels, the strip above them, and what each is actually reading
 
 Numbered as the page numbers them, so a heading here and a heading on screen are the same
 heading. The state banner and the control strip carry no number: they are in the sticky
 header rather than in the grid, for the reason below.
+
+The numbering is **reading order**, and it is the only numbering: `/* == 3 · atomic
+propositions */` in `index.html` is the panel labelled `3` on screen and the entry headed
+`**3 —**` here. Panel 1 is the automaton, because the spec *is* that machine and every
+other panel explains one input to it or one consequence of it — so it takes the width of
+the band and everything else is read around it. `tests/test_web_ui.py` pins the three
+numberings against each other; a panel renumbered in one place and not the others fails.
+
+**Five panels are visible, and that is the whole page.**
+
+| | panel | what it shows |
+|---|---|---|
+| **1** | automaton | the spec as a machine, with the state the last verdict reported lit |
+| **2** | verdict | the conclusion, why, and the rung it is asking for |
+| **3** | propositions | the letters panel 1's edges are labelled with, and their truth |
+| **4** | input | every source, its age, and one raw frame on demand |
+| **5** | clock | the tick everything above advances on |
+| 6–12 | *behind one fold* | phases · adapter warnings · config · schema · spec · plots · timing |
+
+Panels 1 and 2 are the band, side by side; 3, 4 and 5 are the grid under it. **The phase
+machine is behind the fold**, and that is the change that hurt: it is a real view, it is
+one click away, and it is not one of the five. Keeping a sixth panel because the sixth
+panel is good is exactly how this page reached eleven.
+
+Every panel carries the same three marks in the same order — the number, the name, and
+**three or four words**, with the sentence on `title`. The long-form version of that line
+on every panel was worse than the bare names it replaced: it was measured at 181 words of
+subtitle on a 1349-word page, and the page is read across a room. It is the same rule the
+AP rules already follow — the condition on screen, the prose on hover.
+
+A number does not reflow; "the third one" meant a different pane depending on how wide the
+window was, because the grid reflows and the names are jargon.
+
+The entries below are in the order the panes were built, which is not reading order; the
+number on each is the one on screen.
 
 **0 — Whether the monitor is watching, and the four commands that change it.** Not a pane
 and deliberately not one. *Pausing the monitor does not pause the robot.* It stops the only
@@ -294,7 +331,7 @@ the dangerous one. Where `/monitor/status` is not on the wire at all, the page s
 name and owner through the same `missing()` helper every other unreported field uses, and
 claims nothing.
 
-**1 — Description and spec, editable, hot-reloaded.** The free-language skill
+**10 — Description and spec, editable, hot-reloaded.** The free-language skill
 **description** the spec was generated from, read-only above the spec itself in an editor,
 with the last `spec_status` — accepted, or rejected with every reason — under it. Both come
 off latched topics, so opening the page shows what is loaded right now rather than what is
@@ -306,12 +343,12 @@ this is the one editor that reaches the wire.
 `terminal_failure`, each as the `condition` in the spec's own expression language and the
 `description` beside it. These are the **criteria**, not a live truth — whether a run has
 reached one is `verdict.terminal`, in the band at the top, and nothing here evaluates a
-condition for the same reason pane 7 does not evaluate a guard. Until the band landed the
+condition for the same reason panel 6 does not evaluate a guard. Until the band landed the
 console showed neither the outcome nor what would have produced it.
 
 **The descriptor is read-only here, and not because it was skipped.** `load_adapter` exists
 nowhere: it needs a topic constant from P0, an `INGRESS_TOPICS` entry from P6, and a handler
-from P3, in that order. Until then the loaded descriptor is rendered in pane 2 rather than
+from P3, in that order. Until then the loaded descriptor is rendered in panel 8 rather than
 offered as an editor whose apply button could not do anything.
 
 **Reloading either document ends the episode, and the surface must say so before it sends.**
@@ -325,7 +362,7 @@ own plot history and re-reads the latched topics on apply, so the operator is no
 reading pre-reload evidence, but a misclick still lands. The dialogue is owed. A hot reload
 that quietly invalidates the evidence is worse than a restart, because a restart is visible.
 
-**2 — Loaded configuration.** What this monitor is actually running: descriptor name and
+**8 — Loaded configuration.** What this monitor is actually running: descriptor name and
 where it was loaded from, spec name and `source`, every topic subscribed and every topic
 published, the clock mode, `step` against the spec's `max_steps` with the remaining budget,
 and the declared provenance of the data.
@@ -346,7 +383,7 @@ declaration by whoever launched the container — not a verified fact. A badge r
 that the monitor inferred would be a lie the first time someone replays a bag through the
 real descriptor, which is a thing this project does on purpose.
 
-**3 — Raw input, per topic.** One row per source from the adapter's `sources`: topic name,
+**4 — Raw input, per topic.** One row per source from the adapter's `sources`: topic name,
 message type, `expected_hz` against measured `rate_hz`, `age_s` against the source's own
 declared `max_age_s`, `samples_this_tick`, `refreshed`, `dropped`. A source below its
 expected rate renders as an alert, not as a number to notice — as a glyph, a word and a
@@ -409,7 +446,18 @@ both, so a screenshot of a stale frame cannot be read as a live one. Turning the
 switching source, and reconnecting each drop the frame — the last one is a period the page
 was not watching, so the request is not silently re-sent either.
 
-**4 — Plots, most of which cost nothing extra.** Every observation already carries every
+**9 — Schema: what each key means, in what units.** `adapter.schema[k]` carries a `doc`, a
+`default` and — where the descriptor declared a duration — the `debounce_ticks` it resolved
+to, and none of it reached the page. So `yaw`'s warning that it WRAPS and `dist_to_goal`'s
+warning that `0.0` is the odometry origin and **not** "no goal" were on the wire and
+invisible, and a reader had no way to tell a metre from a millimetre. Every value in panels
+4, 5 and 11 now carries a mark — `ⓘ` where the descriptor documents the key and `?` where it
+does not, a difference in the **glyph** and not the hue, so it survives a monochrome screen
+and a photograph — with the full text in the title and spelled out here where it can be read
+without hovering anything. Built once per adapter, not per tick: it is structure, and it
+changes when the descriptor does.
+
+**11 — Plots, most of which cost nothing extra.** Every observation already carries every
 schema key, every tick. So these time series are genuinely free: `min_range` over time
 against the collision threshold, the `linear_vel` and `angular_vel` traces, and `confidence`
 over time. Ring buffer in the page, no server-side history, no new topic. This is the pane
@@ -444,7 +492,7 @@ against P12's keys, not P3's, and it renders when they exist.
 reading of data that already exists — the monitor should not grow a renderer to prove it can.
 The shipped visualisation stack (`sim/Dockerfile.foxglove`) is where a human looks at depth.
 
-**5 — Which AP is evaluated against which data.** For each AP: its rule, the sensor keys the
+**3 — Which AP is evaluated against which data.** For each AP: its rule, the sensor keys the
 rule references, the live value of each of those keys, and the resulting boolean — or its
 name in `unknown_aps`, which is the case that matters, because an AP that could not be
 evaluated is not an AP that is false.
@@ -455,13 +503,13 @@ exactly this, because it is how a pushed spec is validated against the schema. P
 the map on the manifest rather than making every client re-parse the rules and drift from
 the validator.
 
-Each live key carries the same documentation mark pane 3 carries, because this is the pane
+Each live key carries the same documentation mark panel 4 carries, because this is the pane
 where a rule is compared with the numbers under it and reading `dist_to_goal`'s doc changes
 what the comparison means. The footer's `confidence` is labelled **the observation's** — how
 much of this tick's data arrived — and says in as many words that it is neither the
 intervention's in the band nor a failure-mode row's own beside the automata.
 
-**6 — The automaton, with the current state lit and the path this page has watched it
+**1 — The automaton, with the current state lit and the path this page has watched it
 take.** Per monitor — property formulas *and* named failure modes — `manifest.automata`
 carries states, edges, the accepting and sink flags and the initial state; each verdict row
 carries the one thing that changes, its `state`. The sequence is not on the wire and could
@@ -479,7 +527,7 @@ arrival order within a depth is the row, and a state the initial one cannot reac
 gets a column of its own rather than being dropped. Because the graphs are latched they
 change only when a spec is pushed, so the SVG is laid out once per manifest and a verdict
 costs two `classList.toggle` calls per node — no element is replaced, which is what keeps
-the pane off the critical path of the same pulse that drives panes 3 to 5.
+the pane off the critical path of the same pulse that drives panels 4 and 5.
 
 **Three kinds of state, told apart by shape.** Accepting is a double outline, an absorbing
 sink is a square, ordinary is a plain circle, and a state that is both accepting and
@@ -511,7 +559,7 @@ whole story.** `verdict.failure_modes[]` carries the spec's named modes *and* th
 machine's own faults, synthesised as
 `phase:<phase>:<invariant｜timeout｜progress｜precondition>` — a stable name per
 (phase, kind) precisely so a consumer can key on it.
-Those never appear in `formulas[]` and have no automaton to light up — **pane 7 is where
+Those never appear in `formulas[]` and have no automaton to light up — **panel 6 is where
 they come from**, and it is the pane that can say which guard of which phase a
 `phase:<phase>:<invariant>` row is about. Each entry carries a
 `fault_category` from a closed vocabulary (`SAFETY`, `INVARIANT`, `TIMEOUT`, `PROGRESS`),
@@ -531,8 +579,20 @@ declared in `ltl_formulas` and its LTL is already on the drawing beside the tabl
 `mode conf`, because it is the row's own and is neither of the other two numbers on this
 page called confidence.
 
-**7 — The phase machine, with the phase we are in, its budget, and the live truth of its
-guards.** Directly after pane 6 because the two are one subject seen at two levels: the
+**2 — The verdict, and why, in the rail beside the machine that produced it.** The
+conclusion is four short words and reads at any width, so it takes the narrower half of the
+band and the automaton takes the wider one. It carries the verdict itself, the **driving
+row** — its name, its `fault_category` and its own `confidence` — the **intervention** with
+its rung placed on the ladder, **where the episode is**, and `formulaTable`'s rows for every
+formula and failure mode the verdict carried. Nothing here is graded: the driving row is
+*selected* from rows the verdict already carries, by the monitor's own rule
+(`manifest.breached_mode`), because the page cannot see the confidences and imminences the
+ladder was applied to and a second grader in a browser would report a rung the monitor never
+chose. When no row is VIOLATED it says what the verdict rests on instead of naming a cause
+it does not have.
+
+**6 — The phase machine, with the phase we are in, its budget, and the live truth of its
+guards.** Directly after panel 1 because the two are one subject seen at two levels: the
 Büchi automata answer "is this property still holding", and the layer above them answers
 "which phase are we in, how long has it got, and which of its guards is about to end it".
 Splitting them across the page would have separated the automaton from the thing that
@@ -542,11 +602,11 @@ times it.
 node per phase in the order the spec authored them, each labelled with its index and its
 `timing_bounds.max_steps`, and the transition between two phases labelled with the
 `exit_condition` of the one it leaves — the guard that actually makes that transition, in
-the spec's own words. It is laid out top to bottom rather than left to right: pane 6's
+the spec's own words. It is laid out top to bottom rather than left to right: panel 1's
 automata are wide and shallow, and a phase machine is a chain, which in a dashboard column
 has room downwards and none across. Vertical also leaves the whole right-hand side for the
 transition labels, which are the one thing here that must not be truncated to fit. Same
-discipline as pane 6 otherwise — laid out once per manifest, so a verdict costs one
+discipline as panel 1 otherwise — laid out once per manifest, so a verdict costs one
 `classList.toggle` per node and no element is replaced.
 
 **Where we are is carried by shape, not by colour.** The current phase gets a caret
@@ -591,7 +651,7 @@ invariant reading a proposition blinded by a stale sensor has not been broken, i
 been evaluated, and a pane that flattens the two turns a dead camera into a safety
 violation. Same rule one level down for the propositions themselves: one named in
 `observation.unknown_aps`, or absent from `ap_values` entirely, renders UNKNOWN and not
-false, exactly as in pane 5.
+false, exactly as in panel 3.
 
 **The page does not evaluate a guard expression, and that is a rule rather than an
 omission.** `phase_guards[].value` is what the monitor actually acted on; a second evaluator
@@ -615,9 +675,9 @@ not as this tick's truth: no column there says whether a guard held, because not
 wire says so. A `phase_guards` that is present and `null`
 is the machine between phases — no phase active, so no guards to report. A `verdict.phase`
 of null draws the machine with **nothing** highlighted, for the same reason a null `state`
-lights nothing in pane 6.
+lights nothing in panel 1.
 
-**8 — Clock.** `seq`, `t`, `t0` as a wall time, effective `tick_hz`, `mode`, and
+**5 — Clock and replay.** `seq`, `t`, `t0` as a wall time, effective `tick_hz`, `mode`, and
 `missed_ticks` from the verdict. `seq`/`t`/`t0`/`tick_hz`/`mode` arrive on the monitor
 stream, on `/monitor/tick`, which is why that topic had to join `STREAM_TOPICS`. Until the
 first pulse arrives the pane says it has seen no tick rather than showing a zero, and it
@@ -627,6 +687,17 @@ Plus the control: a step button, which in `manual` mode turns the whole system i
 debugger where one click advances every service by exactly one tick. The step ships; the
 mode *switch* does not yet, so the pane reports `mode` and does not set it, and a step
 pressed against a free-running clock shows the refusal it got rather than swallowing it.
+
+**And the replay half**, which is why the panel is no longer called "clock": what the mode
+this clock is running in *means*, and the three commands that record an episode and run the
+monitor over it again — see [Recording an episode, and replaying
+it](../clocking.md#recording-an-episode-and-replaying-it). The console **cannot start a
+recording itself and deliberately does not try.** A `POST` that names a path on the machine
+serving this page is a file write chosen by whoever can reach the port, and no amount of
+validation makes that a good idea on a robot. What was actually missing is smaller than a
+button: `replay_node` was discoverable only by somebody who already knew it existed. The
+block is rebuilt when the clock's *mode* changes and not per tick — it is four lines of
+text, and this pane already rewrites a table every pulse.
 
 **Every clock request must carry `X-Skill-Monitor` or it is a 403, reads included.** The
 whole proxied clock surface is gated — see [The rest](#the-rest) — so the rule has to be
@@ -638,7 +709,7 @@ being written later.
 The effective rate is the one on the wire, never the descriptor's — a CLI override that the
 panel does not reflect makes every seconds-denominated number on the page wrong.
 
-**9 — Cost (the page names it "timing", after the field it wants).** How long the tick took,
+**12 — Cost (the page names it "timing", after the field it wants).** How long the tick took,
 split by stage: fold, AP evaluation, automaton step, verdict publication. Shown as the
 current tick and a rolling distribution, against the tick budget `1/tick_hz` — the number
 that matters is not the mean, it is how close the worst tick came to the budget, because
@@ -659,14 +730,14 @@ they are: ticks the monitor did not judge. Reconstructing the tick axis from `se
 `missed_ticks` rather than from message counts is the same discipline every other consumer
 of the verdict owes.
 
-**10 — Adapter warnings.** What the descriptor's own load-time checks found, off
+**7 — Adapter warnings.** What the descriptor's own load-time checks found, off
 `adapter.warnings`. `adapter_spec._build_warnings` says why the field exists at all — the
 warnings are published "so they are visible on the wire rather than only in a log nobody
 reads" — and this console read the topic they travel on and dropped the field, which put
 them back in a log nobody reads. For `real_g1` today there are fifteen, including the one
 that says `min_range` is folded `last` from a 10 Hz source against a 1 Hz tick and that
 about nine samples in ten are discarded, so a transient obstacle can be missed entirely.
-That is the same fact pane 2 shows as a fold policy, said here as its consequence.
+That is the same fact panel 8 shows as a fold policy, said here as its consequence.
 
 It starts **open**, because a warning behind a fold is a warning in a log nobody reads. And
 each line is about what this robot's numbers *are*, not about whether the monitor is
@@ -718,7 +789,7 @@ draws no track until then.
 | `/monitor/load_adapter` and `/monitor/adapter_status` as constants, each with a `VALIDATORS` entry, and `adapter_status` in `api.LATCHED_TOPICS` | **P0** | api.md is explicit: topic names are "declared once as constants in `core/api.py`. Nothing else in the repo may contain a `/monitor/...` string literal". The gateway's ingress routes call `validate_for_topic`, and an unregistered topic there is itself a problem, not a pass |
 | the `load_adapter` ingress route — an `INGRESS_TOPICS` entry | **P6** | `gateway.py` is P6's file. The *GET* for `adapter_status` costs nothing once the constant lands, because `LATCHED_ROUTES` is derived from `api.LATCHED_TOPICS` |
 | validate-and-answer for a pushed descriptor | **P3** | mirroring `load_spec`/`spec_status` exactly — same shape, same latched status |
-| ~~the `raw_echo_request` ingress route and a way to read `/monitor/raw_echo`~~ | **P6 alone** | **landed.** `INGRESS_TOPICS` gained the verb and `STREAM_TOPICS` gained `api.RAW_ECHO`; the summary convention that rides on the opaque `summary` is P3's, in `backend/adapters/raw_echo.py`. Pane 3's echo half is built against both |
+| ~~the `raw_echo_request` ingress route and a way to read `/monitor/raw_echo`~~ | **P6 alone** | **landed.** `INGRESS_TOPICS` gained the verb and `STREAM_TOPICS` gained `api.RAW_ECHO`; the summary convention that rides on the opaque `summary` is P3's, in `backend/adapters/raw_echo.py`. Panel 4's echo half is built against both |
 
 **Two rows left this table by being built rather than by being asked for.** Static-file
 serving was a P6 ask and is now `Gateway(static_dir=...)`, off by default; `api.TICK` on
@@ -738,7 +809,7 @@ side: the GET is derived from `api.LATCHED_TOPICS` like every other latched read
 simply unused by the page.
 
 **Two more left it by being answered.** `manifest.automata` and `formulas[].state` were the
-two rows pane 6 was waiting on; both are now on the wire and the pane draws from them. The
+two rows the automaton was waiting on; both are now on the wire and panel 1 draws from them. The
 `automata` row was also the one that could not be satisfied from a payload owner's own
 files: `skill_monitor/core/automata.py` is the only file in the repo that imports `spot`,
 what it exposed was `export_dot()` — DOT text — plus `num_states()`, the sink set was
@@ -924,7 +995,7 @@ blocks script injection, so the confirmations cannot be driven from a harness at
 `window.confirm` is still the right control — this page has no build step and no dependency
 to spend on a modal.
 
-**Pane 6's frames** — `test_the_manifest_carries_a_graph_for_every_monitor_it_can_compile`
+**Panel 1's frames** — `test_the_manifest_carries_a_graph_for_every_monitor_it_can_compile`
 (well-formed, named the way the verdict names its rows, and deterministic — one edge per
 `(from, label)`, or the state the page lights would depend on edge order);
 `test_a_chained_eventuality_compiles_to_the_chain_the_formula_spells` and
@@ -942,7 +1013,7 @@ gates `formulas[].state` on the validator's own answer rather than on a flag —
 field to open, and a mock that emitted it early would be publishing frames the shipped
 validators reject.
 
-**Pane 7's frames** — `test_the_guards_reported_are_the_ones_the_phase_declares` (the
+**Panel 6's frames** — `test_the_guards_reported_are_the_ones_the_phase_declares` (the
 phase's own guards, in the spec's own words, and no padded-out set);
 `test_a_guard_is_true_of_the_propositions_on_its_own_frame`, which walks a whole episode so
 that a guard the pane shows as true is true of the propositions shown beside it, and which
@@ -958,7 +1029,7 @@ highlights by; `test_the_bound_the_pane_measures_against_belongs_to_the_phase_it
 `test_the_mock_sends_phase_guards_the_moment_the_contract_admits_it`, which gates the field
 on the validator's own answer for the same reason `formulas[].state` is gated that way.
 
-**Pane 7's degrade paths, read off the page** —
+**Panel 6's degrade paths, read off the page** —
 `test_the_page_names_the_field_and_its_owner_when_there_is_no_phase_machine` (and that an
 absent `execution_phases` and an empty one keep their own sentences);
 `test_the_page_says_no_guard_truth_is_reported_rather_than_evaluating_the_guards`, which
@@ -1022,9 +1093,9 @@ That is a manual check today. The pure parts of it — `ruleOf` and `keysInRule`
 second implementation of `spec_contract` — are the ones worth a runner first, because a
 second implementation is exactly where the decimal-point bug lived three times before.
 
-Pane 6's drawing is in the same bucket, and `tests/test_web_ui.py` says so at the top: the
+Panel 1's drawing is in the same bucket, and `tests/test_web_ui.py` says so at the top: the
 frames it renders from are asserted there, and the layout, the shape coding, the class-swap
-highlight and the witnessed-path caption were checked by hand against `--mock`. Pane 7 is
+highlight and the witnessed-path caption were checked by hand against `--mock`. Panel 6 is
 the same split and the file says so too — the guard frames are asserted, while the vertical
 chain, the caret-and-second-outline highlight, the in-phase bar and the guard table were
 read in a browser. Its guard half needed one extra step to look at at all: this build's

@@ -351,7 +351,7 @@ class MockSource(threading.Thread):
         import skill_monitor
         from skill_monitor.core import adapter_spec
 
-        spec = json.loads(skill_monitor.spec_path("g1").read_text())
+        spec = json.loads(skill_monitor.spec_path("g1").read_text(encoding="utf-8"))
         self._adapter = adapter_spec.load("real_g1").manifest()
         ns = "/g1"
         self.q.put(("discovered", None, [ns]))
@@ -762,7 +762,7 @@ class Panel:
         path = filedialog.askopenfilename(filetypes=[("spec", "*.json")])
         if not path:
             return
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             self._set_spec(json.load(f))
         self.spec_hint.config(text=f"loaded {path}", fg=TEXT)
 
@@ -776,7 +776,7 @@ class Panel:
                                             initialfile="formulas_new.json")
         if not path:
             return
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(spec, f, indent=2)
         self.spec_hint.config(text=f"saved {path}", fg=TEXT)
 

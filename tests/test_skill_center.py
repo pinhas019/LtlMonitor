@@ -132,7 +132,7 @@ def test_the_mock_run_actually_trips_a_failure_mode():
     important line -- a failure mode going VIOLATED -- is never exercised."""
     import queue
     src = sc.MockSource(queue.Queue())
-    spec = json.loads(skill_monitor.spec_path("g1").read_text())
+    spec = json.loads(skill_monitor.spec_path("g1").read_text(encoding="utf-8"))
     phases = [p["phase"] for p in spec["execution_phases"]]
     prev, events = {}, []
     for step in range(80):
@@ -157,5 +157,5 @@ def test_bundled_spec_still_matches_the_bundled_robot():
     """Guards the demo path everything else here assumes: the shipped spec must be
     executable against the shipped adapter."""
     from skill_monitor.core import adapter_spec, spec_contract
-    spec = json.loads(skill_monitor.spec_path("g1").read_text())
+    spec = json.loads(skill_monitor.spec_path("g1").read_text(encoding="utf-8"))
     assert spec_contract.validate(spec, adapter_spec.load("real_g1").keys()) == []
