@@ -1,8 +1,220 @@
 # Resume
 
-**Newest session first.** Sessions 1–3 below are kept for the decisions they record,
-not for their status lines — every "unpushed", test count and `/ltl/*` topic name in
-them is out of date. **Session 4 is the current state.**
+**Newest session first.** Sessions 1–4 below are kept for the decisions they record,
+not for their status lines — every "unpushed", test count, `/ltl/*` topic name and git
+rule in them is out of date. **Session 5 is the current state.** The one part of
+session 4 that is not superseded is its closing section on the G1 run; that is still
+the plan.
+
+---
+
+# Session 5 — the suite got a machine of its own, and the git rules got teeth (2026-08-27)
+
+Everything is pushed. `git clone https://github.com/pinhas019/LtlMonitor.git` is still
+the whole handoff; nothing that matters lives on one disk.
+
+```
+origin  https://github.com/pinhas019/LtlMonitor.git
+dev     8a07278       ← PRs #35, #36 and #34 all merged here today. No PR is open
+main    fa9796a       ← still NOT promoted. dev is 11 commits ahead
+branch  stack/fix-explicit-encoding   ← in flight in another session, not pushed yet
+
+docker compose -f deploy/docker-compose.test.yml run --rm tests
+      → 1229 passed, 0 skipped, 91 s                    ← this is the contract
+python -m pytest                    (on this Windows host, today)
+      → 4 failed, 1221 passed, 4 skipped, 305 s         ← the fast path, and it is red
+                                                          here. See "This machine"
+```
+
+## First thing to do
+
+**Promote `dev` to `main`.** Eleven commits, three PRs merged today, and `main` has not
+moved since 2026-08-25 (`fa9796a`, the release of PR #32). It is a pull request now, not
+a push, and there is one repo setting standing in front of it — read *Git rules* below
+before opening it, because the wrong merge button here is not reversible by a revert.
+
+## The dev loop is in a container, and that is the contract
+
+`1da681e` (PR #35) added `deploy/Dockerfile.test`, `deploy/docker-compose.test.yml`,
+`.dockerignore` and `.github/workflows/tests.yml`. The one line that decides whether a
+branch is mergeable:
+
+```bash
+docker compose -f deploy/docker-compose.test.yml run --rm tests
+docker compose -f deploy/docker-compose.test.yml run --rm tests -m pytest -q tests/test_api.py
+docker compose -f deploy/docker-compose.test.yml up console      # http://127.0.0.1:8799
+```
+
+`.github/workflows/tests.yml` runs that identical command on every push and every pull
+request, as the job `suite`. Nothing in it is a re-spelling — a CI command that differs
+from the local one is a third environment, and having two is what caused this.
+
+The image is `python:3.10-slim` plus `nodejs` plus `pytest`, and it contains **no `COPY`
+of the source**. That is deliberate and it is the one place `deploy/` contradicts itself:
+a deployed image *is* a version, so it copies; the test image runs the **working tree**,
+which is not a version yet, so the repo arrives on a bind mount — `..:/app`, with
+`PYTHONPATH=/app` because there is nothing to `pip install -e` at build time. The
+consequence, stated so nobody "fixes" it: the image is not runnable on its own. Without
+the mount `/app` is empty and pytest collects nothing.
+
+Three things worth not rediscovering:
+
+- **The container is more than three times faster than this Windows host, not slower.**
+  91 s against 305 s, both measured today on this machine over the same commit. That is
+  the opposite of the bind-mount penalty everyone expects, so there is no performance
+  argument left for running the suite on the host. Run it in the box.
+- **`node` is in the image, so the page-syntax guard executed for the first time in this
+  project's history.** `skill_monitor/frontend/web.py:page_syntax_problems()` shells to
+  `node --check` and *returns* a problem string when node is missing rather than raising,
+  so the three tests in `tests/test_web_ui.py` that use it (`test_the_page_parses`,
+  `test_a_page_that_does_not_parse_is_reported_with_its_own_name`,
+  `test_check_exits_non_zero_without_binding_anything`) called `pytest.skip` on every
+  machine this project has ever run on. They now run, and `index.html` parses.
+- **Zero skipped is the new normal, and it is not a cosmetic difference.** The host run
+  above skips 4: those three, plus
+  `test_a_symlink_out_of_the_directory_is_not_a_way_in`, which needs a filesystem that
+  can make symlinks and gives up quietly on Windows — a path-traversal check on the
+  gateway's static server that has therefore never run here either. In the container all
+  1229 execute. A skip reappearing in that summary is an environment regression, not
+  noise.
+
+## This machine
+
+Windows 11 Pro, **Python 3.13.12**, and `locale.getpreferredencoding()` resolves to
+**cp1255** — the Hebrew ANSI codepage. That single fact is why a host `python -m pytest`
+is red here on a commit that is green in CI. `Path.read_text()` and `open()` calls with
+no `encoding=` pick up cp1255 and die on the UTF-8 punctuation in `docs/api.md` and
+`skill_monitor/backend/evaluator_node.py` — `'charmap' codec can't decode byte 0x9a`.
+The four, all in `tests/test_api.py`, so you recognise them rather than debug them:
+
+```
+test_the_adapter_example_in_the_wire_doc_still_validates
+test_the_verdict_example_in_the_wire_doc_still_validates
+test_no_hardcoded_topic_literals
+test_the_migration_allowlist_is_still_accurate
+```
+
+Nothing in the code is *wrong*; the **host** decided the encoding. `PYTHONUTF8=1` in the
+environment makes them pass, which is the proof rather than the fix — see
+`stack/fix-explicit-encoding` below.
+
+`skill_monitor` imports straight off the repo root here — `python -m pytest` from the
+checkout puts the cwd on `sys.path`, and the container sets `PYTHONPATH=/app`. **The
+`.pth`-in-user-site-packages instruction in sessions 3 and 4 is Linux-only and is not
+needed on this machine**; there is no `skill-monitor.pth` here and nothing wants one.
+
+Docker Desktop 4.88.1, engine 29.7.2, Compose v5.4.0, on the WSL2 backend, already
+configured before this session.
+
+**The robot, server and sim stacks do not run on Docker Desktop for Windows, and that is
+correct rather than a gap.** `deploy/docker-compose.robot.yml`,
+`deploy/docker-compose.server.yml` and `sim/docker-compose.sim.yml` all use
+`network_mode: host` + `ipc: host`, because their services have to share one DDS domain
+and one loopback. On Docker Desktop the daemon runs inside a WSL2 VM, so "host" is the
+VM and not the laptop. Those stacks stay Linux/robot-tier. `docker-compose.test.yml` is
+deliberately the exception — default bridge network, `127.0.0.1:8799:8080` published —
+so that the one stack a developer needs everywhere works everywhere.
+
+## Git rules — and two of the documented ones were not true
+
+`dev` and `main` are **protected branches** now, so rule 1 is enforced rather than
+remembered. Measured, not assumed — `gh api repos/pinhas019/LtlMonitor/branches/dev/protection`:
+
+| | `dev` | `main` |
+|---|---|---|
+| pull request required | yes, **0 approvals** | yes, **0 approvals** |
+| required status check | `suite` | `suite` |
+| branch must be up to date (`strict`) | yes | yes |
+| linear history required | **yes** | **no** |
+| force push / deletion | refused | refused |
+| applies to admins (`enforce_admins`) | yes | yes |
+
+Zero required approvals is what keeps a one-person repo workable: the PR is mandatory,
+the green `suite` is mandatory, and the same person can then press the button. The
+`required_linear_history` row is the interesting one and it is not an oversight — see
+promotion below.
+
+Two rules `CONTRIBUTING.md` stated were **not literally true**. Both are corrected there
+in `82fd267` (PR #36); session 4's copy of them is superseded.
+
+**"The merge is fast-forward" was never literally true.** GitHub has no fast-forward
+merge button. What this repo has always actually done is a **rebase** merge, which
+replays the commits onto the tip — linear, which is what "fast-forward" meant in
+practice, but every commit gets a new SHA. The evidence is on `dev` right now:
+`frontend/feat-wall-content` (PR #29) went in as `2a82921` and sits on `dev` as
+`fc33c5e` — same subject, same author date `Tue Aug 25 11:29:36 2026 +0300`, different
+hash.
+
+That has a consequence that will waste your time if you do not know it:
+
+```bash
+git merge-base --is-ancestor 2a82921 origin/dev   # exit 1 — "not merged", and it is wrong
+git cherry -v origin/dev 2a82921                  # "- 2a82921 …" — the leading - means merged
+```
+
+**Use `git cherry origin/dev origin/<branch>` to ask whether a branch is merged.** `-`
+means the patch is already upstream under another hash; `+` means it genuinely is not.
+
+**`git push origin dev:main` is refused now**, so promotion is a pull request from `dev`
+into `main` — and it must be merged with a **merge commit**, which is a deliberate
+exception to the rebase rule. Rebase-merging a promotion would rewrite every commit under
+a new hash, leaving `main` holding duplicates of commits that still exist on `dev` under
+different SHAs, and the two branches would diverge permanently from that release onward.
+A merge commit keeps `dev`'s commits as literal ancestors, which is what makes
+`git log main..dev` mean "not yet released" rather than "renamed". So `main` alone permits
+merge commits — that is exactly why `required_linear_history` is off on `main` and on for
+`dev`. Session 4's "dev fast-forwards to main" is wrong twice over.
+
+**The trap, measured today and not yet fixed:** the repo's own merge-button settings are
+`allow_merge_commit: false`, `allow_rebase_merge: true`, `allow_squash_merge: false`.
+
+```bash
+gh api repos/pinhas019/LtlMonitor --jq '{allow_merge_commit,allow_rebase_merge,allow_squash_merge}'
+```
+
+So the only button a `dev → main` PR currently offers is *Rebase and merge* — the one
+thing the paragraph above says must never happen. **Turn on "Allow merge commits" in
+Settings → General → Pull Requests before opening the promotion PR**, and merge with
+`gh pr merge --merge --delete-branch=false`. (`delete_branch_on_merge` is still off,
+deliberately: it once deleted `dev` when a `dev → main` PR auto-closed, and GitHub
+flipped the default branch to `main`.)
+
+## Housekeeping already done, so nobody repeats it
+
+- The stale console branches left over from the wall work — `frontend/feat-wall-content`
+  (PR #29) among them — are **deleted**, each confirmed merged with `git cherry` first,
+  because `git merge-base` says they are not, for the reason above.
+  `git ls-remote --heads origin` now returns `dev` and `main` and nothing else. Do not go
+  looking for a branch behind an already-merged panel commit; there isn't one.
+- `stack/fix-explicit-encoding` is **in flight right now** in a parallel session: the
+  missing-`encoding=` fix that cp1255 exposed, plus a new `tests/test_portability.py` AST
+  guard so the next one is caught by a machine. It is not pushed and not merged as of
+  this writing, and its result is not known here. Check for it before starting anything
+  that touches text I/O.
+- `tools/console_snapshot.py` **did not run on Windows at all** — a
+  `__file__.rsplit("/", 2)` path split that finds no `/` in a backslash path, `open()`s
+  with no `encoding=` on a cp1255 host, and a module-scope import of the gateway that
+  killed the fully-offline `build` subcommand from any checkout not already on
+  `sys.path`. Fixed in `ea6810f`. Session 4 tells the next session to run exactly that
+  command; it works now, `build` included, verified end to end on this host.
+
+## Still the next real work: the G1 navigation experiment
+
+**Unchanged. Session 4 is directly below and its plan stands — read it, do not restate
+it here.** In one line: [P12](docs/packages/P12-planner-independent-schema.md) is designed
+and not implemented, `skill_monitor/adapters/real_g1.json` still declares a `status`
+source on `/path_manager/status` (line 136), and in
+`skill_monitor/specs/formulas_g1.json` **five** of the eight atomic propositions —
+`mission_started`, `path_active`, `moving_towards_target`, `nav_stuck`,
+`mission_finished` — read the planner's self-report, plus the phase `exit_condition`s
+built on them. Only `collision_risk`, `upright` and `visually_at_goal` are independent of
+it. (Session 4 says "six of eight"; it was counting the exit conditions as a proposition.
+The gap is the same size either way.) Four knobs remain uncalibrated.
+
+The answer is still session 4's: **run as-is, record it with `replay_node record`,
+calibrate P12 off the recording.** Nothing here changed that. What this session changed is
+that the environment the recording gets analysed in is now reproducible, and the tool that
+shows somebody the result runs on this laptop.
 
 ---
 
