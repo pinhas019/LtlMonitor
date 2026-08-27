@@ -15,20 +15,22 @@ the whole handoff; nothing that matters lives on one disk.
 
 ```
 origin  https://github.com/pinhas019/LtlMonitor.git
-dev     8a07278       ← PRs #35, #36 and #34 all merged here today. No PR is open
-main    fa9796a       ← still NOT promoted. dev is 11 commits ahead
-branch  stack/fix-explicit-encoding   ← in flight in another session, not pushed yet
+dev     3e09872       ← PRs #34 #35 #36 #38 landed here today. This file rode in on
+                        #37, so dev is one commit past that SHA by the time you read it
+main    fa9796a       ← still NOT promoted. Has not moved since 2026-08-25; dev is 12
+                        commits ahead of it
+branch  none outstanding. `git ls-remote --heads origin` is dev and main
 
 docker compose -f deploy/docker-compose.test.yml run --rm tests
-      → 1229 passed, 0 skipped, 91 s                    ← this is the contract
-python -m pytest                    (on this Windows host, today)
-      → 4 failed, 1221 passed, 4 skipped, 305 s         ← the fast path, and it is red
-                                                          here. See "This machine"
+      → 1231 passed, 0 skipped,  79 s   ← this is the contract
+python -m pytest                (this host, no PYTHONUTF8)
+      → 1227 passed, 4 skipped, 347 s   ← the fast path, and green here too now. The
+                                          four skips are not the four old failures
 ```
 
 ## First thing to do
 
-**Promote `dev` to `main`.** Eleven commits, three PRs merged today, and `main` has not
+**Promote `dev` to `main`.** Twelve commits, four PRs merged today, and `main` has not
 moved since 2026-08-25 (`fa9796a`, the release of PR #32). It is a pull request now, not
 a push, and it must be merged with the **merge commit** button — read *Git rules* below
 before opening it, because the wrong button here is not reversible by a revert.
@@ -59,9 +61,9 @@ the mount `/app` is empty and pytest collects nothing.
 
 Three things worth not rediscovering:
 
-- **The container is more than three times faster than this Windows host, not slower.**
-  91 s against 305 s, both measured today on this machine over the same commit. That is
-  the opposite of the bind-mount penalty everyone expects, so there is no performance
+- **The container is more than four times faster than this Windows host, not slower.**
+  79 s against 347 s, both measured on this machine against `3e09872`. That is the
+  opposite of the bind-mount penalty everyone expects, so there is no performance
   argument left for running the suite on the host. Run it in the box.
 - **`node` is in the image, so the page-syntax guard executed for the first time in this
   project's history.** `skill_monitor/frontend/web.py:page_syntax_problems()` shells to
@@ -70,33 +72,60 @@ Three things worth not rediscovering:
   `test_a_page_that_does_not_parse_is_reported_with_its_own_name`,
   `test_check_exits_non_zero_without_binding_anything`) called `pytest.skip` on every
   machine this project has ever run on. They now run, and `index.html` parses.
-- **Zero skipped is the new normal, and it is not a cosmetic difference.** The host run
-  above skips 4: those three, plus
+- **Zero skipped is the new normal, and the gap between 0 and 4 is the whole argument
+  for the container.** Both runs are green now, so the only thing separating them is
+  what each one declines to run. The host skips exactly four, and **they are not the
+  four tests that used to fail** — those were encoding failures and they are fixed. The
+  four skips are the three page-syntax tests above, plus
   `test_a_symlink_out_of_the_directory_is_not_a_way_in`, which needs a filesystem that
-  can make symlinks and gives up quietly on Windows — a path-traversal check on the
-  gateway's static server that has therefore never run here either. In the container all
-  1229 execute. A skip reappearing in that summary is an environment regression, not
-  noise.
+  can make symlinks and gives up quietly on Windows. That last one is a path-traversal
+  check on the gateway's static file server: a *security* test that has never once
+  executed on this laptop. In the container all 1231 run. A skip appearing in the
+  container's summary is an environment regression, not noise.
 
 ## This machine
 
-Windows 11 Pro, **Python 3.13.12**, and `locale.getpreferredencoding()` resolves to
-**cp1255** — the Hebrew ANSI codepage. That single fact is why a host `python -m pytest`
-is red here on a commit that is green in CI. `Path.read_text()` and `open()` calls with
-no `encoding=` pick up cp1255 and die on the UTF-8 punctuation in `docs/api.md` and
-`skill_monitor/backend/evaluator_node.py` — `'charmap' codec can't decode byte 0x9a`.
-The four, all in `tests/test_api.py`, so you recognise them rather than debug them:
+Windows 11 Pro, **Python 3.13.12**, and `locale.getpreferredencoding(False)` resolves
+to **cp1255** — the Hebrew ANSI codepage. Check it rather than assume it, because it is
+the fact everything else in this section hangs off:
 
-```
-test_the_adapter_example_in_the_wire_doc_still_validates
-test_the_verdict_example_in_the_wire_doc_still_validates
-test_no_hardcoded_topic_literals
-test_the_migration_allowlist_is_still_accurate
+```bash
+python -c "import locale; print(locale.getpreferredencoding(False))"
 ```
 
-Nothing in the code is *wrong*; the **host** decided the encoding. `PYTHONUTF8=1` in the
-environment makes them pass, which is the proof rather than the fix — see
-`stack/fix-explicit-encoding` below.
+**What that does, because it is the transferable part.** A `Path.read_text()` or an
+`open()` with no `encoding=` does not read UTF-8. It reads whatever that call returns on
+the machine the process started on — UTF-8 in the Linux container, cp1255 here. The same
+bytes on disk decode to two different strings depending on where you ran, and nothing in
+the source says so. Here it showed up as `UnicodeDecodeError: 'charmap' codec can't
+decode byte 0x9a` on the em-dashes in `docs/api.md`, and four tests in
+`tests/test_api.py` were red on a tree that was green on Linux.
+
+**That is fixed** — `3e09872` (PR #38), 41 call sites given an explicit
+`encoding="utf-8"`. The site that mattered was not any of the failing tests: it was
+`skill_monitor/backend/replay_node.py:98`, which opened the **episode recording** for
+writing with the platform default. P9 makes verdict equality between two replays of one
+episode the acceptance test for the whole hardware-agnosticism claim, so a run recorded
+on this laptop and replayed on the robot would have decoded as something else. The
+comparison meant to prove the monitor does not depend on the machine was deciding its
+answer from the machine. The red tests were the symptom that exposed it; this was never
+"Windows support".
+
+`tests/test_portability.py` keeps it fixed: an AST walk over every `.py` under
+`skill_monitor/`, `tests/`, `tools/` and `sim/` that fails on a text-mode read or write
+with no encoding, so the next one fails for whoever writes it. It carries its own
+`test_the_scan_can_tell_the_cases_apart`, which runs the matcher over a 19-line probe
+and asserts the exact offending line numbers — without that, a scanner that silently
+stopped matching would pass forever, which is how a guard like this dies. Two things it
+does not cover, stated in PR #38 rather than hidden: `codecs.open` / `gzip.open` /
+`tarfile.open` are unhandled, because the repo imports none of them; `NOT_A_FILE_OPEN`
+and the mode logic are where to extend it.
+
+**Do not put `PYTHONUTF8=1` in your environment.** It makes an unencoded read work, so
+it would have hidden all of the above, and this host is the only one the project has
+that can surface the class of bug at all — the container is UTF-8 by default and could
+never have demonstrated the fix. The AST guard catches new sites either way; the point
+is not to lose the runtime signal too.
 
 `skill_monitor` imports straight off the repo root here — `python -m pytest` from the
 checkout puts the cwd on `sys.path`, and the container sets `PYTHONPATH=/app`. **The
@@ -190,11 +219,14 @@ flipped the default branch to `main`.)
   because `git merge-base` says they are not, for the reason above.
   `git ls-remote --heads origin` now returns `dev` and `main` and nothing else. Do not go
   looking for a branch behind an already-merged panel commit; there isn't one.
-- `stack/fix-explicit-encoding` is **in flight right now** in a parallel session: the
-  missing-`encoding=` fix that cp1255 exposed, plus a new `tests/test_portability.py` AST
-  guard so the next one is caught by a machine. It is not pushed and not merged as of
-  this writing, and its result is not known here. Check for it before starting anything
-  that touches text I/O.
+- `stack/fix-explicit-encoding` **merged** as `3e09872` (PR #38) — described under
+  *This machine*. Two sites the original survey of 39 missed are worth knowing about,
+  because both say something about where this repo's blind spots are: **`sim/` was never
+  counted at all** (`sim/generate_map.py:10,58`, `sim/mujoco_ros_bridge.py:27` — while
+  `generate_map.py:86` writes a `.pgm` with `"wb"` and is correctly left alone), and
+  **`tests/test_api.py:987`, the `_topic_literals` scanner itself**, which was reading
+  the whole codebase through the host codepage. That is why two of the four baseline
+  failures were scanner tests rather than doc tests.
 - `tools/console_snapshot.py` **did not run on Windows at all** — a
   `__file__.rsplit("/", 2)` path split that finds no `/` in a backslash path, `open()`s
   with no `encoding=` on a cp1255 host, and a module-scope import of the gateway that
@@ -217,8 +249,11 @@ The gap is the same size either way.) Four knobs remain uncalibrated.
 
 The answer is still session 4's: **run as-is, record it with `replay_node record`,
 calibrate P12 off the recording.** Nothing here changed that. What this session changed is
-that the environment the recording gets analysed in is now reproducible, and the tool that
-shows somebody the result runs on this laptop.
+everything around it: the environment the recording gets analysed in is reproducible, the
+tool that shows somebody the result runs on this laptop, and — the one that would have
+bitten tomorrow — `replay_node` now writes the recording as UTF-8 instead of as whatever
+the recording host's codepage happened to be, so a run captured on the robot and read back
+here is the same episode.
 
 ---
 
