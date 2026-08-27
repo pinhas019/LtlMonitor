@@ -104,14 +104,21 @@ docker compose -f deploy/docker-compose.test.yml run --rm tests
 A host `python3 -m pytest` is the fast path, and the right thing to run while working
 — it needs nothing but pytest and it is quicker. It is simply not the contract, because
 it answers a question about the laptop as much as about the branch. On the Windows
-machine that prompted this, the suite ran 1217 passed, 4 failed, and all four were a
+machine that prompted this, the suite ran 1217 passed and **4 failed** — all four a
 `Path.read_text()` with no `encoding=`, resolving to that host's cp1255 ANSI codepage
 and choking on the UTF-8 em-dashes in `docs/api.md`. Nothing in the code was wrong; the
-*host* decided the encoding. The image pins the interpreter — `python:3.10-slim`, the
+*host* decided the encoding.
+
+Those four are fixed, and `tests/test_portability.py` now fails any new unencoded read,
+so that particular bug cannot come back. The container is not here to hide it — a
+container that hides a locale bug is worse than no container. It is here because the
+*next* environment difference will not be one anybody predicted, and a pinned
+environment is what turns it into a red CI run rather than a lost afternoon. The image
+pins the interpreter — `python:3.10-slim`, the
 floor of `requires-python` and the version `ros:humble` ships, so the tests run what the
 deployed images run — and it pins the locale with it, which is how a green suite becomes
 a property of the repo rather than of a machine. It also installs `node`, so the three
-page-syntax tests that have skipped on every machine in this project's history finally
+page-syntax tests that had skipped on every machine in this project's history finally
 execute; see the header of `deploy/Dockerfile.test`.
 
 **CI is what decides.** `.github/workflows/tests.yml` runs exactly that compose command
