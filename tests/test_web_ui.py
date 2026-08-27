@@ -222,10 +222,10 @@ def test_a_symlink_out_of_the_directory_is_not_a_way_in(tmp_path, monkeypatch):
     """Resolved-path comparison, not string inspection: `evil.html` is a legal name and
     a legal extension, and only the resolve catches where it points."""
     secret = tmp_path / "secret.html"
-    secret.write_text("<b>not yours</b>")
+    secret.write_text("<b>not yours</b>", encoding="utf-8")
     served_dir = tmp_path / "static"
     served_dir.mkdir()
-    (served_dir / "index.html").write_text("ok")
+    (served_dir / "index.html").write_text("ok", encoding="utf-8")
     try:
         (served_dir / "evil.html").symlink_to(secret)
     except (OSError, NotImplementedError):       # pragma: no cover -- no symlinks here

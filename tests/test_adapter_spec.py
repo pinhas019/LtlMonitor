@@ -125,7 +125,7 @@ def test_transient_obstacle_within_one_tick_is_not_lost():
 
     assert st.sensor_eval()["min_range"] == 0.2
 
-    spec = json.loads(skill_monitor.spec_path("g1").read_text())
+    spec = json.loads(skill_monitor.spec_path("g1").read_text(encoding="utf-8"))
     rule = spec_contract.rule_of(spec["atomic_propositions"]["collision_risk"])
     assert rule, "collision_risk is no longer a rule AP"
     assert eval(rule, {"__builtins__": {}}, st.sensor_eval()) is True, (
@@ -1386,7 +1386,7 @@ def test_manifest_feeds_the_wire_contract_directly():
 
 def _fragment(tmp_path, name, keys):
     path = tmp_path / name
-    path.write_text(json.dumps({"name": name.split("_")[0], "keys": keys}))
+    path.write_text(json.dumps({"name": name.split("_")[0], "keys": keys}), encoding="utf-8")
     return path
 
 
@@ -1517,7 +1517,7 @@ def test_a_fragment_of_the_wrong_type_is_rejected_at_load(tmp_path):
 
 
 def test_a_fragment_file_with_no_keys_object_is_rejected_at_load(tmp_path):
-    (tmp_path / "broken_schema.json").write_text(json.dumps({"name": "broken"}))
+    (tmp_path / "broken_schema.json").write_text(json.dumps({"name": "broken"}), encoding="utf-8")
     with pytest.raises(ValueError, match="no 'keys' object"):
         _composed(tmp_path, ["broken_schema.json"])
 
@@ -2404,7 +2404,7 @@ def test_the_commanded_waypoint_declares_no_rate_because_it_has_none():
     Read off the descriptor rather than the parsed `Source`, which defaults an unset
     rate to the tick rate -- so "declared 1.0" and "declared nothing" are the same
     object afterwards, and only the JSON can tell them apart."""
-    raw = json.loads((skill_monitor.adapters_dir() / "real_g1.json").read_text())
+    raw = json.loads((skill_monitor.adapters_dir() / "real_g1.json").read_text(encoding="utf-8"))
     goal = {s["id"]: s for s in raw["sources"]}["goal"]
     assert "expected_hz" not in goal
 

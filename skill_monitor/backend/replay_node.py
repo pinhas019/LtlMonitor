@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _load(path: str) -> Recording:
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return Recording.parse(fh)
 
 
@@ -95,7 +95,7 @@ def run_record(args) -> int:
                          reliability=ReliabilityPolicy.RELIABLE,
                          history=HistoryPolicy.KEEP_LAST)
 
-    fh = open(args.path, "a" if args.append else "w", buffering=1)
+    fh = open(args.path, "a" if args.append else "w", buffering=1, encoding="utf-8")
     recorder = Recorder(fh.write)
 
     rclpy.init()

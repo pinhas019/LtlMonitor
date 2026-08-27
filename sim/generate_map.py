@@ -7,7 +7,7 @@ def main():
     # Load config
     config_path = '/app/sim_config.json'
     if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding="utf-8") as f:
             config = json.load(f)
     else:
         config = {}
@@ -55,7 +55,7 @@ def main():
     os.makedirs('/app/nav2_config', exist_ok=True)
 
     # Write map.yaml
-    with open('/app/nav2_config/map.yaml', 'w') as f:
+    with open('/app/nav2_config/map.yaml', 'w', encoding="utf-8") as f:
         f.write("image: map.pgm\n")
         f.write(f"resolution: {resolution}\n")
         f.write(f"origin: [{origin_x}, {origin_y}, 0.0]\n")
