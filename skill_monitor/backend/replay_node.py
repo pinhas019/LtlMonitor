@@ -83,6 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     topics = sub.add_parser("topics", help="the sensor topics this run's adapter declared")
     topics.add_argument("path")
+    topics.add_argument("--scene", action="store_true",
+                        help="also the descriptor's scene topics -- terrain, planner "
+                             "paths, tf. What re-executing the episode in a simulator "
+                             "needs and a monitor replay does not.")
 
     info = sub.add_parser("info", help="what is in a recording")
     info.add_argument("path")
@@ -297,7 +301,7 @@ def run_topics(args) -> int:
         print(f"{args.path}: no {api.ADAPTER} frame, so the robot's topics are unknown",
               file=sys.stderr)
         return 1
-    for topic in bag_topics(adapter):
+    for topic in bag_topics(adapter, scene=args.scene):
         print(topic)
     return 0
 

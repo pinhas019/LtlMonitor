@@ -129,7 +129,7 @@ SOURCE_KEYS = frozenset({
     "max_age_s", "steps",
 })
 ADAPTER_KEYS = frozenset({
-    "name", "doc", "schema", "defaults", "describe", "sources", "tick_hz",
+    "name", "doc", "schema", "defaults", "describe", "sources", "tick_hz", "scene",
 })
 
 
@@ -604,6 +604,20 @@ class AdapterSpec:
         )
         self.schema = schema                      # key -> {"doc":…, "default":…}
         self.sources = [Source(s, self.tick_hz) for s in raw.get("sources") or []]
+        #: Topics that belong in a recording and MUST NOT reach the evaluator: the
+        #: terrain, the planner's paths, tf. Sim re-execution has to rebuild the scene
+        #: the robot moved through, and nothing in `sources` describes it -- an
+        #: observation carries `min_range`, a scalar, where an arena needs geometry.
+        #:
+        #: They are listed here, per embodiment, for the same reason `sources` is: so
+        #: that `ros2 bag record` gets its line off the adapter the run declared and
+        #: TRAV's topic names stay hardcoded nowhere. Declaring them does not create a
+        #: subscription -- `_validate` refuses one that is also a source, because P12's
+        #: standing constraint makes `/filtered_map` and `/traversable_path*` forbidden
+        #: INPUTS. Forbidden as an input is not the same as not worth recording: they
+        #: are the planner's own beliefs, which is exactly what you want beside a
+        #: verdict afterwards and never inside the one being computed.
+        self.scene = list(raw.get("scene") or [])
         self.describe_keys = list(raw.get("describe") or [])
         self._defaults = {
             k: v.get("default") for k, v in schema.items()
@@ -718,6 +732,11 @@ class AdapterSpec:
             "tick_hz": self.tick_hz,
             "warnings": self.warnings(),
             "schema": schema,
+            # On the wire so that a recording knows how to record the scene it was made
+            # in, months later, on a machine that never saw this descriptor -- the same
+            # reason `sources` travels. A consumer that subscribed to these would be
+            # reading the planner's self-report; the contract is that nothing does.
+            "scene": list(self.scene),
             "sources": [
                 {"id": s.id, "topic": s.topic, "type": s.type,
                  "expected_hz": s.expected_hz, "max_age_s": s.max_age_s,
@@ -815,6 +834,20 @@ class AdapterSpec:
         return out
 
     def _validate(self):
+        bad_scene = [t for t in self.scene if not isinstance(t, str) or not t]
+        if bad_scene:
+            raise ValueError(f"{self.name}: scene must be a list of topic names, got "
+                             f"{bad_scene!r}")
+        overlap = sorted(set(self.scene) & {s.topic for s in self.sources})
+        if overlap:
+            # Not a duplicate to be deduped -- a category error. A source is an input to
+            # the verdict; a scene topic is context that must never become one. A
+            # descriptor claiming both about one topic has not decided which it is.
+            raise ValueError(
+                f"{self.name}: {overlap} appear in both 'sources' and 'scene'. A source "
+                f"already travels in the record line; 'scene' is for what the evaluator "
+                f"must NOT read")
+
         produced = set()
         for src in self.sources:
             for step in src.steps:

@@ -266,7 +266,7 @@ REQUIRED_FIELDS = {"manifest": ("schema_version", "skill_name", "phases", "sourc
 # after SCHEMA_VERSION 1 and requiring them would invalidate every producer that
 # predates them with no version bump to make the mismatch detectable. Declared but not
 # required -- the pairing that has to be spelled out somewhere, and this is where.
-OPTIONAL_FIELDS = {"verdict": ("phase_guards",)}
+OPTIONAL_FIELDS = {"verdict": ("phase_guards",), "adapter": ("scene",)}
 
 
 @pytest.mark.parametrize("name", list(PAYLOADS))

@@ -221,7 +221,7 @@ class Recording:
         }
 
 
-def bag_topics(adapter: dict | None) -> list[str]:
+def bag_topics(adapter: dict | None, scene: bool = False) -> list[str]:
     """The sensor topics to hand `ros2 bag record`, off the adapter the run declared.
 
     The monitor's own stream is this module's business; the *geometry* -- the cloud, the
@@ -229,6 +229,17 @@ def bag_topics(adapter: dict | None) -> list[str]:
     Reading the list off `api.ADAPTER` rather than naming topics here is the whole point:
     it is the same reason the console can render a robot it has never seen. A navigation
     stack and an arm produce different lists from the same call.
+
+    `scene=True` appends the descriptor's `scene` topics -- the terrain, the planner's
+    paths, tf. Off by default because the sources alone are what a *monitor* replay
+    needs, and on for the other replay path: re-executing an episode in a simulator
+    means rebuilding the world it happened in, and no source describes that. An
+    observation carries `min_range`, a scalar, where an arena needs geometry.
+
+    Sources first and in descriptor order, so the line a person copies is stable and
+    the scene topics are visibly the tail. A scene topic cannot also be a source --
+    `adapter_spec` refuses the descriptor -- so nothing here has to resolve a conflict
+    between the two meanings.
     """
     if not isinstance(adapter, dict):
         return []
@@ -237,6 +248,10 @@ def bag_topics(adapter: dict | None) -> list[str]:
         topic = source.get("topic") if isinstance(source, dict) else None
         if isinstance(topic, str) and topic and topic not in seen:
             seen.append(topic)
+    if scene:
+        for topic in adapter.get("scene") or []:
+            if isinstance(topic, str) and topic and topic not in seen:
+                seen.append(topic)
     return seen
 
 

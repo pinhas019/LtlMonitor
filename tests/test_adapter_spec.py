@@ -2420,3 +2420,67 @@ def test_declaring_the_rates_is_what_makes_the_fold_check_run_at_all():
     assert "min_range" in warnings and "discarded" in warnings, (
         "the discarded-samples check went quiet -- either a rate was removed or the "
         "fold was changed; if min_range moved to `min`, retire this test deliberately")
+
+
+# =============================================================================
+# `scene`: what a recording needs and the evaluator must never read
+# =============================================================================
+
+def test_scene_topics_are_not_sources_and_create_no_subscription():
+    """The whole point of the key. `/filtered_map` and `/traversable_path*` are
+    forbidden INPUTS -- the monitor is meant to be transparent to the navigation
+    algorithm, and reading the planner's own terrain belief is the opposite. They are
+    still exactly what a simulator needs to rebuild the world the episode happened in.
+    Declaring them must therefore add them to the record line and to nothing else."""
+    spec = _spec([{"id": "o", "topic": "/odom", "type": "nav_msgs/msg/Odometry",
+                   "steps": [{"key": "linear_vel", "field": "twist.twist.linear.x"}]}],
+                 scene=["/filtered_map", "/tf"])
+
+    assert spec.scene == ["/filtered_map", "/tf"]
+    assert [s.topic for s in spec.sources] == ["/odom"]
+
+
+def test_a_topic_declared_as_both_a_source_and_scene_is_refused():
+    """Not a duplicate to dedupe -- a descriptor that has not decided what the topic is.
+    One meaning feeds the verdict and the other must never; silently picking either
+    would make the forbidden-input rule unenforceable."""
+    with pytest.raises(ValueError, match="both 'sources' and 'scene'"):
+        _spec([{"id": "o", "topic": "/odom", "type": "nav_msgs/msg/Odometry",
+                "steps": [{"key": "linear_vel", "field": "twist.twist.linear.x"}]}],
+              scene=["/odom"])
+
+
+def test_scene_has_to_be_topic_names():
+    with pytest.raises(ValueError, match="scene must be a list of topic names"):
+        _spec([], scene=[{"topic": "/filtered_map"}])
+
+
+def test_scene_travels_on_the_wire_so_a_recording_can_replay_a_robot_it_never_saw():
+    """Same reason `sources` travels. `replay_node topics --scene` reads it off the
+    recording's own adapter frame months later, on a machine that never had this
+    descriptor -- which is what keeps TRAV's topic names hardcoded nowhere."""
+    spec = _spec([], scene=["/filtered_map"])
+    payload = spec.manifest()
+
+    assert payload["scene"] == ["/filtered_map"]
+    assert api.validate_adapter(payload | {"schema_version": api.SCHEMA_VERSION}) == []
+
+
+def test_an_adapter_that_predates_scene_still_validates():
+    """Optional, not required: `scene` landed after SCHEMA_VERSION 1, and requiring it
+    would invalidate every producer that carries nothing new."""
+    payload = _spec([]).manifest() | {"schema_version": api.SCHEMA_VERSION}
+    del payload["scene"]
+
+    assert api.validate_adapter(payload) == []
+
+
+def test_the_shipped_g1_descriptor_records_the_scene_it_may_not_read():
+    """The one descriptor an experiment runs against today. If this list empties, a run
+    is still monitored and can still be replayed against the monitor -- and can no
+    longer be re-executed in a simulator, which is a different loss and a silent one."""
+    spec = adapter_spec.load("real_g1")
+    source_topics = {s.topic for s in spec.sources}
+
+    assert "/filtered_map" in spec.scene
+    assert not source_topics & set(spec.scene)

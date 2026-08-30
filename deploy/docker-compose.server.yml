@@ -108,6 +108,38 @@ services:
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data:ro"
     depends_on: [gateway]
 
+  # Replay, on the tier that is meant to produce the verdict of record.
+  #
+  #   docker compose -f deploy/docker-compose.server.yml run --rm recorder play \
+  #                  /data/g1_run1.jsonl --diff        # exits 1 on any difference
+  #   docker compose -f deploy/docker-compose.server.yml run --rm recorder info /data/g1_run1.jsonl
+  #   docker compose -f deploy/docker-compose.server.yml run --rm recorder topics --scene /data/g1_run1.jsonl
+  #
+  # The same job as the robot tier's `recorder`, declared in both because the two tiers
+  # use it for opposite halves of one rule: the robot RECORDS the inputs, this side
+  # REPLAYS them and compares the outputs. A replay wants the machine with the disk and
+  # the screen, not the one with the battery.
+  #
+  # `play` needs the monitor up and BOTH input producers down -- the clock and the
+  # evaluator. It publishes the recorded ticks itself, so a live clock would interleave
+  # a second time base into an episode that already has one; it counts the publishers it
+  # is competing with and says so rather than letting the diff discover it.
+  recorder:
+    <<: *ros
+    container_name: sm-replay
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.evaluator
+    image: skill-monitor/evaluator:${TAG:-dev}
+    entrypoint: ["/bin/bash", "-c",
+                 "source /opt/ros/humble/setup.bash && python3 -m skill_monitor.backend.replay_node \"$@\"",
+                 "--"]
+    volumes:
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
+    profiles: ["job"]
+    restart: "no"
+
   # The carriage for the observation stream, when the robot's DDS cannot reach here.
   #
   #   ssh <robot> 'docker compose -f ~/skillMonitor/deploy/docker-compose.robot.yml \

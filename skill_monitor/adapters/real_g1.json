@@ -12,6 +12,13 @@
     "dist_to_goal",
     "image_similarity_to_goal"
   ],
+  "scene": [
+    "/tf",
+    "/tf_static",
+    "/filtered_map",
+    "/traversable_path",
+    "/traversable_path_tg"
+  ],
   "sources": [
     {
       "id": "odom",

@@ -773,7 +773,19 @@ _ADAPTER_FIELDS: dict[str, _Check] = {
     "warnings": STRING_ARRAY,
     "schema": _string_keyed(OBJECT),
     "sources": OBJECT_ARRAY,
+    # Topics a recording needs and the evaluator must never read: terrain, the
+    # planner's paths, tf. It travels beside `sources` so that `ros2 bag record` gets
+    # its line off the adapter the run declared -- see `adapter_spec.AdapterSpec.scene`
+    # for why being a forbidden INPUT and being worth recording are different things.
+    "scene": STRING_ARRAY,
 }
+
+#: `scene` arrived after SCHEMA_VERSION 1 shipped, so it is optional for the same reason
+#: `state` is on a verdict row: required would be a wire break needing a version bump,
+#: and every producer that predates it would become invalid for carrying nothing new.
+#: The field set stays CLOSED, so `scene` still has to be declared above or an adapter
+#: carrying it is rejected as an unknown field.
+_ADAPTER_OPTIONAL = _PLAIN_OPTIONAL + ("scene",)
 
 
 def build_adapter(
@@ -784,6 +796,7 @@ def build_adapter(
     schema: dict,
     sources,
     warnings=(),
+    scene=(),
     seq: int | None = None,
     t: float | None = None,
 ) -> dict:
@@ -804,6 +817,7 @@ def build_adapter(
         "warnings": list(warnings),
         "schema": dict(schema),
         "sources": list(sources),
+        "scene": list(scene),
     }
 
 
@@ -811,7 +825,8 @@ def validate_adapter(payload: Any) -> list[str]:
     if (bad := _not_an_object(payload, "adapter")) is not None:
         return bad
     problems: list[str] = []
-    _check_fields(payload, "adapter", _ADAPTER_FIELDS, problems, optional=_PLAIN_OPTIONAL)
+    _check_fields(payload, "adapter", _ADAPTER_FIELDS, problems,
+                  optional=_ADAPTER_OPTIONAL)
     _check_version(payload, "adapter", problems)
     _check_each(payload, "sources", "adapter", _SOURCE_FIELDS, problems)
 

@@ -368,13 +368,28 @@ how the frontend renders a sensor table for a robot it has never heard of.
                "expected_hz": 15.0, "max_age_s": 0.5,
                "required": true, "tracked": true,
                "keys": ["min_range"],
-               "steps": [{"keys": ["min_range"], "aggregate": "min", "on": "message"}]}]
+               "steps": [{"keys": ["min_range"], "aggregate": "min", "on": "message"}]}],
+  "scene": ["/tf", "/filtered_map", "/traversable_path"]
 }
 ```
 
 Resolved values only — a `debounce_s` declared in the descriptor appears here as the
 integer tick threshold it resolved to, so the number exists in exactly one place and can be
 read off the wire.
+
+`scene` is **optional** (it landed after `schema_version` 1; an adapter without it is
+valid) and it is not a source. It names topics a *recording* needs and that no consumer of
+this contract may subscribe to: the terrain, the planner's paths, tf. Re-executing an
+episode in a simulator means rebuilding the world it happened in, and no source describes
+one — an observation carries `min_range`, a scalar, where an arena needs geometry. It
+travels here so `ros2 bag record` gets its line off the adapter the run declared, on a
+machine that never saw the descriptor.
+
+For the G1 those topics are precisely the ones
+[P12](packages/P12-planner-independent-schema.md) forbids as *inputs*. Forbidden as an
+input is not the same as not worth recording: beside a verdict they are the best account
+of what the planner believed; inside one they are what invalidates it. A descriptor that
+lists a topic under both `sources` and `scene` is refused at load.
 
 ---
 

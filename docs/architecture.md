@@ -146,10 +146,15 @@ python3 -c "from skill_monitor.core import adapter_spec as a; \
 
 Two replay paths, which must agree:
 
-| path | what runs | what it proves |
-|---|---|---|
-| **re-execution in Isaac** | sim publishes its topics → evaluator with `isaac_lab.json` → monitor, live | the full stack is embodiment-independent |
-| **stream replay** | recorded `/monitor/observation` frames re-published → monitor | the verdict is a function of the observation stream alone |
+| path | what runs | recorded by | what it proves |
+|---|---|---|---|
+| **re-execution in Isaac** | sim publishes its topics → evaluator with `isaac_lab.json` → monitor, live | `ros2 bag record $(… topics --scene …)` | the full stack is embodiment-independent |
+| **stream replay** | recorded `/monitor/observation` frames re-published → monitor | `replay_node record` | the verdict is a function of the observation stream alone |
+
+The `--scene` half is not optional for the first path and is easy to lose: the adapter's
+`sources` are enough to re-drive the evaluator and not enough to rebuild a world, so a bag
+without the descriptor's `scene` topics records an episode that can be checked and not
+re-executed. The failure is silent until months later, when the arena cannot be built.
 
 Same episode through both → same verdict. That equality is the acceptance test for the
 claim; the exclusion count when it fails is the fidelity report.

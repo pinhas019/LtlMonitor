@@ -341,3 +341,51 @@ def test_a_frame_a_recording_accepts_is_a_frame_a_relay_accepts():
 
     assert [f["topic"] for f in recording.inputs()] == [t for t, _ in sent]
     assert recording.unreadable == relay.unreadable == 1
+
+
+# =============================================================================
+# The record line for the OTHER replay path
+# =============================================================================
+
+def an_adapter(sources=("/odom",), scene=()):
+    return {"adapter": "t", "sources": [{"topic": t} for t in sources],
+            "scene": list(scene)}
+
+
+def test_the_scene_is_off_by_default_because_a_monitor_replay_does_not_need_it():
+    """`play` re-runs the monitor over the recorded observations; the terrain is not one
+    of them. Recording it by default would put a grid map in every bag made to check a
+    verdict."""
+    assert bag_topics(an_adapter(scene=["/filtered_map"])) == ["/odom"]
+
+
+def test_the_scene_is_appended_for_re_execution_in_a_simulator():
+    """The other replay path in architecture.md: not "does the monitor agree with
+    itself", but "does the same episode in a simulator reach the same verdict". That
+    needs the world rebuilt, and no source describes one -- an observation carries
+    `min_range`, a scalar, where an arena needs geometry."""
+    line = bag_topics(an_adapter(["/odom", "/scan"], ["/tf", "/filtered_map"]), scene=True)
+
+    assert line == ["/odom", "/scan", "/tf", "/filtered_map"]
+
+
+def test_an_adapter_with_no_scene_asks_for_no_more_than_before():
+    """`--scene` against a descriptor that declares none is the old line, not an error.
+    Two of the three shipped descriptors are simulators already."""
+    assert bag_topics(an_adapter(), scene=True) == ["/odom"]
+
+
+def test_a_recording_from_before_scene_existed_still_yields_its_sources():
+    """The adapter frame in an episode recorded last month has no `scene` key at all."""
+    old = {"adapter": "t", "sources": [{"topic": "/odom"}]}
+
+    assert bag_topics(old, scene=True) == ["/odom"]
+
+
+def test_the_scene_line_comes_off_the_recording_not_off_this_machine():
+    """The point of carrying it on the wire: `topics --scene` is answerable months
+    later, on a machine that never had the descriptor, for a robot this code has never
+    heard of."""
+    recording = a_recording((1.0, api.ADAPTER, an_adapter(["/o"], ["/filtered_map"])))
+
+    assert bag_topics(recording.latest(api.ADAPTER), scene=True) == ["/o", "/filtered_map"]

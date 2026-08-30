@@ -168,18 +168,21 @@ docker compose -f deploy/docker-compose.robot.yml \
 ```
 
 ```bash
-# terminal B -- the sensor topics, what rviz2, Isaac and P12's calibration need.
-# The topic list is generated off the adapter THE RUN DECLARED, not hardcoded, so
-# terminal A must already be running: `topics` reads the recording's own
-# /monitor/adapter frame and says so rather than guessing if it is not there yet.
-# The frame is latched, so it lands within a second of the recorder starting.
+# terminal B -- the sensor topics AND the scene, what rviz2, a sim re-execution and
+# P12's calibration need. The topic list is generated off the adapter THE RUN
+# DECLARED, not hardcoded, so terminal A must already be running: `topics` reads the
+# recording's own /monitor/adapter frame and says so rather than guessing if it is
+# not there yet. The frame is latched, so it lands within a second of the recorder
+# starting. Drop --scene only if you are certain you will never re-execute this run.
 ros2 bag record -o g1_run1.bag $(docker compose -f deploy/docker-compose.robot.yml \
-                                run --rm recorder topics /data/g1_run1.jsonl)
+                                run --rm recorder topics --scene /data/g1_run1.jsonl)
 ```
 
 The first records `/monitor/*` — the inputs to replay and the outputs to compare, per
 the one rule that makes a replay meaningful: **replay the monitor's inputs, compare its
-outputs.** The second records the geometry, which is not on `/monitor/*` at all.
+outputs.** The second records the geometry, which is not on `/monitor/*` at all. See
+[*Recording for a sim replay*](#recording-for-a-sim-replay) for what `--scene` adds and
+why the run is not re-executable without it.
 
 Afterwards, on any machine:
 
@@ -234,6 +237,86 @@ regenerated.
 | `rmw_create_node` fails, subscriber silently never exists | foxy's CycloneDDS cannot parse `SharedMemory` / `Interfaces` schema elements in the XML config. |
 | rviz2 shows an empty scene | the `map → camera_color_optical_frame` static transform. `tools/rviz/run.sh` publishes it first, which is the whole reason that script exists. |
 | the monitor exits on the first violation | `--passive` is missing — the experiment overlay is not applied, or `-f` order put it first. `robot.yml` comes first. |
+
+## Recording for a sim replay
+
+There are **two** replay paths, they prove different things, and they need different
+recordings. Capture both today; only one of them can be reconstructed afterwards.
+
+| path | what runs | what it needs | what it proves |
+|---|---|---|---|
+| **stream replay** | recorded `/monitor/observation` → monitor | the `.jsonl` | the verdict is a function of the observation stream alone |
+| **re-execution in a simulator** | sim publishes its own topics → evaluator with `mujoco.json` / `isaac_lab.json` → monitor | the `.bag`, **with the scene** | the whole stack is embodiment-independent |
+
+Same episode through both must reach the same verdict. That equality is the acceptance
+test for the agnosticism claim ([P9](packages/P9-docs.md)), and the exclusion count when
+it fails is the fidelity report.
+
+### What `--scene` adds, and why the run is not re-executable without it
+
+`topics` reads the record line off the adapter the run declared. Without `--scene` that
+is the six **sources** — the topics the evaluator subscribes to. Those are enough to
+re-drive the evaluator, and not enough to rebuild a world: an observation carries
+`min_range`, a *scalar*, where an arena needs geometry.
+
+`--scene` appends what `real_g1.json` now declares under `scene`:
+
+```
+/tf  /tf_static  /filtered_map  /traversable_path  /traversable_path_tg
+```
+
+The terrain the planner planned on, the paths it produced, and the transforms that place
+any of it. Note what these are: `/filtered_map` and `/traversable_path*` are exactly the
+topics [P12](packages/P12-planner-independent-schema.md) names as **forbidden inputs** —
+the monitor must be transparent to the navigation algorithm and must never read the
+planner's own beliefs. Forbidden as an *input* is not the same as not worth recording.
+Beside a verdict they are the best explanation of what the planner thought it was doing;
+inside the verdict they would be the thing that invalidates it. The descriptor keeps the
+two apart and `adapter_spec` refuses a topic that claims to be both.
+
+### The scenario facts a bag cannot give you
+
+A simulator has to be *set up* before it can be re-executed, and three facts define the
+setup. Two are already in the `.jsonl` — every observation carries `pos_x`, `pos_y`,
+`yaw`, `goal_x`, `goal_y` — and one is not:
+
+- **start pose** — the first observation's `pos_*`/`yaw`. In the recording.
+- **the goal sequence** — `goal_x`/`goal_y` as `/next_waypoint` advanced. In the recording.
+- **the obstacle layout** — only in the bag, as the cloud and `/filtered_map`. Rebuilding
+  `sim/arena.xml` from it is by hand today; `sim/generate_map.py` goes the other way
+  (arena → occupancy grid). Photograph the space and pace out the obstacles while you
+  are standing in it. That measurement costs two minutes on the day and is unrecoverable
+  afterwards.
+
+### Replaying, later
+
+```bash
+# 1. the cheap one -- no sim, no robot, any machine. Start the monitor first, with
+#    the clock and evaluator DOWN, then:
+docker compose -f deploy/docker-compose.server.yml run --rm recorder play \
+               /data/g1_run1.jsonl --diff        # exits 1 on any difference
+
+# 2. the sensors, as geometry, to see what the run looked like
+ros2 bag play g1_run1.bag        # with tools/rviz/run.sh alongside
+
+# 3. re-execution: build the arena, then run the sim stack with the SAME spec and a
+#    different adapter -- which is the whole claim
+docker compose -f sim/docker-compose.sim.yml up --build
+```
+
+For (3) the evaluator's `--adapter` changes from `real_g1` to `mujoco` and
+`formulas_g1.json` does not change at all. If the verdict differs, the difference is the
+finding — and `docs/architecture.md` lists the three things that break agnosticism to
+check against first, one of which (`nav_stuck` debouncing in messages rather than ticks)
+is known-broken until P2 lands and makes sim and real verdicts **not yet comparable**.
+Record now regardless: the recording is what makes the comparison possible the day it is.
+
+### If you are running the two-machine layout
+
+The bag must still be recorded **on the robot** — the sensor and scene topics never cross
+the link, only `/monitor/*` does. Run a second recorder there writing to `/data` so
+`topics --scene` has an adapter frame to read locally, or generate the line on the PC
+from the tee'd `.jsonl` and pass it to a `ros2 bag record` over ssh.
 
 ## Running the monitor on a second machine
 
