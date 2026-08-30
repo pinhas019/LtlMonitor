@@ -165,7 +165,12 @@ def problems(session: dict) -> list[str]:
             found.append(f"no {topic} frame(s) -- {cost}")
 
     bag = session.get("bag") or {}
-    if not bag.get("topics"):
+    if bag.get("failed"):
+        # Distinct from "no bag was asked for". The recorder was launched and produced
+        # nothing, which is a broken robot-side setup rather than an operator's choice,
+        # and it is worth saying which happened.
+        found.append(f"{_COSTS['bag']} -- {bag['failed']}")
+    elif not bag.get("topics"):
         found.append(_COSTS["bag"])
     elif not bag.get("scene"):
         found.append(_COSTS["scene"])

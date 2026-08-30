@@ -144,6 +144,10 @@ def _rclpy_module() -> types.ModuleType:
     rclpy.ok = ok
     rclpy.shutdown = shutdown
     rclpy.try_shutdown = shutdown
+    # `replay_node` builds its node with the free function rather than by subclassing,
+    # which is the other half of rclpy's API and was not needed until `session` had
+    # wiring worth covering. Same `Node` either way.
+    rclpy.create_node = lambda name="", *_a, **_k: Node(name)
     rclpy.spin = lambda *_a, **_k: None
     rclpy.spin_once = lambda *_a, **_k: None
     return rclpy

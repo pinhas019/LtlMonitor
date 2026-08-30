@@ -332,11 +332,23 @@ def run_session(args) -> int:
     else:
         topics = bag_topics(adapter, scene=True)
         scene = [t for t in (adapter.get("scene") or []) if t in topics]
-        log.info(f"bagging {len(topics)} topic(s), {len(scene)} of them scene")
-        bag = subprocess.Popen(session.bag_command(root.name, topics, str(root / session.BAG)),
-                               stdout=subprocess.DEVNULL)
         doc = session.describe_run(doc, adapter, _latest_frame(stream_path, api.MANIFEST))
-        doc["bag"] = {"topics": topics, "scene": scene}
+        try:
+            bag = subprocess.Popen(
+                session.bag_command(root.name, topics, str(root / session.BAG)),
+                stdout=subprocess.DEVNULL)
+        except OSError as exc:
+            # No `ros2` on PATH, or it is not executable. Losing the bag must not lose
+            # the session: the stream is already recording, the robot is already
+            # moving, and an episode with half a record is worth immeasurably more than
+            # a traceback. The manifest carries the reason and `verify` reports it.
+            log.error(f"cannot start the bag recorder ({exc}); recording the stream "
+                      f"alone. This session will NOT be re-executable in a simulator.")
+            doc["bag"] = {"topics": [], "scene": [],
+                          "failed": f"ros2 bag record could not start: {exc}"}
+        else:
+            log.info(f"bagging {len(topics)} topic(s), {len(scene)} of them scene")
+            doc["bag"] = {"topics": topics, "scene": scene}
         _write_manifest(manifest_path, doc)
 
     log.info(f"session {root.name}: recording. Ctrl-C to close it.")
@@ -354,6 +366,18 @@ def run_session(args) -> int:
             except subprocess.TimeoutExpired:
                 log.error("the bag did not close in 20s; killing it. It may be unreadable.")
                 bag.kill()
+            # The manifest recorded the topic list when the recorder was LAUNCHED, which
+            # is a claim about intent. Whether anything was written is a different fact,
+            # and the manifest must not assert the first as if it were the second: a
+            # `ros2` that is not on PATH, an unwritable /data or a storage plugin that
+            # is missing all leave a bundle whose session.json says "4 topics bagged"
+            # and whose directory holds nothing. `verify` would then pass a session
+            # that cannot be re-executed, which is the one thing it exists to catch.
+            if not (root / session.BAG).is_dir():
+                log.error(f"ros2 bag record exited {bag.returncode} and wrote no bag")
+                doc["bag"] = {"topics": [], "scene": [],
+                              "failed": f"ros2 bag record exited {bag.returncode} "
+                                        f"and wrote nothing"}
         fh.close()
         node.destroy_node()
         rclpy.try_shutdown()
