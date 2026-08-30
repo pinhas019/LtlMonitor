@@ -26,13 +26,28 @@ x-ros: &ros
   ipc: host
   environment: &ros-env
     ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
-    # Which DDS. Empty is the image default (rmw_fastrtps_cpp); set it to whatever the
-    # robot's own containers use -- rmw_cyclonedds_cpp on the G1 -- when this stack has
-    # to see a graph it does not own. Two nodes with different RMWs never discover each
-    # other and nothing says so.
-    # Passed through from the host ONLY when set, which is what the bare keys mean:
-    # an RMW_IMPLEMENTATION of "" is not the same as unset, and some ROS versions try
-    # to load an implementation by that empty name rather than falling back.
+    # Which DDS, and how it is configured. Both are passed through from the host ONLY
+    # when set, which is what the bare keys mean: an RMW_IMPLEMENTATION of "" is not the
+    # same as unset, and some ROS versions try to load an implementation by that empty
+    # name rather than falling back.
+    #
+    # RMW_IMPLEMENTATION: unset is the image default, rmw_fastrtps_cpp. Set it to
+    # whatever the robot's own containers use -- the G1's trav_app declares
+    # rmw_cyclonedds_cpp -- whenever this stack has to see a graph it does not own. Two
+    # nodes with different RMWs never discover each other and nothing says so.
+    #
+    # CYCLONEDDS_URI: give it INLINE XML, not a path. `clock` mounts no volumes at all
+    # (that is the point of it -- a clock whose behaviour depended on a mounted file
+    # would be a clock whose tick count depended on deployment), so a path resolves in
+    # some of these containers and not in others, and the ones it fails in fall back to
+    # the default config and discover a different set of peers.
+    #
+    #   CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces>
+    #     <NetworkInterface name="enp3s0"/></Interfaces></General></Domain></CycloneDDS>'
+    #
+    # The robot's own file is the ROBOT's: it names its interface, `eth0`, which is not
+    # what the PC's is called. Copying it across is the mistake to avoid. Unset is
+    # Cyclone's own default, which picks an interface itself and is usually right.
     RMW_IMPLEMENTATION:
     CYCLONEDDS_URI:
     PYTHONUNBUFFERED: "1"
