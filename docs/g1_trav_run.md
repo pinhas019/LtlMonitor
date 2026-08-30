@@ -387,6 +387,68 @@ Three things decide that answer, and all three are settings rather than luck:
 | **`RMW_IMPLEMENTATION`** | must be identical. ROS 2 does not support mixing: a FastDDS node and a CycloneDDS node on one cable never discover each other and nothing reports it. `ros:humble` ships FastDDS only, so the images now carry `rmw_cyclonedds_cpp` as well and this variable picks one. The G1's stack is CycloneDDS. |
 | **multicast** | discovery is SPDP multicast. `ros2 multicast send` / `ros2 multicast receive` across the two machines answers it in five seconds. A firewall on the PC (`sudo ufw status`) is the usual culprit. |
 
+### The G1's DDS, read off the robot
+
+`trav_app` declares these, so they are facts rather than defaults to discover:
+
+```
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+CYCLONEDDS_URI=/workspaces/TRAV/cyclonedds_eth0.xml
+ROS_DOMAIN_ID                            unset, therefore 0
+```
+
+and that file is:
+
+```xml
+<Domain Id="any">
+  <SharedMemory><Enable>false</Enable></SharedMemory>
+  <General>
+    <Interfaces><NetworkInterface name="eth0" multicast="true"/></Interfaces>
+    <AllowMulticast>spdp</AllowMulticast>
+  </General>
+</Domain>
+```
+
+Three things follow, and only the first is obvious:
+
+- **`rmw_cyclonedds_cpp` is not optional.** `ros:humble` ships FastDDS, and a FastDDS
+  node and a Cyclone node on one cable never discover each other. The images carry both;
+  `RMW_IMPLEMENTATION` chooses.
+- **`AllowMulticast spdp` means multicast is needed for participant discovery and for
+  nothing else.** Once two participants have found each other, endpoint discovery and
+  all user data — the point cloud included — go unicast. So the only multicast that has
+  to survive the link is SPDP on 239.255.0.1:7400. A firewall on the PC is what usually
+  eats it.
+- **Do not reuse the robot's file.** It names `eth0`, which is the robot's interface, and
+  it carries a `<SharedMemory>` block. That block is exactly the element
+  [session 3 found older CycloneDDS could not parse](../RESUME.md) — `rmw_create_node`
+  fails and the subscriber silently never exists. The PC does not need it; leave it out
+  rather than inherit a parse risk for a feature that is disabled anyway.
+
+The PC's mirror of it, as one line, because it goes in an environment variable:
+
+```bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain Id="any"><General><Interfaces><NetworkInterface name="ENP3S0" multicast="true"/></Interfaces><AllowMulticast>spdp</AllowMulticast></General></Domain></CycloneDDS>'
+```
+
+Substitute the PC's own interface — `ip -br addr | grep 192.168.123` names it. Try
+without `CYCLONEDDS_URI` first: Cyclone picks an interface itself and is right whenever
+the PC has only one that could reach the robot. Pin it when the PC also has wifi.
+
+### Two things to confirm before blaming the network
+
+```bash
+# 1. Is trav_app on HOST networking? If it is bridged, its "eth0" is a veth on the
+#    docker bridge and its DDS is not on the cable at all -- no PC-side setting fixes
+#    that, and the relayed layout is the answer.
+ssh unitree@192.168.123.164 "docker inspect trav_app --format '{{.HostConfig.NetworkMode}}'"
+
+# 2. Is eth0 the interface holding 192.168.123.164? DDS is bound to the interface, not
+#    to the address you ssh to, and on a Unitree those are not always the same one.
+ssh unitree@192.168.123.164 'ip -br addr'
+```
+
 ## The wired layout — the G1 publishes, the PC does everything else
 
 This is what a direct cable buys and it is the simplest thing in this document: **nothing
