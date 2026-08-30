@@ -2,9 +2,142 @@
 
 **Newest session first.** Sessions 1–4 below are kept for the decisions they record,
 not for their status lines — every "unpushed", test count, `/ltl/*` topic name and git
-rule in them is out of date. **Session 5 is the current state.** The one part of
-session 4 that is not superseded is its closing section on the G1 run; that is still
-the plan.
+rule in them is out of date. **Session 6 is the current state.** Session 5's toolchain
+account still holds; what session 6 changes is that the G1 run now has a deployment,
+and the robot's own DDS settings are measured rather than assumed.
+
+---
+
+# Session 6 — the deployment the G1 run needed, and the robot's DDS read off the robot (2026-08-30)
+
+Everything is pushed. **Nothing is merged and no PR is open.**
+
+```
+branch  claude/app-status-deploy-dk3mtm   8 commits ahead of main, pushed
+main    87b46c8                           untouched this session
+suite   1298 passed, 0 skipped, ~90 s     python3 -m pytest, this host
+```
+
+## Read this first: what is verified and what is not
+
+**Not one line of this session's work has run against a robot, a real ROS graph, or a
+built image.** The environment was a cloud container with **no route to the robot's LAN**
+and two hard egress denials — `production.cloudfront.docker.com` and `packages.ros.org`
+both answer 403 — so no image could be built and ROS 2 could not be installed. What is
+verified is: the suite, `docker compose config` on every stack, the pure logic of every
+new module, and `session`/`verify`/`info`/`topics` driven end to end against the ROS stub
+with a fake `ros2` on PATH.
+
+Treat the first `docker compose build` on a real machine as the first real test. The
+likeliest thing to be wrong is an apt package name.
+
+## The robot, measured
+
+The G1 is on an **ethernet cable**, `unitree@192.168.123.164`. That matters because every
+"the dev PC cannot see the robot's ROS graph" note in sessions 1–4 was measured over the
+lab **wifi**, through a router on another subnet. It is not a claim about a cable onto
+the robot's own subnet, and it was being read as one.
+
+Read off `trav_app` (the robot's only container):
+
+```
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+CYCLONEDDS_URI=/workspaces/TRAV/cyclonedds_eth0.xml
+ROS_DOMAIN_ID                            unset, therefore 0
+```
+
+```xml
+<Domain Id="any">
+  <SharedMemory><Enable>false</Enable></SharedMemory>
+  <General>
+    <Interfaces><NetworkInterface name="eth0" multicast="true"/></Interfaces>
+    <AllowMulticast>spdp</AllowMulticast>
+  </General>
+</Domain>
+```
+
+- **`rmw_cyclonedds_cpp` is why the PC would have seen an empty graph.** `ros:humble`
+  ships FastDDS and only that; ROS 2 does not support mixing implementations. Every image
+  that joins the graph now installs `ros-humble-rmw-cyclonedds-cpp`, and
+  `RMW_IMPLEMENTATION` / `CYCLONEDDS_URI` are stack knobs passed through from the host
+  **only when set** — an empty value is not the same as unset.
+- **`AllowMulticast spdp`**: multicast is needed for participant discovery and nothing
+  else. Everything after it, point cloud included, is unicast.
+- **Do not reuse the robot's XML on the PC.** It names `eth0` and carries the
+  `<SharedMemory>` block session 3 found older CycloneDDS cannot parse. Give the PC
+  inline XML naming its own interface — a *path* would resolve in the services that mount
+  `/config` and not in `clock`, which mounts nothing by design.
+
+**Two questions were asked and never answered. Get them first.**
+
+```bash
+ssh unitree@192.168.123.164 "docker inspect trav_app --format '{{.HostConfig.NetworkMode}}'"
+ssh unitree@192.168.123.164 'ip -br addr'
+```
+
+If `trav_app` is **bridged**, its `eth0` is a veth on the docker bridge, its DDS never
+reaches the cable, and no PC-side setting fixes it — the relayed layout is then the
+answer, not a fallback.
+
+## First thing to do
+
+On the operator's PC, from a fresh clone of this branch:
+
+```bash
+unset ROS_DOMAIN_ID
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+docker compose -f deploy/docker-compose.robot.yml build                    # ~10 min, Spot
+docker compose -f deploy/docker-compose.robot.yml run --rm preflight --rates
+```
+
+Green → the **wired layout**: `docker compose -f deploy/docker-compose.robot.yml -f
+deploy/docker-compose.experiment.yml up` on the PC, console at `127.0.0.1:8082`, and the
+G1 runs nothing of ours but TRAV. Empty → check the PC firewall, then the two questions
+above, then the **relayed layout**. Both are written out in
+[docs/g1_trav_run.md](docs/g1_trav_run.md), which is the runbook this session added and
+the only document that needs reading on the day.
+
+A `tools/wire_up_monitor_pc.sh` that does the whole sequence in one command was being
+written when the session ended. It does not exist; the commands above are it.
+
+## What landed
+
+| | |
+|---|---|
+| `tools/g1_preflight.py` | asks the live graph whether every topic the adapter declares is there, with the type it declares. Python 3.8-clean — the robot's host and every TRAV container are 3.8. A `preflight` compose job runs it with the same domain and RMW the evaluator will use. |
+| `docker-compose.experiment.yml` | overlay: monitor `--passive` + the console. Without `--passive` the first VIOLATED ends the process and the induced failure is lost. |
+| `recorder` / `relay` jobs | the plan of record said "record it" and no stack ran a recorder. `relay` carries the `/monitor/*` stream over ssh when DDS cannot cross. |
+| `replay_node session` + `verify` | ONE directory per session: `session.json`, `stream.jsonl`, `sensors/`, `notes.md`. Self-describing — the latched adapter and manifest frames are in the stream, so a bundle explains its own sensor keys six months later. `verify` names what a bundle *cannot* do, before you walk away from the robot. |
+| descriptor `scene` key | topics a recording needs and the evaluator must never read — `/tf`, `/filtered_map`, `/traversable_path*`. Forbidden as an INPUT (P12) is not the same as not worth recording. Without them a run can be checked and never re-executed in sim, and the loss is silent for months. |
+| `docs/g1_trav_run.md` | the runbook: build order, preflight, the three link types, both two-machine layouts, and the traps already paid for. |
+
+## Traps found the hard way this session
+
+- **The console and the clock both default to 8081**, and every service runs
+  `network_mode: host`. Latent because no stack with both had ever been brought up. The
+  console moved to 8082.
+- **`--no-deps` is load-bearing** when starting the server tier for a relay: `monitor`
+  declares `depends_on: [clock]`, and a `--paused` clock still *creates* a publisher on
+  `/monitor/tick`, which makes the relay's "another publisher" warning cry wolf.
+- **`ros2` missing from PATH killed the whole `session`** — `Popen` raises, nothing
+  caught it, and the run died after the stream was opened and before anything was
+  finalized. Losing the bag must not lose the session.
+- **The manifest claimed a bag that was never written.** The topic list is recorded when
+  the recorder is *launched*; `verify` read that as a claim about fact and would pass a
+  bundle holding nothing.
+- **Patching `rclpy.spin_once` in a test hands frames to whatever node is spinning**, and
+  `test_gateway.py` leaves an executor thread doing exactly that. Failed only in a
+  full-suite run. The harness now checks which node it was handed.
+
+## Not done
+
+- No PR. The repo's rule is feature branch → PR into `dev` → `dev` fast-forwards to
+  `main`, and that is the operator's call.
+- **P12 is still designed and not implemented**, so six of eight APs still read the
+  planner's self-report. The plan of record is unchanged: run as-is, record it, calibrate
+  P12 off the recording.
+- The obstacle layout is still the one scenario fact no recording holds. Pace it out and
+  photograph it on the day; `notes.md` in the bundle is where it goes.
 
 ---
 
