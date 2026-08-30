@@ -15,6 +15,15 @@ x-ros: &ros
   ipc: host
   environment: &ros-env
     ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+    # Which DDS. Empty is the image default (rmw_fastrtps_cpp); set it to whatever the
+    # robot's own containers use -- rmw_cyclonedds_cpp on the G1 -- when this stack has
+    # to see a graph it does not own. Two nodes with different RMWs never discover each
+    # other and nothing says so.
+    # Passed through from the host ONLY when set, which is what the bare keys mean:
+    # an RMW_IMPLEMENTATION of "" is not the same as unset, and some ROS versions try
+    # to load an implementation by that empty name rather than falling back.
+    RMW_IMPLEMENTATION:
+    CYCLONEDDS_URI:
     PYTHONUNBUFFERED: "1"
     SKILL_MONITOR_CONFIG: /config
   restart: unless-stopped

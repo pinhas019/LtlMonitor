@@ -6,7 +6,13 @@ WORKDIR /app
 
 # sensor_msgs_py.point_cloud2: PointCloud2 decoding, used by the real_g1 and
 # isaac_lab adapters. action_msgs (GoalStatusArray) ships with ros-base.
-RUN apt-get update && apt-get install -y ros-humble-sensor-msgs-py && \
+# rmw_cyclonedds_cpp is not a dependency of this service, it is which wire it
+# speaks. ros:humble ships rmw_fastrtps_cpp and only that; the G1's own stack runs
+# CycloneDDS, and ROS 2 does not support mixing implementations -- two nodes on one
+# cable with different RMWs never discover each other, which looks exactly like a
+# broken network and is not one. Both present, and RMW_IMPLEMENTATION decides.
+RUN apt-get update && \
+    apt-get install -y ros-humble-sensor-msgs-py ros-humble-rmw-cyclonedds-cpp && \
     rm -rf /var/lib/apt/lists/*
 
 COPY skill_monitor/ ./skill_monitor/

@@ -26,6 +26,15 @@ x-ros: &ros
   ipc: host
   environment: &ros-env
     ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+    # Which DDS. Empty is the image default (rmw_fastrtps_cpp); set it to whatever the
+    # robot's own containers use -- rmw_cyclonedds_cpp on the G1 -- when this stack has
+    # to see a graph it does not own. Two nodes with different RMWs never discover each
+    # other and nothing says so.
+    # Passed through from the host ONLY when set, which is what the bare keys mean:
+    # an RMW_IMPLEMENTATION of "" is not the same as unset, and some ROS versions try
+    # to load an implementation by that empty name rather than falling back.
+    RMW_IMPLEMENTATION:
+    CYCLONEDDS_URI:
     PYTHONUNBUFFERED: "1"
     SKILL_MONITOR_CONFIG: /config
   restart: unless-stopped
@@ -133,6 +142,38 @@ services:
       # Read-write, and the only reason this service differs from `evaluator`: the
       # episode is written here, on the host, where it survives the container.
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
+    profiles: ["job"]
+    restart: "no"
+
+  # "Is the graph this stack expects actually there?" -- a JOB, and the first thing to
+  # run when the evaluator sees nothing:
+  #
+  #   docker compose -f deploy/docker-compose.robot.yml run --rm preflight --rates
+  #
+  # Here as a service because the machine that most needs to ask may have no ROS on it
+  # at all: with the monitor on a PC and the G1 merely publishing, the PC has this
+  # stack and nothing else. The `ros2` CLI inside this image answers the question, and
+  # the RMW_IMPLEMENTATION / ROS_DOMAIN_ID this service inherits are exactly the ones
+  # the evaluator will use -- which is the point. A preflight run with different
+  # settings than the thing it is clearing tests nothing.
+  #
+  # tools/ is MOUNTED and not COPYed: `tools/README.md` states nothing there is part of
+  # the package and nothing in the package imports it, and baking it into an image would
+  # quietly make that false.
+  preflight:
+    <<: *ros
+    container_name: sm-preflight
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.evaluator
+    image: skill-monitor/evaluator:${TAG:-dev}
+    entrypoint: ["/bin/bash", "-c",
+                 "source /opt/ros/humble/setup.bash && python3 /tools/g1_preflight.py \"$@\"",
+                 "--"]
+    command: ["--adapter", "${ADAPTER:-real_g1}"]
+    volumes:
+      - "../tools:/tools:ro"
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
     profiles: ["job"]
     restart: "no"
 

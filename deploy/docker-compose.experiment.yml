@@ -39,14 +39,18 @@ services:
     command: ["--formulas-file", "${SPEC:-formulas_g1.json}",
               "--output-dir", "/data/output", "--passive"]
 
-  # The console, ON the robot, because that is the only place it can be.
+  # The console, wherever this stack runs.
   #
-  # The dev PC cannot see the robot's ROS graph -- the route is via a different subnet
-  # and DDS discovery is spdp multicast on eth0, which is why tools/camera_bridge.py
-  # exists at all. A console is a ROS client, so it runs here and the operator reaches
-  # it over an ssh tunnel:
+  # A console is a ROS client, so it lives on the machine that can see the graph. When
+  # this stack runs ON the robot, that is the robot, and the operator reaches it over an
+  # ssh tunnel:
   #
   #     ssh -L 8082:127.0.0.1:8082 unitree@<robot>      # then http://127.0.0.1:8082
+  #
+  # When the stack runs on a PC that shares a wired subnet with the robot -- see
+  # docs/g1_trav_run.md -- it is already local and there is no tunnel to make. Over the
+  # lab wifi neither is true: DDS never crossed it, measured, which is why
+  # tools/camera_bridge.py exists.
   #
   # It keeps its LOOPBACK default and no --host is set here. The tunnel is what carries
   # it to the operator, and it authenticates as ssh rather than not at all -- this
@@ -77,6 +81,8 @@ services:
               "--clock-url", "http://127.0.0.1:${CLOCK_PORT:-8081}"]
     environment:
       ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      RMW_IMPLEMENTATION:
+      CYCLONEDDS_URI:
       PYTHONUNBUFFERED: "1"
       SKILL_MONITOR_CONFIG: /config
       # The image's HEALTHCHECK reads this; drop it and a healthy console on 8082

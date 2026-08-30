@@ -36,6 +36,21 @@ FROM ros:humble
 
 WORKDIR /app
 
+# The OTHER DDS, so this image can be told which wire to speak.
+#
+# `ros:humble` ships rmw_fastrtps_cpp and only that. The G1's own stack runs CycloneDDS,
+# and ROS 2 does not support mixing implementations -- two nodes on one cable with
+# different RMWs simply never discover each other, which looks exactly like a broken
+# network and is not one. Installing both here costs a few MB and makes
+# `RMW_IMPLEMENTATION` a deployment knob instead of a rebuild:
+#
+#     RMW_IMPLEMENTATION=rmw_cyclonedds_cpp docker compose -f ... up
+#
+# Match whatever the robot's containers set. `ros2 topic list` seeing nothing while the
+# robot is plainly publishing is this, nine times in ten.
+RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp && \
+    rm -rf /var/lib/apt/lists/*
+
 # Nothing to pip install. The HTTP server, the WebSocket framing and the page itself are
 # stdlib and one static file -- pyproject.toml deliberately declares no install_requires,
 # and the console adds no dependency to that. There is no build step: the toolchain that

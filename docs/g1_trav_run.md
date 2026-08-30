@@ -30,32 +30,36 @@ nothing.
 
 ## Where each piece has to run
 
-**The evaluator on the robot, always.** It is the only service that reads the robot's
-sensor topics, and those do not cross the link: the dev PC cannot see the robot's ROS
-graph — the route is via a different subnet, DDS discovery is spdp multicast on `eth0`,
-and DDS never crossed the wifi even with UDP flowing both ways and unicast peers
-configured. `tools/camera_bridge.py` exists because of that wall and carries exactly one
-`sensor_msgs/Image` topic over it.
+**The evaluator has to be where the sensors reach it.** It is the only service that
+subscribes to the robot's own topics; everything else consumes `/monitor/*`. Whether
+"where they reach it" means the robot's chassis or a PC on the other end of a cable is a
+question about the wire, and there are three answers this robot has actually given:
 
-**The monitor can run wherever you like** — see
-[*Running the monitor on a second machine*](#running-the-monitor-on-a-second-machine).
-The tier-2 monitor advances on the tick inside each received observation, so all it
-needs is the observation stream, which is a few hundred bytes of JSON per tick and
-travels over ssh.
+| link | what happens | layout |
+|---|---|---|
+| **on the robot itself** | trivially works | steps 0–7 below, everything on the G1 |
+| **wired, same subnet** | DDS crosses, once the domain and the RMW match | [the wired layout](#the-wired-layout--the-g1-publishes-the-pc-does-everything-else) — the G1 runs nothing of ours |
+| **lab wifi, routed subnet** | DDS never crossed it — measured, with UDP flowing both ways and unicast peers configured | [the relayed layout](#the-relayed-layout--when-dds-will-not-cross) — ssh carries the stream |
 
-Whichever machine it runs on, the robot's host and every TRAV container are **Python
-3.8** while `skill_monitor` declares `requires-python = ">=3.10"`. The package therefore
-runs only inside the images from `deploy/`, which are `ros:humble` and carry 3.10. The
-one exception is `tools/g1_preflight.py`, kept 3.8-clean on purpose so it runs in a bare
+`tools/camera_bridge.py` exists because of that third row, and carries exactly one
+`sensor_msgs/Image` topic over it. Do not read it as a claim about the second row.
+
+The tier-2 monitor advances on the tick inside each received observation, so wherever it
+sits it needs only the observation stream — a few hundred bytes of JSON per tick.
+
+Whichever machine runs it, the robot's host and every TRAV container are **Python 3.8**
+while `skill_monitor` declares `requires-python = ">=3.10"`. The package therefore runs
+only inside the images from `deploy/`, which are `ros:humble` and carry 3.10. The one
+exception is `tools/g1_preflight.py`, kept 3.8-clean on purpose so it runs in a bare
 robot shell.
 
 The console has no authentication and binds loopback wherever it runs. **ssh is what
-stands in front of it** — a tunnel when it runs on the robot, nothing needed when it
-runs on your own PC.
+stands in front of it** — a tunnel when it runs on the robot, nothing needed when it runs
+on your own PC.
 
 Steps 0–7 below are the all-on-the-robot layout, which is the shortest path and the one
-to fall back to. The two-machine layout changes steps 3 and 4 only, and is written out
-at the end.
+to fall back to. Both two-machine layouts are written out at the end and change only
+where you type the commands.
 
 ---
 
@@ -350,18 +354,76 @@ you it cannot be re-executed.
 
 ## Running the monitor on a second machine
 
-Only the **evaluator** has to be on the robot. Put the monitor, the gateway and the
-console on your own PC and you get a browser page with no tunnel, the Spot build on a
-machine that is not a Jetson, and `/data` on a disk you can actually work from.
+Only the **evaluator** has to be where the sensors are — and "where the sensors are"
+means "where their DDS reaches", which is not always the robot's own chassis. There are
+two layouts and the wire decides which you get. Find out first; do not guess.
 
-What has to cross the link is the observation stream — `/monitor/tick`,
-`/monitor/observation` and the latched `/monitor/adapter`, a few hundred bytes of JSON
-per tick. **Not** the sensor topics, which stay on the robot with the evaluator.
+### Which layout you have: one test
 
-**Do not try to do this with DDS.** It was tried on this robot and it did not work: UDP
-flowed both ways, unicast peers were configured, and the graphs never saw each other.
-ssh is the transport that does work, and it authenticates and encrypts a control surface
-that has no authentication of its own.
+Put the PC on the robot's subnet, then ask the graph:
+
+```bash
+# PC, one-off: an address on the robot's subnet, on the cable's interface
+sudo ip addr add 192.168.123.100/24 dev <iface>      # `ip -br link` names it
+ping -c3 192.168.123.164
+
+# the settings have to MATCH the robot's, so read them off the robot first
+ssh unitree@192.168.123.164 'env | grep -E "ROS_DOMAIN_ID|RMW_IMPLEMENTATION|CYCLONEDDS"'
+
+# then, on the PC, with those values:
+ROS_DOMAIN_ID=<theirs> RMW_IMPLEMENTATION=<theirs> \
+  docker compose -f deploy/docker-compose.robot.yml run --rm preflight --rates
+```
+
+Every required source live → **wired layout** below: the monitor and everything else run
+on the PC and the G1 runs nothing of ours. Nothing visible → **relayed layout**, further
+down, which needs no DDS at all.
+
+Three things decide that answer, and all three are settings rather than luck:
+
+| | |
+|---|---|
+| **`ROS_DOMAIN_ID`** | must be identical. A mismatch is a silent empty graph. |
+| **`RMW_IMPLEMENTATION`** | must be identical. ROS 2 does not support mixing: a FastDDS node and a CycloneDDS node on one cable never discover each other and nothing reports it. `ros:humble` ships FastDDS only, so the images now carry `rmw_cyclonedds_cpp` as well and this variable picks one. The G1's stack is CycloneDDS. |
+| **multicast** | discovery is SPDP multicast. `ros2 multicast send` / `ros2 multicast receive` across the two machines answers it in five seconds. A firewall on the PC (`sudo ufw status`) is the usual culprit. |
+
+## The wired layout — the G1 publishes, the PC does everything else
+
+This is what a direct cable buys and it is the simplest thing in this document: **nothing
+of ours runs on the robot at all.** TRAV publishes as it always does; the PC subscribes.
+
+```bash
+# PC. The file is called "robot" because of what it READS, not where it sits: it is the
+# tier that consumes the robot's sensor topics, and over a cable that tier can be here.
+export ROS_DOMAIN_ID=<the robot's>
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp     # match the robot's
+
+docker compose -f deploy/docker-compose.robot.yml \
+               -f deploy/docker-compose.experiment.yml up
+```
+
+Clock, evaluator (`real_g1`), monitor `--passive`, supervisor, console — all on the PC.
+The console is at `http://127.0.0.1:8082` with **no ssh tunnel**, because it is your own
+machine. `/config` and `/data` are the PC's, so the recording lands on a disk you can
+work from:
+
+```bash
+docker compose -f deploy/docker-compose.robot.yml run --rm recorder \
+               session /data/g1_run1 --note "wired run"
+docker compose -f deploy/docker-compose.robot.yml run --rm recorder verify /data/g1_run1
+```
+
+On the robot: `ssh unitree@192.168.123.164`, start TRAV, and that is the entire robot-side
+procedure. No images to build there, no Spot compile on the Jetson, nothing to clean up.
+
+**What it costs.** The point cloud and the camera image now cross the cable every tick
+instead of staying on-chassis — fine on gigabit ethernet, and the reason this is a *wired*
+layout and not a wifi one. And the supervisor's interventions now travel a cable rather
+than a loopback; it enforces nothing until enabled, so today that is theoretical, but a
+safety ladder that reaches the robot over a cable someone can trip over is a decision to
+make on purpose, not by default.
+
+## The relayed layout — when DDS will not cross
 
 ### On the robot — sensors and the evaluator, nothing else
 
