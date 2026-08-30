@@ -99,6 +99,68 @@ class Recorder:
         return True
 
 
+def parse_frame(line: str) -> "dict | None":
+    """One JSON Lines frame, or None if the line was not one.
+
+    Split out of `Recording.parse` because `Relay` reads the same format one line at a
+    time off a pipe and must not wait for an end of file that a live stream does not
+    have. One parser, so a frame a recording accepts is a frame a relay accepts.
+    """
+    try:
+        frame = json.loads(line)
+        topic = frame["topic"]
+        payload = frame["payload"]
+    except Exception:
+        return None
+    if not isinstance(topic, str) or not isinstance(payload, dict):
+        return None
+    return {"wall": frame.get("wall"), "topic": topic, "payload": payload}
+
+
+class Relay:
+    """The same stream, live, onto another machine's graph.
+
+    The robot tier's evaluator is the only service that must sit where the sensors are;
+    `docs/architecture.md` already has the tier-2 monitor "a network away from any
+    robot", advancing on the tick *inside* each received observation rather than on a
+    clock of its own. What was missing was the carriage: on this robot, DDS does not
+    cross the wifi, so the observation stream never reached the second machine.
+
+    A `Relay` is the receiving half of that carriage and is deliberately the same format
+    a `Recorder` writes -- so the transport is `record` on one machine piped into
+    `relay` on the other, and an episode watched live and an episode replayed from disk
+    are byte-for-byte the same frames. Nothing here knows what the pipe is; ssh is one.
+
+    **Only inputs are published**, exactly as in `Player`, and for a sharper reason than
+    there: the monitor on this side is computing its own verdicts, and a relayed
+    `/monitor/verdict` would put the robot's answer and this one on the same topic --
+    two producers, and a console showing whichever landed last. `skipped` counts them.
+
+    Pure: `publish(topic, text)` is the only thing it needs, like everything else here.
+    """
+
+    def __init__(self, publish: Callable[[str, str], None]):
+        self._publish = publish
+        self.published = 0
+        self.skipped = 0
+        self.unreadable = 0
+
+    def on_line(self, line: str) -> "str | None":
+        """One line off the pipe. Returns the topic published, or None."""
+        if not line.strip():
+            return None
+        frame = parse_frame(line)
+        if frame is None:
+            self.unreadable += 1
+            return None
+        if frame["topic"] not in INPUTS:
+            self.skipped += 1
+            return None
+        self._publish(frame["topic"], json.dumps(frame["payload"]))
+        self.published += 1
+        return frame["topic"]
+
+
 class Recording:
     """A parsed episode: the frames in order, plus the verdicts indexed by tick.
 
@@ -116,21 +178,13 @@ class Recording:
         frames: list[dict] = []
         unreadable = 0
         for line in lines:
-            line = line.strip()
-            if not line:
+            if not line.strip():
                 continue
-            try:
-                frame = json.loads(line)
-                topic = frame["topic"]
-                payload = frame["payload"]
-            except Exception:
+            frame = parse_frame(line)
+            if frame is None:
                 unreadable += 1
                 continue
-            if not isinstance(topic, str) or not isinstance(payload, dict):
-                unreadable += 1
-                continue
-            frames.append({"wall": frame.get("wall"), "topic": topic,
-                           "payload": payload})
+            frames.append(frame)
         return cls(frames, unreadable)
 
     def of(self, topic: str) -> list[dict]:

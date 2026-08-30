@@ -10,6 +10,13 @@
     # and, for the geometry rviz2 and Isaac replay from
     ros2 bag record -o run.bag $(python3 -m skill_monitor.backend.replay_node topics run.jsonl)
 
+    # or LIVE, with the evaluator on the robot and the monitor on another machine
+    ssh robot '... replay_node record -' | python3 -m skill_monitor.backend.replay_node relay
+
+`relay` is the same format arriving as it happens instead of being read back off disk,
+which is what lets the monitor run a network away from the robot when DDS cannot cross
+the link between them. See `core/recording.py`'s `Relay`.
+
 The rule is `core/recording.py`'s: replay the inputs, compare the outputs. The player
 publishes the recorded ticks, so the replay's time base **is** the recorded one -- no
 clock runs during a replay, which is why the tick count cannot depend on how fast the
@@ -33,7 +40,8 @@ import sys
 import time
 
 from skill_monitor.core import api
-from skill_monitor.core.recording import RECORDED, INPUTS, Player, Recorder, Recording
+from skill_monitor.core.recording import (RECORDED, INPUTS, Player, Recorder,
+                                          Recording, Relay)
 
 #: How long `play` waits for the verdict of an observation before moving on.
 #:
@@ -51,9 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     rec = sub.add_parser("record",
                          help="subscribe to every recorded topic and append JSON Lines")
-    rec.add_argument("path")
+    rec.add_argument("path", help="a file, or '-' for stdout so the stream can be piped")
     rec.add_argument("--append", action="store_true",
                      help="add to an existing file instead of truncating it")
+
+    relay = sub.add_parser(
+        "relay", help="publish a stream of recorded frames onto THIS machine's graph")
+    relay.add_argument("path", nargs="?", default="-",
+                       help="a file or fifo, or '-' (the default) for stdin")
 
     play = sub.add_parser("play", help="republish the recorded inputs to a live monitor")
     play.add_argument("path")
@@ -95,7 +108,15 @@ def run_record(args) -> int:
                          reliability=ReliabilityPolicy.RELIABLE,
                          history=HistoryPolicy.KEEP_LAST)
 
-    fh = open(args.path, "a" if args.append else "w", buffering=1, encoding="utf-8")
+    # '-' is stdout, and stdout is what makes the stream pipeable -- `record -` on the
+    # robot through ssh into `relay -` on the operator's machine. Line buffering is what
+    # makes it a *live* stream rather than a file that arrives in 8 KB lumps; ROS logging
+    # goes to stderr, so nothing else lands in the pipe.
+    to_stdout = args.path == "-"
+    if to_stdout:
+        fh = open(sys.stdout.fileno(), "w", buffering=1, encoding="utf-8", closefd=False)
+    else:
+        fh = open(args.path, "a" if args.append else "w", buffering=1, encoding="utf-8")
     recorder = Recorder(fh.write)
 
     rclpy.init()
@@ -198,6 +219,74 @@ def run_play(args) -> int:
 
 
 # =============================================================================
+# relay
+# =============================================================================
+
+def run_relay(args) -> int:
+    """A live stream in, this machine's graph out.
+
+    The mirror image of `play`, and the differences are all one difference: this is not
+    a replay of a finished episode, it is the same episode arriving as it happens. So
+    there is no `--rate` (the robot's clock already paced it and the tick is inside the
+    stream), no `--diff` (there is nothing to compare against yet -- record the verdicts
+    on this side and diff later), and no waiting for the monitor to answer each
+    observation. Frames go out as they arrive, and the pipe is the pacing.
+
+    It publishes and subscribes to nothing, so it never spins an executor: rclpy
+    publishing does not need one, and a blocking read on the pipe is exactly the right
+    thing to be doing between frames.
+    """
+    import rclpy
+    from std_msgs.msg import String
+    from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                           ReliabilityPolicy)
+
+    latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                         reliability=ReliabilityPolicy.RELIABLE,
+                         history=HistoryPolicy.KEEP_LAST)
+
+    rclpy.init()
+    node = rclpy.create_node("skill_monitor_relay")
+    log = node.get_logger()
+    pubs = {t: node.create_publisher(
+        String, t, latched if t in api.LATCHED_TOPICS else 10) for t in INPUTS}
+    relay = Relay(lambda topic, text: pubs[topic].publish(String(data=text)))
+
+    # The same warning `play` gives, for the same reason and one more. A local clock or
+    # evaluator would interleave its own ticks with the robot's, and the tick index the
+    # observation carries is the robot's -- so the monitor would be stepped twice per
+    # remote tick by two time bases. On the server tier the clock ships `--paused`
+    # precisely so this cannot happen; if it warns here, something un-paused it.
+    for topic in (api.TICK, api.OBSERVATION):
+        others = node.count_publishers(topic) - 1
+        if others > 0:
+            log.warn(f"{others} other publisher(s) on {topic} -- a local clock or "
+                     f"evaluator is running, and this relay is interleaving with it")
+
+    stream = sys.stdin if args.path == "-" else open(args.path, encoding="utf-8")
+    log.info(f"relaying {len(INPUTS)} input topic(s) from "
+             f"{'stdin' if args.path == '-' else args.path}")
+    try:
+        for line in stream:
+            if not rclpy.ok():
+                break
+            relay.on_line(line)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if stream is not sys.stdin:
+            stream.close()
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+    # An empty relay is the common failure and it is silent otherwise: the ssh command
+    # died, or the robot side was never recording. Say which number was zero.
+    print(f"relayed {relay.published} frame(s); skipped {relay.skipped} output frame(s), "
+          f"{relay.unreadable} unreadable", file=sys.stderr)
+    return 0 if relay.published else 1
+
+
+# =============================================================================
 # topics, info -- no ROS
 # =============================================================================
 
@@ -232,7 +321,7 @@ def run_info(args) -> int:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    return {"record": run_record, "play": run_play,
+    return {"record": run_record, "play": run_play, "relay": run_relay,
             "topics": run_topics, "info": run_info}[args.mode](args)
 
 

@@ -171,12 +171,41 @@ the same schema keys, and the monitor package never reads `skill_monitor/adapter
 
 | stack | file | contains |
 |---|---|---|
-| robot | `deploy/docker-compose.robot.yml` | clock, evaluator, monitor tier-1, supervisor |
-| server | `deploy/docker-compose.server.yml` | clock, monitor tier-2, gateway, frontend |
+| robot | `deploy/docker-compose.robot.yml` | clock, evaluator, monitor tier-1, supervisor, + the `recorder` job |
+| server | `deploy/docker-compose.server.yml` | clock, monitor tier-2, gateway, frontend, + the `describer` and `relay` jobs |
 | sim | `sim/docker-compose.sim.yml` | mujoco, nav2, clock, evaluator, monitor, foxglove, dozzle |
 | dev overlay | `deploy/docker-compose.dev.yml` | the live source mount, applied over any of the above |
+| experiment overlay | `deploy/docker-compose.experiment.yml` | monitor `--passive` + the console, applied over the robot stack |
 
 Volumes: `/config` read-only (adapters + specs), `/data` read-write (verdicts + renders).
+
+### The two tiers on two machines
+
+The split above is the deployable one and not a diagram: the evaluator is the only
+service that must sit where the sensors are, and the tier-2 monitor advances on the tick
+inside each received observation, which is what makes it runnable a network away. What
+that needs is a way for the observation stream to cross the link.
+
+DDS is the obvious carriage and on this robot it is not available — it never crossed the
+wifi, measured, with UDP flowing both ways and unicast peers configured. So the stream
+travels as the format `core/recording.py` already defines, over whatever transport does
+work:
+
+```bash
+ssh <robot> 'docker compose -f ~/skillMonitor/deploy/docker-compose.robot.yml \
+             run --rm -T recorder record -' \
+  | docker compose -f deploy/docker-compose.server.yml run --rm -T relay
+```
+
+`record -` writes the frames to stdout; `relay` publishes the *inputs* onto the local
+graph and drops the outputs, because the monitor on this side is computing its own. The
+episode a relay carries and the episode `play` reads back off disk are the same bytes,
+so live watching and stored replay are two spellings of one thing.
+
+The robot's clock owns the tick and it travels inside the stream. The server's clock
+therefore ships `--paused` and must stay that way — two clocks driving one trace is the
+bug [clocking.md](clocking.md) exists to prevent, and the relay warns if it finds a
+local publisher on `/monitor/tick`.
 
 ### Trust boundary
 

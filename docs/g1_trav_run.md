@@ -30,19 +30,32 @@ nothing.
 
 ## Where each piece has to run
 
-**On the robot. All of it.** Not a preference — the dev PC cannot see the robot's ROS
-graph: the route is via a different subnet and DDS discovery is spdp multicast on
-`eth0`. `tools/camera_bridge.py` exists because of that wall and carries exactly one
-`sensor_msgs/Image` topic over it; the odometry, the waypoint, the cloud and the status
-do not cross, so live monitoring from the PC is not a thing that can work today.
+**The evaluator on the robot, always.** It is the only service that reads the robot's
+sensor topics, and those do not cross the link: the dev PC cannot see the robot's ROS
+graph — the route is via a different subnet, DDS discovery is spdp multicast on `eth0`,
+and DDS never crossed the wifi even with UDP flowing both ways and unicast peers
+configured. `tools/camera_bridge.py` exists because of that wall and carries exactly one
+`sensor_msgs/Image` topic over it.
 
-The robot's host and every TRAV container are **Python 3.8**, and `skill_monitor`
-declares `requires-python = ">=3.10"`. The package therefore runs only inside the images
-from `deploy/`, which are `ros:humble` and carry 3.10. The one exception is
-`tools/g1_preflight.py`, kept 3.8-clean on purpose so it runs in a bare robot shell.
+**The monitor can run wherever you like** — see
+[*Running the monitor on a second machine*](#running-the-monitor-on-a-second-machine).
+The tier-2 monitor advances on the tick inside each received observation, so all it
+needs is the observation stream, which is a few hundred bytes of JSON per tick and
+travels over ssh.
 
-The operator watches through an **ssh tunnel** to a console bound to loopback on the
-robot. It has no authentication; ssh is what stands in front of it.
+Whichever machine it runs on, the robot's host and every TRAV container are **Python
+3.8** while `skill_monitor` declares `requires-python = ">=3.10"`. The package therefore
+runs only inside the images from `deploy/`, which are `ros:humble` and carry 3.10. The
+one exception is `tools/g1_preflight.py`, kept 3.8-clean on purpose so it runs in a bare
+robot shell.
+
+The console has no authentication and binds loopback wherever it runs. **ssh is what
+stands in front of it** — a tunnel when it runs on the robot, nothing needed when it
+runs on your own PC.
+
+Steps 0–7 below are the all-on-the-robot layout, which is the shortest path and the one
+to fall back to. The two-machine layout changes steps 3 and 4 only, and is written out
+at the end.
 
 ---
 
@@ -221,6 +234,92 @@ regenerated.
 | `rmw_create_node` fails, subscriber silently never exists | foxy's CycloneDDS cannot parse `SharedMemory` / `Interfaces` schema elements in the XML config. |
 | rviz2 shows an empty scene | the `map → camera_color_optical_frame` static transform. `tools/rviz/run.sh` publishes it first, which is the whole reason that script exists. |
 | the monitor exits on the first violation | `--passive` is missing — the experiment overlay is not applied, or `-f` order put it first. `robot.yml` comes first. |
+
+## Running the monitor on a second machine
+
+Only the **evaluator** has to be on the robot. Put the monitor, the gateway and the
+console on your own PC and you get a browser page with no tunnel, the Spot build on a
+machine that is not a Jetson, and `/data` on a disk you can actually work from.
+
+What has to cross the link is the observation stream — `/monitor/tick`,
+`/monitor/observation` and the latched `/monitor/adapter`, a few hundred bytes of JSON
+per tick. **Not** the sensor topics, which stay on the robot with the evaluator.
+
+**Do not try to do this with DDS.** It was tried on this robot and it did not work: UDP
+flowed both ways, unicast peers were configured, and the graphs never saw each other.
+ssh is the transport that does work, and it authenticates and encrypts a control surface
+that has no authentication of its own.
+
+### On the robot — sensors and the evaluator, nothing else
+
+```bash
+docker compose -f deploy/docker-compose.robot.yml up clock evaluator
+```
+
+No monitor tier-1 and no supervisor: with the verdict being computed on the PC, a
+tier-1 monitor here would be a second, independent verdict on the same episode. Add them
+back only when you want the safety ladder on the robot, and then know you have two.
+
+### The link — one pipe, both ends `-T`
+
+```bash
+# on the PC, in one terminal, and leave it running
+ssh unitree@<robot> 'docker compose -f ~/skillMonitor/deploy/docker-compose.robot.yml \
+                     run --rm -T recorder record -' \
+  | docker compose -f deploy/docker-compose.server.yml run --rm -T relay
+```
+
+`record -` writes the frames to stdout instead of a file; `relay` reads them on stdin and
+publishes the inputs onto the PC's graph. `-T` on **both** ends: without it compose
+allocates a TTY and a TTY mangles the stream.
+
+`relay` publishes the inputs only. The robot's verdicts and manifest are dropped —
+your monitor is computing its own, and two producers on `/monitor/verdict` would leave
+the console showing whichever landed last with nothing saying which.
+
+### On the PC — the monitor, the gateway, the console
+
+```bash
+docker compose -f deploy/docker-compose.server.yml up --no-deps monitor gateway frontend
+```
+
+Then `http://127.0.0.1:8082`. No tunnel: it is your own machine.
+
+**`--no-deps` is the load-bearing flag.** `monitor` declares `depends_on: [clock]`, so
+without it compose starts the server's clock as well. That clock ships `--paused` and
+emits no ticks, but it still *creates* a publisher on `/monitor/tick` — which is enough
+to make the relay's "another publisher" warning fire on every run, and a warning that
+cries wolf is a warning nobody reads on the day it is right. The tick belongs to the
+robot and arrives inside the stream; nothing here should be able to produce one.
+
+With no local clock, the gateway's clock proxy (`--clock-url`, default
+`http://127.0.0.1:8081`) has nothing to reach and the console's clock *controls* are
+inert. The tick itself still shows: it comes off `/monitor/tick`, which the relay is
+publishing.
+
+### To also keep the episode
+
+The relay carries the stream; it does not write it down. For a recording on the PC as
+well, tee the pipe:
+
+```bash
+ssh unitree@<robot> '... record -' \
+  | tee ~/episodes/g1_run1.jsonl \
+  | docker compose -f deploy/docker-compose.server.yml run --rm -T relay
+```
+
+That file is the same format `play --diff` reads, so an episode watched live is an
+episode you can replay afterwards. It holds the robot's own verdicts — which, if the
+tier-1 monitor was running there, is what makes a two-tier comparison possible.
+
+### What this costs you
+
+| | |
+|---|---|
+| **the link is a single point of failure** | wifi drops and the stream stops. The monitor's last observation goes stale and every proposition reads UNKNOWN — correct behaviour, and not the same as "nothing is wrong". Watch panel 4. |
+| **one torn frame per drop** | a truncated line is counted and skipped, and the stream carries on. The count is printed when the relay exits. |
+| **no interventions** | the supervisor is robot-tier only, deliberately: an intervention decided across a wifi link is an intervention that arrives late. A verdict computed on the PC can inform a human, not stop a robot. |
+| **the recorder is the sender** | stop the pipe and you stop the recording. Ctrl-C ends both ends. |
 
 ## If the monitor image is not ready
 

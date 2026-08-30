@@ -108,6 +108,46 @@ services:
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data:ro"
     depends_on: [gateway]
 
+  # The carriage for the observation stream, when the robot's DDS cannot reach here.
+  #
+  #   ssh <robot> 'docker compose -f ~/skillMonitor/deploy/docker-compose.robot.yml \
+  #                run --rm -T recorder record -' \
+  #     | docker compose -f deploy/docker-compose.server.yml run --rm -T relay
+  #
+  # A JOB, and the one service in this file with no ROS input of its own: it reads JSON
+  # Lines on STDIN and publishes them onto this machine's graph, so `monitor` above sees
+  # the robot's ticks, observations and adapter exactly as if the evaluator were local.
+  # That is the tier-2 monitor's stated design -- "no adapter present and none needed,
+  # it advances on the tick inside each received observation" -- finally given a way to
+  # receive one.
+  #
+  # ssh is the transport and it is not incidental: on this robot DDS never crossed the
+  # wifi (measured, with UDP flowing both ways and unicast peers configured), while ssh
+  # does. It also means the link is authenticated and encrypted, which the ROS graph is
+  # not, and that nothing has to listen on a port anywhere.
+  #
+  # `-T` on BOTH ends. Without it compose allocates a TTY, and a TTY mangles the stream
+  # into something neither end can parse.
+  #
+  # `clock` above stays --paused while this runs. The tick belongs to the robot and
+  # arrives inside the stream; a second clock here would step the monitor on a time base
+  # the observations know nothing about. The relay warns if it finds one publishing.
+  #
+  # The EVALUATOR image: `replay_node` needs rclpy, not Spot.
+  relay:
+    <<: *ros
+    container_name: sm-relay
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.evaluator
+    image: skill-monitor/evaluator:${TAG:-dev}
+    entrypoint: ["/bin/bash", "-c",
+                 "source /opt/ros/humble/setup.bash && python3 -m skill_monitor.backend.replay_node relay \"$@\"",
+                 "--"]
+    stdin_open: true
+    profiles: ["job"]
+    restart: "no"
+
   # A JOB, not a service: `docker compose ... run --rm describer --description "..."`.
   # No ROS in the image; it talks to an LLM over HTTP and writes a validated spec.
   describer:

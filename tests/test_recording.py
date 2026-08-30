@@ -22,7 +22,7 @@ import json
 
 from skill_monitor.core import api
 from skill_monitor.core.recording import (INPUTS, OUTPUTS, RECORDED, Player, Recorder,
-                                          Recording, bag_topics, compare, diff)
+                                          Recording, Relay, bag_topics, compare, diff)
 
 
 def a_verdict(seq=1, verdict="SATISFIED", action="CONTINUE", **extra):
@@ -263,3 +263,81 @@ def test_summary_counts_what_is_there():
     assert summary["frames"] == 3
     assert summary["seconds"] == 2.0
     assert summary["topics"][api.TICK] == 1
+
+
+# =============================================================================
+# The same stream, live, on another machine
+# =============================================================================
+
+def relayed(*lines):
+    """A relay fed those lines, and what it published, in order."""
+    sent = []
+    relay = Relay(lambda topic, text: sent.append((topic, json.loads(text))))
+    for line in lines:
+        relay.on_line(line)
+    return relay, sent
+
+
+def test_a_relay_publishes_the_inputs_as_they_arrive():
+    """No queue, no wait, no rate: the robot's clock already paced this stream and the
+    tick is inside it. The pipe is the pacing."""
+    relay, sent = relayed(a_line(api.ADAPTER, {"adapter": "real_g1"}),
+                          a_line(api.TICK, {"seq": 1, "t": 1.0}),
+                          a_line(api.OBSERVATION, {"seq": 1}))
+
+    assert [t for t, _ in sent] == [api.ADAPTER, api.TICK, api.OBSERVATION]
+    assert relay.published == 3
+
+
+def test_a_relay_never_republishes_the_robots_verdict():
+    """Sharper than the same rule in `Player`. The monitor on this side is computing its
+    own verdicts, so a relayed one would put two producers on `/monitor/verdict` and the
+    console would show whichever landed last -- the robot's answer or this machine's,
+    with nothing saying which."""
+    relay, sent = relayed(a_line(api.VERDICT, a_verdict(1)),
+                          a_line(api.MANIFEST, {"skill_name": "nav"}),
+                          a_line(api.TICK, {"seq": 1}))
+
+    assert [t for t, _ in sent] == [api.TICK]
+    assert relay.skipped == 2
+
+
+def test_the_payload_crosses_the_link_verbatim():
+    """Including `t`. The far side's monitor advances on the tick inside the
+    observation, so a relay that restamped anything would be a second clock."""
+    payload = {"seq": 7, "t": 7.0, "tick_hz": 1.0, "t0": 1700.0, "mode": "wall"}
+    _, sent = relayed(a_line(api.TICK, payload))
+
+    assert sent == [(api.TICK, payload)]
+
+
+def test_a_torn_line_is_counted_and_the_stream_carries_on():
+    """A dropped ssh connection or a full pipe truncates mid-line. That costs one frame;
+    a relay that raised there would cost the rest of the episode."""
+    torn = a_line(api.TICK, {"seq": 9})[:30]           # cut where the pipe cut it
+    relay, sent = relayed(a_line(api.TICK, {"seq": 1}),
+                          torn,
+                          a_line(api.TICK, {"seq": 2}))
+
+    assert [p["seq"] for _, p in sent] == [1, 2]
+    assert relay.unreadable == 1
+
+
+def test_blank_keepalive_lines_are_not_unreadable_frames():
+    """Blank lines survive most pipes and mean nothing. Counting them as damage would
+    make `unreadable` useless as the number that says the link is failing."""
+    relay, _ = relayed("", "\n", "   \n")
+
+    assert (relay.unreadable, relay.published, relay.skipped) == (0, 0, 0)
+
+
+def test_a_frame_a_recording_accepts_is_a_frame_a_relay_accepts():
+    """One parser for both, so a live episode and the same episode read back off disk
+    are the same frames -- which is what makes `record | relay` and `record` then `play`
+    two spellings of one thing rather than two formats."""
+    lines = [a_line(api.TICK, {"seq": 1}), "not json", a_line(api.OBSERVATION, {"seq": 1})]
+    relay, sent = relayed(*lines)
+    recording = Recording.parse(lines)
+
+    assert [f["topic"] for f in recording.inputs()] == [t for t, _ in sent]
+    assert recording.unreadable == relay.unreadable == 1
