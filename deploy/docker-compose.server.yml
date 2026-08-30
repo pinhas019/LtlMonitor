@@ -90,13 +90,19 @@ services:
     # Loopback, like the gateway: the console has no authentication and this is the only
     # place that decision is visible. `--host 0.0.0.0` is the one explicit edit that
     # publishes it, made by someone who read the header of the Dockerfile.
-    command: ["--port", "${CONSOLE_PORT:-8081}"]
+    # 8082 and NOT the image's own 8081 default. deploy/Dockerfile.clock takes 8081
+    # ("because 8080 is the gateway") and deploy/Dockerfile.skill_center takes 8081
+    # ("the console cannot share the gateway's 8080") -- each correct alone, and a
+    # collision here, where `network_mode: host` gives both services the one loopback
+    # and the clock binds first. The image default stays 8081 for a standalone
+    # `docker run` with no clock beside it; a stack that has one says so.
+    command: ["--port", "${CONSOLE_PORT:-8082}"]
     environment:
       <<: *ros-env
       # Both halves of the port, together. The image's HEALTHCHECK reads this one; drop
       # it and the check probes 8081 while the console listens wherever --port said, so
       # a healthy console reports unhealthy -- or worse, finds the gateway on 8080.
-      CONSOLE_PORT: "${CONSOLE_PORT:-8081}"
+      CONSOLE_PORT: "${CONSOLE_PORT:-8082}"
     volumes:
       - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data:ro"

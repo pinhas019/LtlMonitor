@@ -86,6 +86,49 @@ services:
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
     depends_on: [clock, evaluator]
 
+  # The episode, written down. A JOB, not a service:
+  #
+  #   docker compose -f deploy/docker-compose.robot.yml run --rm recorder record /data/g1_run1.jsonl
+  #   docker compose -f deploy/docker-compose.robot.yml run --rm recorder info   /data/g1_run1.jsonl
+  #
+  # P9 makes verdict equality between two replays of one episode THE acceptance test for
+  # the hardware-agnosticism claim, and P12's four uncalibrated knobs (arrival_radius,
+  # the closing_speed epsilon, the no_progress debounce, the min_range height band) each
+  # need a recorded run before they can be trusted. Both of those need this file to
+  # exist, and until now no stack ran the recorder -- the plan said "record it" and the
+  # only way to obey was a hand-written `docker run`, composed differently every time.
+  #
+  # The EVALUATOR image, deliberately: `replay_node` needs rclpy and not Spot, and a
+  # recording is worthless if the thing that wrote it could not be built on the robot.
+  # The entrypoint is overridden because each image bakes in one entry point, and this
+  # is a second use of that image rather than a second image.
+  #
+  # `profiles: ["job"]` keeps it out of `up`. Started by `up` it would record every
+  # session to one fixed path, and the second run would truncate the first.
+  #
+  # It records the monitor's own stream (/monitor/*), which is what a replay needs. The
+  # SENSOR topics -- the cloud, the paths, the terrain -- are ros2 bag's job, and the
+  # record line for them is generated off the adapter the run declared:
+  #
+  #   ros2 bag record -o g1_run1.bag $(... run --rm recorder topics /data/g1_run1.jsonl)
+  recorder:
+    <<: *ros
+    container_name: sm-recorder
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.evaluator
+    image: skill-monitor/evaluator:${TAG:-dev}
+    entrypoint: ["/bin/bash", "-c",
+                 "source /opt/ros/humble/setup.bash && python3 -m skill_monitor.backend.replay_node \"$@\"",
+                 "--"]
+    volumes:
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
+      # Read-write, and the only reason this service differs from `evaluator`: the
+      # episode is written here, on the host, where it survives the container.
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
+    profiles: ["job"]
+    restart: "no"
+
   # Enforces nothing until enabled -- see P5. Robot tier only: an intervention
   # decided across the network is an intervention that arrives late.
   supervisor:

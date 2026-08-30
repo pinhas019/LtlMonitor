@@ -1,0 +1,88 @@
+# Experiment overlay: a supervised run on the real robot, watched by a human.
+#
+#   docker compose -f deploy/docker-compose.robot.yml \
+#                  -f deploy/docker-compose.experiment.yml up
+#
+# Applied OVER the robot stack, never on its own -- the same rule
+# deploy/docker-compose.dev.yml states, and for the same reason: relative paths resolve
+# against the directory of the FIRST -f file, so robot.yml must come first.
+#
+# It is NOT the dev overlay and does not replace it. dev.yml mounts live source so an
+# edit needs no rebuild; this one changes two behaviours that a session of back-to-back
+# episodes with a person watching needs, and mounts nothing:
+#
+#   1. the monitor runs --passive, and
+#   2. the console comes with it.
+#
+# Both are deliberately absent from robot.yml, because an unattended robot tier wants
+# neither: a monitor that goes IDLE rather than down is a monitor whose next verdict
+# nobody asked for, and an unauthenticated console on a machine nobody is watching is
+# an unauthenticated console on a machine nobody is watching.
+
+services:
+
+  # --passive: on a terminal state or a fault, report it and go IDLE instead of
+  # shutting both nodes down. That is what makes episode 2 possible.
+  #
+  # Without it the first VIOLATED ends the process, `restart: unless-stopped` brings the
+  # container back with no memory of the episode, and it republishes a fresh manifest --
+  # so the run that induced a dead end on purpose loses the state that proves it. An
+  # induced-failure session hits that on the first interesting event of the day.
+  #
+  # The command is repeated whole because compose REPLACES a list command rather than
+  # appending to it; there is no way to add one flag. Keep it in step with robot.yml.
+  monitor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.monitor
+    image: skill-monitor/monitor:${TAG:-dev}
+    command: ["--formulas-file", "${SPEC:-formulas_g1.json}",
+              "--output-dir", "/data/output", "--passive"]
+
+  # The console, ON the robot, because that is the only place it can be.
+  #
+  # The dev PC cannot see the robot's ROS graph -- the route is via a different subnet
+  # and DDS discovery is spdp multicast on eth0, which is why tools/camera_bridge.py
+  # exists at all. A console is a ROS client, so it runs here and the operator reaches
+  # it over an ssh tunnel:
+  #
+  #     ssh -L 8082:127.0.0.1:8082 unitree@<robot>      # then http://127.0.0.1:8082
+  #
+  # It keeps its LOOPBACK default and no --host is set here. The tunnel is what carries
+  # it to the operator, and it authenticates as ssh rather than not at all -- this
+  # console has NO AUTHENTICATION and anything that can reach the port can reset a live
+  # mission. Publishing it to the lab network is the one explicit edit described in
+  # deploy/Dockerfile.skill_center, made by someone who read that header.
+  #
+  # No depends_on. It holds its own Gateway (see docker-compose.server.yml) and needs
+  # neither the `gateway` service nor anything else from the server tier -- which is the
+  # point: pulling the server stack in here would start a SECOND clock beside the
+  # robot's, and two clocks driving one trace is the bug docs/clocking.md exists to
+  # prevent.
+  frontend:
+    network_mode: host
+    ipc: host
+    container_name: sm-console
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.skill_center
+    image: skill-monitor/skill-center:${TAG:-dev}
+    # 8082, not the image's 8081: the robot tier's clock already has 8081 and host
+    # networking gives them one loopback to collide on.
+    #
+    # --clock-url is what fills panel 5. The console's default is empty, which disables
+    # the proxy and leaves the clock pane blank on a stack that has a perfectly good
+    # clock one port away.
+    command: ["--port", "${CONSOLE_PORT:-8082}",
+              "--clock-url", "http://127.0.0.1:${CLOCK_PORT:-8081}"]
+    environment:
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      PYTHONUNBUFFERED: "1"
+      SKILL_MONITOR_CONFIG: /config
+      # The image's HEALTHCHECK reads this; drop it and a healthy console on 8082
+      # reports unhealthy because the check probed 8081.
+      CONSOLE_PORT: "${CONSOLE_PORT:-8082}"
+    volumes:
+      - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data:ro"
+    restart: unless-stopped

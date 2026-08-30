@@ -16,6 +16,7 @@ generated spec, not in any code here.
 | [docs/one_tick.md](docs/one_tick.md) | the same system in UML — component, deployment and class diagrams — then one tick traced call by call from the clock pulse to the zero `Twist`, with the as-built/as-designed gap named |
 | [docs/api.md](docs/api.md) | the wire contract — every `/monitor/*` payload, the clock API, the gateway API |
 | [docs/clocking.md](docs/clocking.md) | the tick: when it starts, when it ends, and what "not enough data" means |
+| [docs/g1_trav_run.md](docs/g1_trav_run.md) | the runbook for an experiment day on the real G1 beside TRAV — build order, preflight, what to record, and the traps someone already fell into |
 | [docs/packages/](docs/packages/README.md) | one implementable brief per work package, with inputs, outputs and acceptance criteria |
 
 ## Layout

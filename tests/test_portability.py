@@ -25,6 +25,8 @@ from __future__ import annotations
 import ast
 import pathlib
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
 SCANNED = ("skill_monitor", "tests", "tools", "sim")
@@ -210,3 +212,49 @@ def test_the_scan_can_tell_the_cases_apart():
     assert [line for line, _ in _unencoded_text_io(source, "<probe>")] == [
         1, 4, 6, 7, 11, 15, 17, 19,
     ]
+
+
+# =============================================================================
+# The other version wall: what has to run on the robot
+# =============================================================================
+
+#: Files that run on the G1 itself, where the host and every TRAV container are Python
+#: 3.8 while `pyproject.toml` declares `requires-python = ">=3.10"`. Each one says so in
+#: its own header and `tools/README.md` states it twice; this is what makes the claim
+#: falsifiable rather than aspirational.
+ROBOT_SIDE_38 = (
+    "tools/bridge_tx.py",
+    "tools/camera_bridge.py",
+    "tools/g1_preflight.py",
+)
+
+
+def test_the_robot_side_tools_still_parse_as_python_38():
+    """A 3.10-only line here fails on the robot and nowhere else.
+
+    What breaks: the preflight is meant to run in a bare robot shell minutes before a
+    run, and the camera bridge's sender runs inside a TRAV container. Both are the
+    wrong place to discover a walrus or a `str | None` -- the dev host, CI and every
+    image in `deploy/` are 3.10 or newer, so nothing else in this repo would notice.
+
+    Syntax only. A 3.9 stdlib call still imports fine here and still fails there; this
+    catches the whole class that is a *parse* error, which is the one that has bitten.
+    """
+    offenders = []
+    for rel in ROBOT_SIDE_38:
+        source = (REPO / rel).read_text(encoding="utf-8")
+        try:
+            ast.parse(source, filename=rel, feature_version=(3, 8))
+        except SyntaxError as exc:
+            offenders.append(f"{rel}:{exc.lineno}: {exc.msg}")
+    assert not offenders, (
+        "these files run on a Python 3.8 robot and no longer parse there:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_38_scan_would_notice():
+    """A parse check that accepts everything passes whether or not the tree is clean."""
+    with pytest.raises(SyntaxError):
+        ast.parse("def f(x: int) -> str: return (y := str(x))", feature_version=(3, 7))
+    ast.parse("def f(x): return str(x)", feature_version=(3, 8))
