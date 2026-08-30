@@ -155,46 +155,68 @@ Read these two before trusting anything:
   could not be tested against, and it is the one thing to check before believing
   `collision_risk`.
 
-## 5. Record the episode
-
-Two recordings, and they are not alternatives. In this order, in two more terminals.
+## 5. Record the session — one command, one directory
 
 ```bash
-# terminal A -- the monitor's own stream, what a replay needs. Foreground, and
-# Ctrl-C at the end of the episode: that is what closes the file cleanly and
-# prints the frames-written count.
-docker compose -f deploy/docker-compose.robot.yml \
-               run --rm recorder record /data/g1_run1.jsonl
+docker compose -f deploy/docker-compose.robot.yml run --rm recorder \
+               session /data/g1_run1 --note "dead end at the far wall, on purpose"
 ```
+
+Ctrl-C at the end of the episode. That is the whole recording step. It writes **one
+self-describing directory**:
+
+```
+g1_run1/
+  session.json     what ran, against what, when, how it ended, and what is here
+  stream.jsonl     /monitor/* -- the monitor's inputs AND its outputs
+  sensors/         a rosbag2 of the adapter's sources AND the descriptor's scene
+  notes.md         yours, by hand
+```
+
+One thing to name, one thing to copy off the robot, one thing that cannot be
+half-carried. `session` launches the `ros2 bag record` itself, off the latched
+`/monitor/adapter` frame it just received — so the bag's topic list is read from the
+robot the run actually used and TRAV's topic names stay hardcoded nowhere.
+
+**It is self-describing on purpose.** `stream.jsonl` carries the latched adapter and
+manifest frames: the robot's whole sensor schema, and the skill spec exactly as
+authored. A bundle opened in six months on a machine that never had this repo still
+knows which robot it came from, which spec was being monitored, and what every sensor
+key meant. Nothing has to be looked up beside it — which is the property that makes one
+directory a record instead of a pile.
+
+### Before you walk away from the robot
 
 ```bash
-# terminal B -- the sensor topics AND the scene, what rviz2, a sim re-execution and
-# P12's calibration need. The topic list is generated off the adapter THE RUN
-# DECLARED, not hardcoded, so terminal A must already be running: `topics` reads the
-# recording's own /monitor/adapter frame and says so rather than guessing if it is
-# not there yet. The frame is latched, so it lands within a second of the recorder
-# starting. Drop --scene only if you are certain you will never re-execute this run.
-ros2 bag record -o g1_run1.bag $(docker compose -f deploy/docker-compose.robot.yml \
-                                run --rm recorder topics --scene /data/g1_run1.jsonl)
+docker compose -f deploy/docker-compose.robot.yml run --rm recorder verify /data/g1_run1
 ```
 
-The first records `/monitor/*` — the inputs to replay and the outputs to compare, per
-the one rule that makes a replay meaningful: **replay the monitor's inputs, compare its
-outputs.** The second records the geometry, which is not on `/monitor/*` at all. See
-[*Recording for a sim replay*](#recording-for-a-sim-replay) for what `--scene` adds and
-why the run is not re-executable without it.
+Exit 0 and it is replayable against the monitor *and* re-executable in sim. Exit 1 and
+it names each thing the bundle cannot do and why — a missing adapter frame means the
+evaluator was not running and the sensor keys are unlabelled; a bag with no scene topics
+means the world the episode happened in was not recorded, so it can be checked and never
+re-executed. Every one of those is unfixable the moment you leave, and a second run
+costs ten minutes now against a return trip later.
 
-Afterwards, on any machine:
+### Afterwards, on any machine
 
 ```bash
-docker compose -f deploy/docker-compose.robot.yml run --rm recorder info /data/g1_run1.jsonl
-docker compose -f deploy/docker-compose.robot.yml run --rm recorder play /data/g1_run1.jsonl --diff
+docker compose -f deploy/docker-compose.server.yml run --rm recorder info /data/g1_run1
+docker compose -f deploy/docker-compose.server.yml run --rm recorder play /data/g1_run1 --diff
+ros2 bag play /data/g1_run1/sensors        # with tools/rviz/run.sh alongside
 ```
 
-`play` exits 1 on any difference, **including `t`** — a `t` that moved means the replay
-invented a clock, which is the bug the comparison exists to catch. Stop the clock and
-the evaluator before replaying: `play` publishes the recorded ticks itself, counts the
-publishers it is competing with, and warns.
+Every subcommand takes the bundle directory, not a file inside it. `play` exits 1 on any
+difference, **including `t`** — a `t` that moved means the replay invented a clock, which
+is the bug the comparison exists to catch. Stop the clock and the evaluator first: `play`
+publishes the recorded ticks itself, counts the publishers it is competing with, and
+warns.
+
+### The lower-level pieces are still there
+
+`record`, `topics` and `relay` are what `session` is made of, and the two-machine layout
+still uses `record -` for the live stream. Reach for them when you want one half;
+`session` when you want the record.
 
 ## 6. While the robot is out there, capture the facts P12 is blocked on
 
@@ -243,23 +265,25 @@ regenerated.
 There are **two** replay paths, they prove different things, and they need different
 recordings. Capture both today; only one of them can be reconstructed afterwards.
 
-| path | what runs | what it needs | what it proves |
+| path | what runs | what in the bundle | what it proves |
 |---|---|---|---|
-| **stream replay** | recorded `/monitor/observation` → monitor | the `.jsonl` | the verdict is a function of the observation stream alone |
-| **re-execution in a simulator** | sim publishes its own topics → evaluator with `mujoco.json` / `isaac_lab.json` → monitor | the `.bag`, **with the scene** | the whole stack is embodiment-independent |
+| **stream replay** | recorded `/monitor/observation` → monitor | `stream.jsonl` | the verdict is a function of the observation stream alone |
+| **re-execution in a simulator** | sim publishes its own topics → evaluator with `mujoco.json` / `isaac_lab.json` → monitor | `sensors/`, **including the scene** | the whole stack is embodiment-independent |
+
+`session` records both halves, which is the point of it being one command. The rest of
+this section is what each half is for and what neither can give you.
 
 Same episode through both must reach the same verdict. That equality is the acceptance
 test for the agnosticism claim ([P9](packages/P9-docs.md)), and the exclusion count when
 it fails is the fidelity report.
 
-### What `--scene` adds, and why the run is not re-executable without it
+### What the scene adds, and why a run without it is not re-executable
 
-`topics` reads the record line off the adapter the run declared. Without `--scene` that
-is the six **sources** — the topics the evaluator subscribes to. Those are enough to
-re-drive the evaluator, and not enough to rebuild a world: an observation carries
-`min_range`, a *scalar*, where an arena needs geometry.
-
-`--scene` appends what `real_g1.json` now declares under `scene`:
+The bag's topic list is read off the adapter the run declared. The **sources** alone —
+the topics the evaluator subscribes to — are enough to re-drive the evaluator and not
+enough to rebuild a world: an observation carries `min_range`, a *scalar*, where an arena
+needs geometry. `session` therefore bags the sources **and** what `real_g1.json` declares
+under `scene`:
 
 ```
 /tf  /tf_static  /filtered_map  /traversable_path  /traversable_path_tg
@@ -280,9 +304,9 @@ A simulator has to be *set up* before it can be re-executed, and three facts def
 setup. Two are already in the `.jsonl` — every observation carries `pos_x`, `pos_y`,
 `yaw`, `goal_x`, `goal_y` — and one is not:
 
-- **start pose** — the first observation's `pos_*`/`yaw`. In the recording.
-- **the goal sequence** — `goal_x`/`goal_y` as `/next_waypoint` advanced. In the recording.
-- **the obstacle layout** — only in the bag, as the cloud and `/filtered_map`. Rebuilding
+- **start pose** — the first observation's `pos_*`/`yaw`. In `stream.jsonl`.
+- **the goal sequence** — `goal_x`/`goal_y` as `/next_waypoint` advanced. In `stream.jsonl`.
+- **the obstacle layout** — only in `sensors/`, as the cloud and `/filtered_map`. Rebuilding
   `sim/arena.xml` from it is by hand today; `sim/generate_map.py` goes the other way
   (arena → occupancy grid). Photograph the space and pace out the obstacles while you
   are standing in it. That measurement costs two minutes on the day and is unrecoverable
@@ -294,10 +318,10 @@ setup. Two are already in the `.jsonl` — every observation carries `pos_x`, `p
 # 1. the cheap one -- no sim, no robot, any machine. Start the monitor first, with
 #    the clock and evaluator DOWN, then:
 docker compose -f deploy/docker-compose.server.yml run --rm recorder play \
-               /data/g1_run1.jsonl --diff        # exits 1 on any difference
+               /data/g1_run1 --diff             # exits 1 on any difference
 
 # 2. the sensors, as geometry, to see what the run looked like
-ros2 bag play g1_run1.bag        # with tools/rviz/run.sh alongside
+ros2 bag play /data/g1_run1/sensors        # with tools/rviz/run.sh alongside
 
 # 3. re-execution: build the arena, then run the sim stack with the SAME spec and a
 #    different adapter -- which is the whole claim
@@ -313,10 +337,16 @@ Record now regardless: the recording is what makes the comparison possible the d
 
 ### If you are running the two-machine layout
 
-The bag must still be recorded **on the robot** — the sensor and scene topics never cross
-the link, only `/monitor/*` does. Run a second recorder there writing to `/data` so
-`topics --scene` has an adapter frame to read locally, or generate the line on the PC
-from the tee'd `.jsonl` and pass it to a `ros2 bag record` over ssh.
+**Run `session` on the robot regardless.** The sensor and scene topics never cross the
+link — only `/monitor/*` does — so the bundle has to be written where they are, and the
+relay is for *watching*, not for recording. Two commands on the robot, then: `session`
+for the record, and `record -` into the ssh pipe for the live view.
+
+That does mean two recorders subscribed to `/monitor/*` at once, which is fine: they are
+subscribers, they change nothing, and the bundle on the robot is the authoritative copy.
+If you would rather have the record on the PC, `tee` the pipe (below) — but that file is
+`stream.jsonl` only, with no sensors and no scene, so `verify` on it will correctly tell
+you it cannot be re-executed.
 
 ## Running the monitor on a second machine
 
@@ -402,7 +432,7 @@ tier-1 monitor was running there, is what makes a two-tier comparison possible.
 | **the link is a single point of failure** | wifi drops and the stream stops. The monitor's last observation goes stale and every proposition reads UNKNOWN — correct behaviour, and not the same as "nothing is wrong". Watch panel 4. |
 | **one torn frame per drop** | a truncated line is counted and skipped, and the stream carries on. The count is printed when the relay exits. |
 | **no interventions** | the supervisor is robot-tier only, deliberately: an intervention decided across a wifi link is an intervention that arrives late. A verdict computed on the PC can inform a human, not stop a robot. |
-| **the recorder is the sender** | stop the pipe and you stop the recording. Ctrl-C ends both ends. |
+| **the pipe is a view, not a record** | `session` on the robot is the record. Stopping the pipe stops the watching and nothing else. |
 
 ## If the monitor image is not ready
 
@@ -411,11 +441,12 @@ in it, so the graph and the recording still happen:
 
 ```bash
 docker compose -f deploy/docker-compose.robot.yml up clock evaluator
-docker compose -f deploy/docker-compose.robot.yml run --rm recorder record /data/g1_run1.jsonl
-ros2 bag record -o g1_run1.bag $(docker compose -f deploy/docker-compose.robot.yml \
-                                run --rm recorder topics /data/g1_run1.jsonl)
+docker compose -f deploy/docker-compose.robot.yml run --rm recorder session /data/g1_run1 \
+               --note "no monitor -- Spot build unfinished"
 ```
 
-That is a complete `/monitor/observation` stream plus the raw sensors. Replay it into
-the monitor on the dev PC afterwards — which is the server tier's whole purpose, and the
-verdict of record is meant to be produced there anyway.
+That is a complete `/monitor/observation` stream plus the sensors and the scene. `verify`
+will report the one thing missing — no verdicts, because no monitor ran — which is
+exactly right: replay it into the monitor on the dev PC afterwards and the verdicts are
+produced there, which is the server tier's whole purpose. The bundle is complete for
+every other use, P12's calibration included.

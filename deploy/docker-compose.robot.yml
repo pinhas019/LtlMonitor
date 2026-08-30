@@ -86,10 +86,18 @@ services:
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
     depends_on: [clock, evaluator]
 
-  # The episode, written down. A JOB, not a service:
+  # The session, written down. A JOB, not a service. ONE command, ONE artifact:
+  #
+  #   docker compose -f deploy/docker-compose.robot.yml run --rm recorder \
+  #                  session /data/g1_run1 --note "dead end on purpose"
+  #   docker compose -f deploy/docker-compose.robot.yml run --rm recorder verify /data/g1_run1
+  #
+  # `session` writes a bundle -- session.json, stream.jsonl, sensors/ -- and launches the
+  # `ros2 bag record` itself off the adapter frame it just received. Everything else here
+  # is the same entry point at a lower level, kept because a replay and a relay need it:
   #
   #   docker compose -f deploy/docker-compose.robot.yml run --rm recorder record /data/g1_run1.jsonl
-  #   docker compose -f deploy/docker-compose.robot.yml run --rm recorder info   /data/g1_run1.jsonl
+  #   docker compose -f deploy/docker-compose.robot.yml run --rm recorder info   /data/g1_run1
   #
   # P9 makes verdict equality between two replays of one episode THE acceptance test for
   # the hardware-agnosticism claim, and P12's four uncalibrated knobs (arrival_radius,
@@ -106,11 +114,10 @@ services:
   # `profiles: ["job"]` keeps it out of `up`. Started by `up` it would record every
   # session to one fixed path, and the second run would truncate the first.
   #
-  # It records the monitor's own stream (/monitor/*), which is what a replay needs. The
-  # SENSOR topics -- the cloud, the paths, the terrain -- are ros2 bag's job, and the
-  # record line for them is generated off the adapter the run declared:
-  #
-  #   ros2 bag record -o g1_run1.bag $(... run --rm recorder topics /data/g1_run1.jsonl)
+  # `session` spawns `ros2 bag record` as a child, so this container needs rosbag2 --
+  # which ros:humble has, being ros_base. It writes into /data, on the HOST, because the
+  # one thing that must outlive the container is the only thing that cannot be
+  # regenerated.
   recorder:
     <<: *ros
     container_name: sm-recorder
