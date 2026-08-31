@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import time
+from collections import Counter
 
 from skill_monitor.core import adapter_spec
 from skill_monitor.backend.adapters.base import Freshness, SensorAdapter
@@ -76,6 +78,20 @@ class DeclarativeAdapter(SensorAdapter):
         # what bounds its size and rate; `tick_hz` is what the stride is derived from.
         self._echo = RawEcho({s.id: s.topic for s in self.spec.sources},
                              tick_hz=self.spec.tick_hz)
+        self._clock = clock if clock is not None else time.monotonic
+        #: Last arrival per source, for EVERY source rather than only the tracked
+        #: ones. Freshness deliberately holds only the tracked subset, because that
+        #: is what `confidence()` is a fraction of -- but `data_health` has to report
+        #: an age for every declared source or the console's input panel shows half
+        #: the robot. On real_g1 that is three of six, `goal` among them, and
+        #: `dist_to_goal` is computed from it.
+        self._last_seen: dict = {}
+        self._started = self._clock()
+        #: Messages that arrived and never reached the observation, per source.
+        #: ponytail: counts decode failures only -- the one drop this layer can see.
+        #: A tick-step that raises discards the whole window, which `tick()` reports
+        #: by raising rather than by counting.
+        self._dropped: Counter = Counter()
 
     # SensorAdapter's classmethods would read the class attribute, which is None here
     # -- the schema belongs to the loaded descriptor, not to the class.
@@ -94,8 +110,15 @@ class DeclarativeAdapter(SensorAdapter):
     def _on_message(self, src, msg) -> None:
         payload = _decode(src.decode, msg)
         if payload is None and src.decode == "json":
+            # It arrived and it is gone. Counted rather than merely returned from, so
+            # a publisher emitting malformed JSON shows up as a source that is live
+            # and useless -- which reads nothing like a source that is silent, and
+            # used to read exactly the same.
+            self._dropped[src.id] += 1
+            self._last_seen[src.id] = self._clock()
             return
         contribution = self.state.update(src.id, payload)
+        self._last_seen[src.id] = self._clock()
         if src.tracked:
             self._fresh.stamp(src.id)
         # The one place a raw ROS message still exists: after this method returns it has
@@ -113,6 +136,48 @@ class DeclarativeAdapter(SensorAdapter):
 
     def take_raw_echo(self) -> tuple[str, dict] | None:
         return self._echo.take()
+
+    # -- the tick ------------------------------------------------------------
+
+    def tick(self, t: float | None = None) -> None:
+        """Close the window. THE call that makes `get_sensor_eval()` mean anything.
+
+        Until this existed nothing called `SensorState.tick()`, and since `tick()`
+        is the sole writer of the held values, `sensor_eval()` returned the schema
+        defaults for the life of the process -- a full, plausible, entirely constant
+        dict, with `min_range` sitting at its "nothing nearby" default so
+        `collision_risk` could never fire. See `SensorState.__init__`.
+        """
+        self.state.tick(t)
+
+    def data_health(self) -> dict:
+        """Per-source liveness for the observation envelope, one entry per source.
+
+        Every declared source, not only the tracked ones: an untracked source still
+        feeds sensor_eval keys, and a console that cannot show its age cannot tell a
+        waypoint that stopped arriving from one that never moved.
+
+        `rate_hz` is measured over the tick just closed -- samples times the tick
+        rate -- so it is directly comparable with the descriptor's `expected_hz`
+        beside it. Over one tick it is a coarse number by construction; it is the
+        ratio that carries the signal, not the absolute.
+        """
+        now = self._clock()
+        samples = self.state.samples_this_tick()
+        refreshed = self.state.refreshed_sources()
+        health = {}
+        for src in self.spec.sources:
+            n = samples.get(src.id, 0)
+            last = self._last_seen.get(src.id, self._started)
+            health[src.id] = {
+                "rate_hz": n * self.spec.tick_hz,
+                "expected_hz": src.expected_hz,
+                "age_s": now - last,
+                "samples_this_tick": n,
+                "refreshed": src.id in refreshed,
+                "dropped": self._dropped[src.id],
+            }
+        return health
 
     def get_sensor_eval(self) -> dict:
         return self.validate_sensor_eval(self.state.sensor_eval())

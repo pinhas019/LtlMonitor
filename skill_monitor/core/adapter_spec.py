@@ -89,7 +89,7 @@ import json
 import math
 import threading
 import warnings
-from collections import ChainMap
+from collections import ChainMap, Counter
 from pathlib import Path
 
 import skill_monitor
@@ -935,7 +935,15 @@ class SensorState:
         self._window: dict[str, list] = {}
         self._refreshed: frozenset = frozenset()
         self._refreshed_sources: frozenset = frozenset()
-        self._window_sources: set = set()
+        #: source id -> messages folded into the OPEN window. A Counter and not a set
+        #: because `data_health.samples_this_tick` has to say HOW MANY arrived, not
+        #: just that something did: one sample and forty samples in a tick are the
+        #: difference between a topic limping and a topic keeping up, and the count
+        #: is the only place that shows it. Counted here rather than in the adapter
+        #: so it is cleared by the same tick that clears the window it describes.
+        self._window_sources: Counter = Counter()
+        #: source id -> count, for the tick just CLOSED. The read side of the above.
+        self._samples_this_tick: dict = {}
         #: Closed ticks. -1 until the first tick, so `ticks` is the index of the tick
         #: `sensor_eval()` is currently describing.
         self.ticks = -1
@@ -982,7 +990,7 @@ class SensorState:
             # source as silent, which under three-valued APs promotes every AP over
             # it to UNKNOWN and freezes the automaton. `refreshed_keys()` is what
             # says no key got a sample.
-            self._window_sources.add(source_id)
+            self._window_sources[source_id] += 1
             self._updates_since_tick += 1
             if self._updates_since_tick > self._untick_budget and not self._warned_unticked:
                 self._warned_unticked = True      # once per un-ticked stretch, not per message
@@ -1062,6 +1070,7 @@ class SensorState:
             self.values = candidate
             self._refreshed = frozenset(folded)
             self._refreshed_sources = frozenset(self._window_sources)
+            self._samples_this_tick = dict(self._window_sources)
             self.ticks += 1
             self._window.clear()
             self._window_sources.clear()
@@ -1085,6 +1094,7 @@ class SensorState:
             self._window_sources.clear()
             self._refreshed = frozenset()
             self._refreshed_sources = frozenset()
+            self._samples_this_tick = {}
             self.ticks = -1
             self._updates_since_tick = 0
             self._warned_unticked = False
@@ -1138,6 +1148,15 @@ class SensorState:
     def refreshed_sources(self) -> frozenset:
         """Source ids that delivered at least one message in the tick just closed."""
         return self._refreshed_sources
+
+    def samples_this_tick(self) -> dict:
+        """Source id -> messages folded into the tick just closed. Absent means zero.
+
+        `refreshed_sources()` is this, thresholded at one. Both exist because
+        `data_health` reports the count and the boolean separately, and deriving the
+        boolean from the count is cheaper than the other way round.
+        """
+        return dict(self._samples_this_tick)
 
     def pending_samples(self) -> int:
         """Samples sitting in the OPEN window. Zero right after any tick -- an idle

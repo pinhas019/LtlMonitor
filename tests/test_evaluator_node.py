@@ -30,12 +30,14 @@ pytestmark = pytest.mark.skipif(
 ros_stub.install()
 
 from rclpy.qos import DurabilityPolicy                                     # noqa: E402
+from std_msgs.msg import String                                            # noqa: E402
 from skill_monitor.backend.adapters.declarative import DeclarativeAdapter  # noqa: E402
 from skill_monitor.backend import evaluator_node                            # noqa: E402
 from skill_monitor.backend.evaluator_node import GenericClientNode         # noqa: E402
 from skill_monitor.core import api                                         # noqa: E402
 
 LEGACY_ADAPTER = evaluator_node._LEGACY_ADAPTER
+LEGACY_EVALUATIONS = evaluator_node._LEGACY_EVALUATIONS
 
 
 def a_node(descriptor="real_g1"):
@@ -121,3 +123,191 @@ def test_every_shipped_descriptor_announces_itself(descriptor):
     assert payload["adapter"] == descriptor
     assert payload["sources"], f"{descriptor} announced no sources at all"
     assert api.validate_adapter(payload) == []
+
+
+# =============================================================================
+# The tick, and the observation it closes
+# =============================================================================
+#
+# Nothing here goes near the LLM queue. The worker is a live daemon thread, so a test
+# that queued a snapshot would be racing it for the item; every test below drives the
+# pulse path or the publish path directly instead. `ros_stub` timers never fire, which
+# is also why `_free_run` has to be callable by name rather than only through
+# `create_timer`.
+
+def a_pulse(seq=1, t=1.0, tick_hz=1.0, t0=100.0):
+    return String(data=json.dumps(
+        api.build_tick(seq=seq, t=t, tick_hz=tick_hz, mode="wall", t0=t0)))
+
+
+def an_odom(px=0.0, pz=0.7):
+    """Enough of nav_msgs/Odometry for the real_g1 descriptor's field paths. Plain
+    dicts: `SensorState.update` walks the path, it does not care about the type."""
+    return {"pose": {"pose": {"position": {"x": px, "y": 0.0, "z": pz},
+                              "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}}},
+            "twist": {"twist": {"linear": {"x": 0.0, "y": 0.0, "z": 0.0},
+                                "angular": {"x": 0.0, "y": 0.0, "z": 0.0}}}}
+
+
+def test_the_pulse_closes_the_window_even_while_idle():
+    """The bug P3's brief names, and the reason `adapter.tick()` sits above the idle
+    return. If only the publishing path closed the window, an idle evaluator would
+    never close one: the window would grow across the whole idle stretch and the first
+    armed tick would fold minutes of samples into a single observation. An obstacle
+    the robot walked past two minutes ago would fire `collision_risk` on resume."""
+    node = a_node()
+    assert node.idle, "sanity: it starts idle, which is the interesting case"
+
+    for _ in range(30):
+        node.adapter.state.update("odom", an_odom(px=2.0))
+    assert node.adapter.state.updates_since_tick == 30
+
+    node.tick_callback(a_pulse(seq=1))
+
+    assert node.adapter.state.updates_since_tick == 0, (
+        "the window survived a pulse while idle; it will be folded into whichever "
+        "tick happens to arm")
+    assert node.adapter.state.ticks == 0, "the tick did not close"
+    assert published(node, api.OBSERVATION) == [], "idle must not publish"
+
+
+def test_the_observation_advances_with_the_pulse():
+    """The whole point of the migration: values move, and the tick index they are
+    stamped with is the clock's, not this process's."""
+    node = a_node()
+    node.adapter.state.update("odom", an_odom(px=1.0))
+    node.tick_callback(a_pulse(seq=7, t=7.5))
+    first = node.adapter.get_sensor_eval()["pos_x"]
+
+    node.adapter.state.update("odom", an_odom(px=9.0))
+    node.tick_callback(a_pulse(seq=8, t=8.5))
+    second = node.adapter.get_sensor_eval()["pos_x"]
+
+    assert (first, second) == (1.0, 9.0), "the held values are not following the data"
+    assert (node._tick_seq, node._tick_t) == (8, 8.5), "the pulse's seq was not adopted"
+
+
+def test_the_observation_is_published_and_satisfies_its_contract():
+    """Nothing validates an observation on receipt, so the builder's own validator is
+    the only thing standing between a malformed envelope and the automaton."""
+    node = a_node()
+    node.adapter.state.update("odom", an_odom(px=3.0))
+    node.adapter.tick(2.0)
+
+    node._publish_observation(
+        {"required_aps": ["upright", "collision_risk"], "seq": 4, "t": 2.0,
+         "confidence": 1.0, "clock": "external",
+         "data_health": node.adapter.data_health()},
+        node.adapter.get_sensor_eval(),
+        {"upright": True, "collision_risk": False},
+    )
+
+    sent = published(node, api.OBSERVATION)
+    assert len(sent) == 1
+    payload = json.loads(sent[0])
+    assert api.validate_observation(payload) == []
+    assert payload["seq"] == 4
+    assert payload["ap_values"] == {"upright": True, "collision_risk": False}
+    assert payload["sensors"]["pos_x"] == 3.0
+
+
+def test_every_declared_source_reports_its_health():
+    """All six, not the three that happen to be `tracked`. An untracked source still
+    feeds sensor_eval keys -- `goal` is where `dist_to_goal` comes from -- and a
+    console that cannot show its age cannot tell a waypoint that stopped arriving
+    from one that never moved."""
+    node = a_node()
+    node.adapter.tick(1.0)
+    node._publish_observation(
+        {"required_aps": [], "seq": 1, "t": 1.0, "confidence": 1.0,
+         "clock": "external", "data_health": node.adapter.data_health()},
+        node.adapter.get_sensor_eval(), {})
+
+    health = json.loads(published(node, api.OBSERVATION)[0])["data_health"]
+    assert set(health) == {s.id for s in node.adapter.spec.sources}
+    for source_id, entry in health.items():
+        assert set(entry) == {"rate_hz", "expected_hz", "age_s",
+                              "samples_this_tick", "refreshed", "dropped"}, source_id
+
+
+def test_an_ap_without_a_boolean_names_itself_instead_of_defaulting_to_false():
+    """The LLM can omit an AP or answer with something that is not a bool. Coercing
+    that to False would make a failed evaluation indistinguishable from a negative
+    one, on the wire the automaton steps on."""
+    node = a_node()
+    node.adapter.tick(1.0)
+    node._publish_observation(
+        {"required_aps": ["upright", "at_goal", "nav_stuck"], "seq": 1, "t": 1.0,
+         "confidence": 1.0, "clock": "external", "data_health": {}},
+        node.adapter.get_sensor_eval(),
+        {"upright": True, "at_goal": "yes"},          # 'yes' is not a bool; nav_stuck absent
+    )
+
+    payload = json.loads(published(node, api.OBSERVATION)[0])
+    assert payload["ap_values"] == {"upright": True}
+    assert sorted(payload["unknown_aps"]) == ["at_goal", "nav_stuck"]
+    assert api.validate_observation(payload) == [], (
+        "an AP may not appear in ap_values and unknown_aps both")
+
+
+def test_an_unevaluable_ap_is_unknown_on_the_envelope_and_false_on_the_legacy_wire():
+    """Through `_process_evaluation`, because that is where the defaulting lives.
+
+    The legacy `/ltl/evaluations` dict is flat booleans with no way to spell UNKNOWN,
+    so it has always sent `final_evals.setdefault(ap, False)` for an AP that no rule
+    matched and no model answered. On a safety proposition that default is not
+    neutral: False for `collision_risk` reads as "the way is clear".
+
+    The envelope has `unknown_aps` precisely so it does not have to lie, so the two
+    wires disagree here ON PURPOSE and this pins that they do. Changing the legacy
+    semantics is P10's; publishing an honest envelope is not.
+    """
+    node = a_node()
+    node.idle = False
+    node.required_aps = ["upright", "collision_risk"]
+    # A description no rule parser can read, and no model is reachable to answer it,
+    # so `collision_risk` comes back undecided.
+    node.state_desc = {"skill_name": "nav", "ap_descriptions": {
+        "upright": "True when upright_flag > 0.5.",
+        "collision_risk": "whatever the operator thinks looks dangerous",
+    }}
+    node.adapter.state.update("odom", an_odom(pz=0.75))
+    node.tick_callback(a_pulse(seq=2, t=2.0))
+    node._process_evaluation(node.query_queue.get_nowait())
+
+    envelope = json.loads(published(node, api.OBSERVATION)[0])
+    assert envelope["ap_values"] == {"upright": True}
+    assert envelope["unknown_aps"] == ["collision_risk"], (
+        "an AP nothing could evaluate was given a truth value")
+
+    legacy = json.loads(published(node, LEGACY_EVALUATIONS)[0])
+    assert legacy["collision_risk"] is False, (
+        "the legacy wire's defaulting changed; that is P10's call, not this one's")
+
+
+def test_the_free_running_fallback_goes_quiet_once_a_clock_appears():
+    """Without a clock on the graph -- a dev host, `--mock` -- the evaluator still has
+    to emit, or it looks broken. The moment a real pulse arrives the fallback stops
+    for good: two producers on one trace is the bug docs/clocking.md prevents."""
+    node = a_node()
+    node._free_run()
+    node._free_run()
+    assert (node._tick_seq, node._clock_seen) == (2, False)
+
+    node.tick_callback(a_pulse(seq=50, t=50.0))
+    assert (node._tick_seq, node._clock_seen) == (50, True)
+
+    node._free_run()
+    assert node._tick_seq == 50, "the fallback kept counting after the clock arrived"
+
+
+def test_a_malformed_pulse_is_refused_rather_than_adopted():
+    """A tick with no `t0` is refused by `validate_tick` -- and a clock that restarts
+    is indistinguishable from a redelivery without it."""
+    node = a_node()
+    node.tick_callback(a_pulse(seq=3, t=3.0))
+
+    node.tick_callback(String(data='{"schema_version": 1, "seq": 99}'))
+    node.tick_callback(String(data="not json at all"))
+
+    assert node._tick_seq == 3, "a malformed pulse moved the tick index"

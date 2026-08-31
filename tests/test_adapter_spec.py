@@ -733,33 +733,60 @@ def test_a_ticked_state_never_warns_however_fast_the_topic():
     assert caught == [], [str(w.message) for w in caught]
 
 
-def test_nothing_in_the_declarative_adapter_drives_the_clock(monkeypatch):
-    """Pinning the live regression itself, so merging cannot make it invisible.
+def test_the_declarative_observation_advances_when_the_clock_ticks(monkeypatch):
+    """The successor to the P3 tripwire, asserting the fix rather than the bug.
 
-    `DeclarativeAdapter._on_message` calls `update()` and nothing calls `tick()`, so
-    `get_sensor_eval()` returns the schema defaults for the life of the process. P3 is
-    the package that drives the clock; when it does, THIS test fails, and that failure
-    is the notification.
+    What this replaces: for the whole pre-P3 stretch nothing called
+    `SensorState.tick()`, and because `tick()` is the sole writer of the held values,
+    `get_sensor_eval()` returned the schema defaults for the life of the process --
+    silently, as a full and plausible dict. The old test pinned that state so merging
+    could not make it invisible. This one pins the opposite, through the same real
+    message path, so a regression to a never-ticked adapter fails here again.
 
-    It asserts on the MECHANISM, not on the values. A test that feeds messages and
-    checks the values did not move still passes once a `tick()` method and a
-    `register_clock()` exist, because a unit test spins no node and starts no timer --
-    so the notification it was supposed to deliver would never arrive.
+    Deliberately asserts VALUES, not the presence of a `tick` method: the mechanism
+    check was only necessary while the answer was "nobody calls it", and a method
+    that exists but moves nothing is exactly the half-wired state to catch.
     """
     from skill_monitor.backend.adapters import declarative
 
-    source = inspect.getsource(declarative)
-    assert ".tick(" not in source, (
-        "declarative.py now calls tick(): P3 has landed. Replace this test with one "
-        "that asserts the observation DOES advance")
+    adapter = declarative.DeclarativeAdapter("real_g1")
+    odom = next(s for s in adapter.spec.sources if s.id == "odom")
+
+    # Arrivals alone still change nothing -- that half of the contract is unchanged,
+    # and it is what makes the observation tick-stable rather than message-driven.
+    before = adapter.get_sensor_eval()
+    for _ in range(50):
+        adapter._on_message(odom, _shipped_odom(pz=0.2, vx=1.25))
+    assert adapter.get_sensor_eval() == before, (
+        "update() wrote the held values; only tick() may")
+    assert adapter.state.updates_since_tick == 50
+
+    # ...and the tick is what publishes them.
+    adapter.tick(1.0)
+    after = adapter.get_sensor_eval()
+    assert after != before, "tick() closed the window and nothing moved"
+    assert after["pos_z"] == 0.2
+    assert adapter.state.updates_since_tick == 0, "the window was not cleared"
+
+    # The count of what arrived rides along, because data_health reports it.
+    health = adapter.data_health()
+    assert health["odom"]["samples_this_tick"] == 50
+    assert health["odom"]["refreshed"] is True
+    assert health["goal"]["samples_this_tick"] == 0
+    assert health["goal"]["refreshed"] is False, "a silent source must say so"
+
+
+def test_registering_subscriptions_still_creates_no_timer(monkeypatch):
+    """The adapter subscribes; the EVALUATOR owns the pulse.
+
+    Kept from the old tripwire because it is still true and still worth pinning: a
+    timer in here would be a second thing driving the trace, which is the bug
+    docs/clocking.md exists to prevent. The adapter's `tick()` is called by whoever
+    owns the clock, never by the adapter itself.
+    """
+    from skill_monitor.backend.adapters import declarative
 
     adapter = declarative.DeclarativeAdapter("real_g1")
-    assert not hasattr(adapter, "tick"), "the adapter grew a tick() -- see above"
-    assert not hasattr(adapter, "register_clock"), (
-        "the adapter grew a clock hook -- see above")
-
-    # Registering subscriptions must not create a timer either: a timer that calls
-    # nothing is how this ends up half-wired and looking finished.
     subscriptions, timers = [], []
 
     class _FakeNode:
@@ -773,17 +800,7 @@ def test_nothing_in_the_declarative_adapter_drives_the_clock(monkeypatch):
     monkeypatch.setattr(declarative, "_msg_class", lambda type_str: object)
     adapter.register_subscriptions(_FakeNode())
     assert len(subscriptions) == len(adapter.spec.sources), "sanity: it did subscribe"
-    assert timers == [], "a timer was created, but nothing calls tick()"
-
-    # ...and the consequence, through the real message path rather than around it.
-    odom = next(s for s in adapter.spec.sources if s.id == "odom")
-    before = adapter.get_sensor_eval()
-    for _ in range(50):
-        adapter._on_message(odom, _shipped_odom(pz=0.2, vx=1.25))
-
-    assert adapter.get_sensor_eval() == before, "something else is writing the values"
-    assert adapter.state.updates_since_tick == 50, (
-        "the window is where those 50 messages went, and it is not being closed")
+    assert timers == [], "the adapter created a timer; the pulse is not its to own"
 
 
 # ---------------------------------------------------- within-message chaining
