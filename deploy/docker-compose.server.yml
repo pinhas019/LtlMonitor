@@ -17,6 +17,17 @@ x-ros: &ros
     ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
     PYTHONUNBUFFERED: "1"
     SKILL_MONITOR_CONFIG: /config
+    # The server tier subscribes to the SAME graph as the robot tier, so it needs the
+    # same RMW. Both default to CycloneDDS for that reason -- a server on FastDDS talking
+    # to a robot on CycloneDDS does not error, it just serves an empty /api/monitors,
+    # which reads as "the robot is down" rather than "these two cannot hear each other".
+    RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+    # The interface DDS binds, and here it is the SERVER's, not the robot's -- the two
+    # machines rarely name it the same thing. Measured: the G1 reaches the dev PC over
+    # `eth0` on its side and `eno1` on the dev PC's, and DDS crosses that wired link in
+    # both directions with no relay in between.
+    DDS_INTERFACE: "${DDS_INTERFACE:-eth0}"
+    CYCLONEDDS_URI: "${CYCLONEDDS_URI:-<CycloneDDS><Domain Id='any'><SharedMemory><Enable>false</Enable></SharedMemory><General><Interfaces><NetworkInterface name='${DDS_INTERFACE:-eth0}' multicast='true'/></Interfaces><AllowMulticast>spdp</AllowMulticast></General></Domain></CycloneDDS>}"
   restart: unless-stopped
 
 services:

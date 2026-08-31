@@ -36,6 +36,12 @@ FROM ros:humble
 
 WORKDIR /app
 
+# The console holds its own Gateway on its own origin, so it is a DDS subscriber too and
+# needs the same RMW as the graph. See deploy/Dockerfile.gateway -- mismatched, the page
+# renders perfectly and shows no monitors, which reads as "the robot is down".
+RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp && \
+    rm -rf /var/lib/apt/lists/*
+
 # Nothing to pip install. The HTTP server, the WebSocket framing and the page itself are
 # stdlib and one static file -- pyproject.toml deliberately declares no install_requires,
 # and the console adds no dependency to that. There is no build step: the toolchain that
