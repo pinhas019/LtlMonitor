@@ -2,9 +2,89 @@
 
 **Newest session first.** Sessions 1–4 below are kept for the decisions they record,
 not for their status lines — every "unpushed", test count, `/ltl/*` topic name and git
-rule in them is out of date. **Session 5 is the current state.** The one part of
-session 4 that is not superseded is its closing section on the G1 run; that is still
-the plan.
+rule in them is out of date. **Session 6 is the current state**; session 5 is still
+accurate about the toolchain, the container contract and the git rules.
+
+**Session 5's "go and run the robot" is withdrawn.** It was written believing the
+evaluator produced data. It did not — see session 6. The G1 run is still the goal and
+session 4's plan for it still stands; it is now gated on milestones 2 and 3 below.
+
+---
+
+# Session 6 — the evaluator was publishing constants, and now it is not (2026-08-31)
+
+Branch `backend/feat-evaluator-tick`, commit `2eb117f`. **Not pushed, no PR yet.**
+
+```
+docker compose -f deploy/docker-compose.test.yml run --rm tests
+      → 1240 passed, 0 skipped, 93 s      (baseline on dev was 1231)
+```
+
+## What was wrong
+
+`grep -rn '\.tick(' skill_monitor/` returned **zero call sites**. `SensorState.tick()`
+is the sole writer of the held sensor values, so `get_sensor_eval()` returned
+`spec.defaults()` for the life of the process — a full, plausible, entirely constant
+dict, with `min_range` at its `10.0` "nothing nearby" default so `collision_risk` could
+never fire. Freshness stamping still worked, so `confidence` read healthy the whole time.
+
+Measured: 20 odometry messages folded in, `pos_x` still `0.0`; one `tick()` and it is
+`19.0`.
+
+This was **known and pinned**, not hidden —
+`test_nothing_in_the_declarative_adapter_drives_the_clock` existed to fail the moment
+P3 landed. What session 5 missed is that *"run as-is, record it, calibrate P12 off the
+recording"* would have recorded a file of constants.
+
+## Milestone 1 — done
+
+The evaluator subscribes `api.TICK` and publishes `api.OBSERVATION`, so the tick index
+travels inside the observation and the episode is recordable at all: `core/recording.py`
+replays `api.OBSERVATION`, and the legacy `/ltl/evaluations` dict beside it has no `seq`.
+Four things worth not rediscovering:
+
+- **`adapter.tick()` runs above the idle early-return**, which is the bug
+  `docs/packages/P3-evaluator.md:58` names. Close the window on every pulse, publish
+  only when armed — otherwise an obstacle the robot passed two minutes ago fires
+  `collision_risk` on the resume tick. Pinned by
+  `test_the_pulse_closes_the_window_even_while_idle`, which was checked by moving the
+  call back down and watching two tests go red.
+- **`data_health` covers all six declared sources, not the three `tracked` ones.**
+  `goal` is untracked and `dist_to_goal` is computed from it.
+- **An undecided AP goes out in `unknown_aps`, not as `False`.** `_process_evaluation`
+  still does `final_evals.setdefault(ap, False)` for the legacy wire and that is
+  deliberately unchanged (P10 owns it), but the two wires now disagree on purpose:
+  on a safety AP, `False` is not a neutral default, it is "the way is clear".
+- The free-running 1 Hz timer survives as a fallback for a graph with no clock and goes
+  dormant for good on the first real pulse. `clock: "internal"` on the envelope is the
+  wire admitting its `seq` is this process's own count.
+
+## Next: milestones 2 and 3
+
+Plan is at `~/.claude/plans/in-resume-md-what-jazzy-cerf.md`. The split the operator
+asked for, decided this session:
+
+| | robot (G1) | dev PC |
+|---|---|---|
+| clock | **yes, one container, authoritative** | no |
+| evaluator | yes | no |
+| monitor + gateway + GUI | no | yes |
+| `replay_node record` | **yes — the truth record, on local disk** | no |
+| `replay_node play --diff` | no | yes |
+
+**One clock, on the robot** — `docs/architecture.md:78-82`; the server's clock is replay
+pacing only and `replay_node play` requires it down, so this deployment has none here.
+**The truth record is written on the robot**, because wifi must not be in its path; the
+live feed to the dev PC is separate and allowed to drop frames.
+
+- **Milestone 2** — add a `recorder` service to `deploy/docker-compose.robot.yml`, run
+  `clock`+`evaluator`+`recorder` on two ROS domains on one host first, then the Jetson.
+  No Spot on the robot, so session 1's arm64 blocker does not apply.
+- **Milestone 3** — the live view over wifi. Five topics, ~2 KB/s, all `std_msgs/String`
+  JSON. `/ltl/required_aps` and `/ltl/state_description` must travel PC→robot or the
+  evaluator idles and emits nothing. Compare the gateway route (`--host 0.0.0.0
+  --allow-host`, no code change, but no ingest for the two `/ltl/*` topics) against a
+  `tools/topic_relay.py` built on the camera bridge's framing.
 
 ---
 
