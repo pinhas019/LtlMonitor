@@ -30,6 +30,9 @@ SECONDS_RUNNING="${SECONDS_RUNNING:-25}"
 RUN="${RUN:-smoke}"
 DATA_HOST="${SKILL_MONITOR_DATA_HOST:-$PWD/data}"
 RECORD="$DATA_HOST/${RUN}.jsonl"
+# Extra flags for the stimulus, e.g. --aps-only against a real robot that publishes its
+# own odometry. Empty by default, and named here so `set -u` cannot trip over it.
+STIMULUS_ARGS="${STIMULUS_ARGS:-}"
 
 export ADAPTER RUN
 
@@ -55,7 +58,7 @@ echo "[smoke] driving for ${SECONDS_RUNNING}s"
 # to the robot. The mount is what keeps deploy/ out of the artifact.
 $COMPOSE -f "$STACK" run --rm --no-deps -v "$PWD/deploy:/smoke:ro" \
     --entrypoint /bin/bash evaluator -c \
-    "source /opt/ros/humble/setup.bash && python3 /smoke/smoke_stimulus.py \
+    "source /opt/ros/humble/setup.bash && python3 /smoke/smoke_stimulus.py $STIMULUS_ARGS \
      --adapter '$ADAPTER' --seconds '$SECONDS_RUNNING'"
 
 # Let the last tick land before the recorder is torn down by the trap.

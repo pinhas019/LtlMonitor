@@ -51,6 +51,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rate", type=float, default=10.0,
                    help="odometry publish rate; the point is to be faster than the "
                         "tick, so a window holds several samples")
+    p.add_argument("--aps-only", action="store_true",
+                   help="stand in for the MONITOR only, not the robot. Against a real "
+                        "robot the odometry is real, and publishing a second stream "
+                        "onto the same topic would put two producers on it -- the "
+                        "evaluator would fold both into one window and the trace would "
+                        "describe a robot that does not exist")
+    p.add_argument("--spec", metavar="PATH",
+                   help="read ap_descriptions from a real spec instead of the two "
+                        "built in here, so the run exercises the whole spec")
     return p
 
 
@@ -64,15 +73,20 @@ def main() -> None:
 
     topic, _key = ODOM[args.adapter]
 
+    descriptions = dict(DESCRIPTIONS)
+    if args.spec:
+        with open(args.spec, encoding="utf-8") as fh:
+            descriptions = json.load(fh)["atomic_propositions"]
+
     rclpy.init()
     node = Node("smoke_stimulus")
     aps_pub = node.create_publisher(String, "/ltl/required_aps", 10)
     desc_pub = node.create_publisher(String, "/ltl/state_description", 10)
-    odom_pub = node.create_publisher(Odometry, topic, 10)
+    odom_pub = None if args.aps_only else node.create_publisher(Odometry, topic, 10)
 
-    required = sorted(DESCRIPTIONS)
+    required = sorted(descriptions)
     state = {"skill_name": "smoke", "phase": "drive",
-             "ap_descriptions": DESCRIPTIONS}
+             "ap_descriptions": descriptions}
 
     ticks = 0
     total = int(args.seconds * args.rate)
@@ -85,15 +99,16 @@ def main() -> None:
         aps_pub.publish(String(data=json.dumps(required)))
         desc_pub.publish(String(data=json.dumps(state)))
 
-        msg = Odometry()
-        # The moving part. 0.1 m per sample at 10 Hz is a metre a second, which is a
-        # plausible walk and, more to the point, is visibly different every tick.
-        msg.pose.pose.position.x = ticks * 0.1
-        msg.pose.pose.position.y = 0.0
-        msg.pose.pose.position.z = 0.75          # a standing base, so `upright` is true
-        msg.pose.pose.orientation.w = 1.0
-        msg.twist.twist.linear.x = 1.0
-        odom_pub.publish(msg)
+        if odom_pub is not None:
+            msg = Odometry()
+            # The moving part. 0.1 m per sample at 10 Hz is a metre a second, which is
+            # a plausible walk and, more to the point, is visibly different every tick.
+            msg.pose.pose.position.x = ticks * 0.1
+            msg.pose.pose.position.y = 0.0
+            msg.pose.pose.position.z = 0.75      # a standing base, so `upright` is true
+            msg.pose.pose.orientation.w = 1.0
+            msg.twist.twist.linear.x = 1.0
+            odom_pub.publish(msg)
 
         if ticks >= total:
             raise SystemExit(0)
