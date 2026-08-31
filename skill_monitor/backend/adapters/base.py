@@ -181,6 +181,30 @@ class SensorAdapter(ABC):
         """Confidence in this tick's sensor_eval, 0.0-1.0. Default 1.0."""
         return 1.0
 
+    # -- the tick ------------------------------------------------------------
+    # Ingestion is event-driven; emission is tick-driven. A subscription callback
+    # decodes and hands the payload on; NOTHING else. The clock's pulse is what
+    # closes the window -- see docs/packages/P3-evaluator.md.
+
+    def tick(self, t: float | None = None) -> None:
+        """Close the open observation window. Called on every clock pulse.
+
+        No-op by default: the hand-written adapters hold no window, they write
+        their values straight from the message callback, so for them a tick has
+        nothing to close. Only the declarative path defers to `SensorState`.
+        """
+
+    def data_health(self) -> dict:
+        """Per-source liveness for the observation envelope, `{}` when untracked.
+
+        Shape is `api._DATA_HEALTH_FIELDS`: rate_hz, expected_hz, age_s,
+        samples_this_tick, refreshed, dropped. An adapter that cannot answer
+        returns an empty dict rather than fabricating zeros -- `data_health: {}`
+        reads as "this adapter does not report", where `dropped: 0` would read as
+        "nothing was dropped" and be a lie.
+        """
+        return {}
+
     # -- raw echo ------------------------------------------------------------
     # The evaluator publishes the raw echo out of these two calls and knows nothing else
     # about them. Defaulted here rather than probed with `hasattr` at the call site, so

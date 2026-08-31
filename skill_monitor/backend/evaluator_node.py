@@ -37,6 +37,21 @@ from skill_monitor.backend.adapters.base import SensorAdapter
 #: they move; `api.ADAPTER` is the contract topic and carries the same document.
 _LEGACY_ADAPTER = "/ltl/adapter"
 
+#: The pre-migration observation topic: a flat dict of AP booleans with no tick index.
+#: `api.OBSERVATION` is the contract topic and now carries every tick too; this one
+#: stays until `monitor_node._LEGACY_EVALUATIONS` stops being read. Named rather than
+#: written out at the publisher so the two spellings cannot drift.
+_LEGACY_EVALUATIONS = "/ltl/evaluations"
+
+#: How many ticks of LLM backlog to hold before shedding. See `query_queue`.
+_QUEUE_TICKS = 8
+
+#: Seconds between free-running emissions when NO clock is publishing api.TICK.
+#: The fallback goes dormant the moment a real pulse arrives -- two things driving
+#: one trace is the bug docs/clocking.md exists to prevent -- but without it an
+#: evaluator on a graph with no clock (a dev host, `--mock`) would simply go silent.
+_FREE_RUN_S = 1.0
+
 ADAPTERS: dict[str, str] = {
     # name -> "module:ClassName", imported lazily in _load_adapter so choosing one
     # adapter doesn't require every adapter's dependencies to be importable.
@@ -87,7 +102,17 @@ class GenericClientNode(Node):
 
         # Buffer / queue for asynchronous LLM queries -- kept for parity even when a
         # spec is fully rule-based (formulas_g1.json is), so llm_aps is simply empty.
-        self.query_queue = queue.Queue()
+        #
+        # BOUNDED. Unbounded, a worker blocked on an LLM that has stopped answering
+        # grows this without limit on a robot, and every queued snapshot pins the
+        # sensor_eval dict it captured. The bound is in ticks because that is what a
+        # backlog is measured in: past this many, the answers are describing a robot
+        # that has already moved on and dropping them is the correct outcome, not a
+        # degradation. A drop costs one observation, which shows up as a gap in `seq`
+        # downstream rather than as silence.
+        self.query_queue = queue.Queue(maxsize=_QUEUE_TICKS)
+        #: Snapshots shed because the worker could not keep up. Logged, never silent.
+        self.snapshots_dropped = 0
         self.worker_thread = threading.Thread(target=self._worker_loop)
         self.worker_thread.daemon = True
         self.worker_thread.start()
@@ -95,7 +120,22 @@ class GenericClientNode(Node):
         # LTL subscriptions/publisher -- identical regardless of adapter.
         self.create_subscription(String, "/ltl/required_aps", self.aps_callback, 10)
         self.create_subscription(String, "/ltl/state_description", self.desc_callback, 10)
-        self.eval_pub = self.create_publisher(String, "/ltl/evaluations", 10)
+        self.eval_pub = self.create_publisher(String, _LEGACY_EVALUATIONS, 10)
+
+        # The clock's pulse, and the observation it closes. Ingestion is event-driven;
+        # emission is tick-driven -- a subscription callback only hands its payload to
+        # SensorState.update(), and THIS is what closes the window and publishes.
+        self.create_subscription(String, api.TICK, self.tick_callback, 10)
+        self.obs_pub = self.create_publisher(String, api.OBSERVATION, 10)
+        #: The tick being described. seq 0 means nothing has closed yet, so the first
+        #: real pulse is seq 1 -- see core/clock.py.
+        self._tick_seq = 0
+        self._tick_t = 0.0
+        #: False until a pulse arrives on api.TICK. While false the free-running timer
+        #: drives emission and the observation says `clock: "internal"`, which is the
+        #: wire admitting that its tick index is this process's own count and not a
+        #: clock's. It never goes back to true.
+        self._clock_seen = False
 
         # What this robot can observe, announced once and latched. The monitor uses it
         # to reject a spec written over fields this embodiment does not have; the GUI
@@ -143,7 +183,7 @@ class GenericClientNode(Node):
         # Everything environment-specific lives behind this one call.
         self.adapter.register_subscriptions(self)
 
-        self.timer = self.create_timer(1.0, self.evaluate_and_publish)
+        self.timer = self.create_timer(_FREE_RUN_S, self._free_run)
 
         self.get_logger().info(
             f"Generic client started (adapter={type(adapter).__name__}, "
@@ -306,7 +346,40 @@ class GenericClientNode(Node):
                     pass
             return {}
 
-    def evaluate_and_publish(self):
+    def tick_callback(self, msg: String) -> None:
+        """The clock's pulse. THIS drives emission; the timer is only a fallback."""
+        try:
+            payload = json.loads(msg.data)
+        except Exception:                                        # noqa: BLE001
+            self.get_logger().error("tick is not JSON; ignoring")
+            return
+        if problems := api.validate_tick(payload):
+            self.get_logger().error(f"invalid tick, ignoring: {'; '.join(problems)}")
+            return
+
+        if not self._clock_seen:
+            self._clock_seen = True
+            self.get_logger().info(
+                f"{api.TICK} is live; the free-running fallback stops emitting.")
+        self._tick_seq = payload["seq"]
+        self._tick_t = payload["t"]
+        self.evaluate_and_publish(self._tick_t)
+
+    def _free_run(self):
+        """Emit without a clock, and only until one appears.
+
+        A dev host or `--mock` has no clock node, and an evaluator that published
+        nothing there would look broken. Once `api.TICK` arrives this goes quiet
+        for good: two producers on one trace is precisely the failure
+        docs/clocking.md is written to prevent.
+        """
+        if self._clock_seen:
+            return
+        self._tick_seq += 1
+        self._tick_t = time.time()
+        self.evaluate_and_publish(self._tick_t)
+
+    def evaluate_and_publish(self, t: float | None = None):
         # Before the idle check: the echo is an operator looking at a sensor, which is
         # not conditional on a spec being armed.
         #
@@ -317,6 +390,21 @@ class GenericClientNode(Node):
             self._publish_raw_echo()
         except Exception as e:                                   # noqa: BLE001
             self.get_logger().error(f"Raw echo failed for this tick: {e!r}")
+
+        # ABOVE the idle return, and that is the whole point of it being here.
+        #
+        # tick() is the sole writer of the held sensor values, so if only the
+        # publishing path closed the window, an idle evaluator would never close one:
+        # the window would grow across the entire idle stretch and the first armed
+        # tick would fold minutes of samples into one observation. An obstacle the
+        # robot walked past two minutes ago would fire collision_risk on the resume
+        # tick. Close on every pulse; publish only when armed.
+        try:
+            self.adapter.tick(t)
+        except Exception as e:                                   # noqa: BLE001
+            # SensorState.tick() already rolled the whole tick back, so the previous
+            # observation is intact. One poisoned window costs one tick, not the run.
+            self.get_logger().error(f"tick failed, holding last observation: {e!r}")
 
         if self.idle or not self.required_aps:
             return
@@ -331,8 +419,23 @@ class GenericClientNode(Node):
             # rather than at observation time.
             "confidence": self.adapter.confidence(),
             "stale": list(self.adapter.stale_sources()),
+            # Same reason: the tick index and the health of the sources that produced
+            # this observation belong to the moment it was taken, not to whenever the
+            # worker gets round to answering.
+            "seq": self._tick_seq,
+            "t": self._tick_t,
+            "clock": "external" if self._clock_seen else "internal",
+            "data_health": self.adapter.data_health(),
         }
-        self.query_queue.put(snapshot)
+        try:
+            self.query_queue.put_nowait(snapshot)
+        except queue.Full:
+            self.snapshots_dropped += 1
+            self.get_logger().warn(
+                f"LLM backlog full at {_QUEUE_TICKS} ticks; dropped the observation "
+                f"for tick {self._tick_seq} ({self.snapshots_dropped} so far). The "
+                f"gap is visible as a jump in seq downstream.")
+            return
         phase = self.state_desc.get("phase") or "—"
         self.get_logger().info(
             f"→ queued | phase={phase} | aps={len(self.required_aps)} | depth={self.query_queue.qsize()}"
@@ -457,8 +560,19 @@ Reply with ONLY a JSON object. No markdown, no explanation.
             raw = self._query_llm(prompt)
             llm_evals = {ap: bool(raw.get(ap, False)) for ap in llm_aps} if raw else {}
 
-        final_evals = {**rule_evals, **llm_evals}
+        # What was actually decided, before the legacy wire's defaulting below. An AP
+        # is in here only if a rule read it or a model answered it.
+        evaluated = {**rule_evals, **llm_evals}
+
+        final_evals = dict(evaluated)
         for ap in required_aps:
+            # The legacy wire has no way to say UNKNOWN -- it is a flat dict of
+            # booleans -- so an AP nothing could evaluate has always gone out as
+            # False. That is why `api.OBSERVATION` is published from `evaluated`
+            # instead: on that wire an undecided AP names itself in `unknown_aps`,
+            # because "no rule matched and the model did not answer" and "there is no
+            # obstacle" must not be the same message. Left as-is here; changing the
+            # legacy semantics is P10's, not this migration's.
             final_evals.setdefault(ap, False)
 
         print(f"  │ {'─' * 52}")
@@ -504,6 +618,58 @@ Reply with ONLY a JSON object. No markdown, no explanation.
         msg = String()
         msg.data = json.dumps(payload)
         self.eval_pub.publish(msg)
+
+        self._publish_observation(task, sensor_eval, evaluated)
+
+    def _publish_observation(self, task, sensor_eval, evaluated) -> None:
+        """The same tick as the legacy dict above, in the envelope that has a `seq`.
+
+        Both wires carry every tick during the migration. `monitor_node` prefers this
+        one the moment it first arrives and stops stepping the automaton on the legacy
+        copy, so publishing both is additive rather than a double step -- and dropping
+        back to one is a one-line revert if this goes wrong on the robot.
+
+        The envelope is what makes the episode recordable at all: `core/recording.py`
+        replays `api.OBSERVATION`, and the flat dict beside it carries no tick index,
+        so a recording of it could not be replayed against a clock.
+        """
+        # Booleans only, and an AP that produced no value names itself instead.
+        # `evaluated` is deliberately the PRE-defaulting dict: a required AP that no
+        # rule matched and no model answered is absent from it, and the whole reason
+        # this wire has an `unknown_aps` field is so that case does not have to be
+        # spelled False. On a safety AP -- collision_risk is one -- False is not a
+        # neutral default, it is "the way is clear".
+        ap_values, unknown = {}, []
+        for ap in task["required_aps"]:
+            value = evaluated.get(ap)
+            if isinstance(value, bool):
+                ap_values[ap] = value
+            else:
+                unknown.append(ap)
+
+        payload = api.build_observation(
+            seq=task["seq"],
+            t=task["t"],
+            # The evaluator tracks no episode; the monitor owns `step`, and inventing
+            # one here would put two counters on one field.
+            step=None,
+            sensors={k: _jsonable(v) for k, v in sensor_eval.items()},
+            ap_values=ap_values,
+            unknown_aps=unknown,
+            confidence=task.get("confidence", 1.0),
+            data_health=task.get("data_health") or {},
+            clock=task.get("clock", "internal"),
+        )
+        if problems := api.validate_observation(payload):
+            # Refuse to publish rather than put a malformed envelope on the contract
+            # topic: the monitor does not validate on receipt, so this is the only
+            # place the shape can be caught.
+            self.get_logger().error(
+                f"observation failed validation, not published: {'; '.join(problems)}")
+            return
+        msg = String()
+        msg.data = json.dumps(payload)
+        self.obs_pub.publish(msg)
 
 
 def main():
