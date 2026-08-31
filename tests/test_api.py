@@ -44,9 +44,11 @@ def an_observation() -> dict:
         confidence=0.67,
         data_health={
             "points": {"rate_hz": 14.2, "expected_hz": 15.0, "age_s": 0.07,
-                       "samples_this_tick": 14, "refreshed": True, "dropped": 0},
+                       "samples_this_tick": 14, "refreshed": True, "dropped": 0,
+                       "tracked": True},
             "status": {"rate_hz": 0.0, "expected_hz": 5.0, "age_s": 3.9,
-                       "samples_this_tick": 0, "refreshed": False, "dropped": 0},
+                       "samples_this_tick": 0, "refreshed": False, "dropped": 0,
+                       "tracked": True},
         },
     )
 

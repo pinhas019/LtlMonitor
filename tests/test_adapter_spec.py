@@ -2381,19 +2381,23 @@ def test_every_shipped_descriptor_ticks_without_data():
 
 #: source id -> (expected_hz, where the number comes from)
 G1_RATES = {
-    # `sportmode_odom_bridge.py` is a pass-through of the G1 firmware's
-    # /odommodestate, so the rate is the firmware's and is not stated anywhere in the
-    # repo. 10 Hz is a deliberate FLOOR, not a measurement: a locomotion state stream
-    # slower than that is broken, so this catches a collapse without false-alarming on
-    # a stream that is really faster. Under-declaring is the safe direction -- it makes
-    # the discarded-samples check under-report rather than cry wolf. Refine it the
-    # first time the robot is on the network to measure.
-    "odom": 10.0,
-    # The Depth-Anything loop measured 74 ms per iteration on the Jetson (~13.5 Hz)
-    # while capturing at --fps 30. Declared below the measurement so a loaded Jetson
-    # does not read as a fault.
-    "points": 10.0,
-    "camera": 10.0,
+    # MEASURED on the robot, 2026-08-31, `ros2 topic hz` over 12 s with TRAV's stack up:
+    # 500.794 Hz. `sportmode_odom_bridge.py` is a pass-through of the G1 firmware's
+    # /odommodestate, so this is the firmware's rate. The previous 10.0 was a deliberate
+    # floor with "refine it the first time the robot is on the network to measure"
+    # written beside it; this is that refinement, and the floor was out by 50x.
+    #
+    # It matters beyond bookkeeping: at 1 Hz ticks the discarded-samples warning now
+    # reports 499 samples in 500 rather than 9 in 10, which is the true cost of folding
+    # `last` over this source.
+    "odom": 500.0,
+    # MEASURED 5.871 Hz, not the ~13.5 the Depth-Anything loop hits unloaded -- the
+    # Jetson is running the whole nav stack beside it. Declared just below the
+    # measurement, per the rule that under-declaring makes the health check under-report
+    # rather than cry wolf on a loaded robot.
+    "points": 5.0,
+    # MEASURED 21.942 Hz on /depth_anything/color_image. Declared just below it.
+    "camera": 20.0,
     # path_manager publishes status per planning cycle. control_step runs at
     # `control_hz` (20.0) but only publishes in manual mode; in automatic it publishes
     # per replan, and `replan_hz` defaults to 5.0. The lower of the two is what a

@@ -409,6 +409,13 @@ _DATA_HEALTH_FIELDS: dict[str, _Check] = {
     "samples_this_tick": INT,
     "refreshed": BOOL,
     "dropped": INT,
+    #: Whether this source's liveness is monitored at all -- the descriptor's own
+    #: `tracked` flag, carried so a consumer does not have to re-read the adapter to
+    #: know whether `refreshed: false` is a fault or the normal state. A setpoint like
+    #: `/next_waypoint` publishes only when the planner produces one, so an un-refreshed
+    #: tick is a healthy robot holding its waypoint; without this the console called
+    #: that stale.
+    "tracked": BOOL,
 }
 
 _OBSERVATION_FIELDS: dict[str, _Check] = {
