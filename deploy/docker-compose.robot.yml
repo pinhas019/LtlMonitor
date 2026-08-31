@@ -28,6 +28,24 @@ x-ros: &ros
     ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
     PYTHONUNBUFFERED: "1"
     SKILL_MONITOR_CONFIG: /config
+    # MUST match the robot's own stack. Measured on the G1: TRAV runs its containers
+    # with rmw_cyclonedds_cpp, and stock ros:humble ships only rmw_fastrtps_cpp. Two
+    # nodes on different RMW implementations do not reliably see each other, and the
+    # failure is silent -- the evaluator subscribes to six topics and receives nothing,
+    # which is indistinguishable from a robot that is standing still.
+    RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+    # Inline XML rather than a mounted file, because the one thing that varies here is
+    # the interface, and a file would have to be edited in place to change it. The G1 is
+    # on eth0 while it is cabled to the dev PC and on wlan0 during a run -- TRAV ships a
+    # separate XML per case for exactly that reason. One knob:
+    #
+    #   DDS_INTERFACE=wlan0 docker compose -f deploy/docker-compose.robot.yml up
+    #
+    # SharedMemory off and AllowMulticast=spdp copy TRAV's config deliberately: the two
+    # stacks share one graph, and a peer that disagrees about either is a peer that is
+    # never discovered. Set CYCLONEDDS_URI yourself to point at a file instead.
+    DDS_INTERFACE: "${DDS_INTERFACE:-eth0}"
+    CYCLONEDDS_URI: "${CYCLONEDDS_URI:-<CycloneDDS><Domain Id='any'><SharedMemory><Enable>false</Enable></SharedMemory><General><Interfaces><NetworkInterface name='${DDS_INTERFACE:-eth0}' multicast='true'/></Interfaces><AllowMulticast>spdp</AllowMulticast></General></Domain></CycloneDDS>}"
   restart: unless-stopped
 
 x-config-ro: &config-ro
@@ -84,6 +102,40 @@ services:
       - "${SKILL_MONITOR_CONFIG_HOST:-../config}:/config:ro"
       # Read-write: verdict records and the automaton PNGs rendered at spec load.
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
+    depends_on: [clock, evaluator]
+
+  # The truth record, written HERE, on the machine that moves.
+  #
+  # Not on the dev PC, and the distinction is the whole point: the live feed to an
+  # operator crosses wifi and is allowed to drop frames, but the record an experiment is
+  # judged from must have no network in its path at all. `replay_node record` subscribes
+  # to `core/recording.py`'s INPUTS and appends JSON Lines; replaying it later on the
+  # dev PC is what P9 names as the acceptance test for hardware agnosticism.
+  #
+  # Reuses the evaluator IMAGE with a different entrypoint rather than adding a seventh
+  # Dockerfile: replay_node needs rclpy and std_msgs, both of which that image already
+  # has, and a recorder built from a different base could disagree with the evaluator
+  # about how a payload deserialises.
+  #
+  # Starts with `up`, deliberately. Behind a profile it would be the thing somebody
+  # forgets, and a run nobody recorded is a run that did not happen.
+  recorder:
+    <<: *ros
+    container_name: sm-recorder
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.evaluator
+    image: skill-monitor/evaluator:${TAG:-dev}
+    entrypoint: ["/bin/bash", "-c",
+                 "source /opt/ros/humble/setup.bash && python3 -m skill_monitor.backend.replay_node \"$@\"", "--"]
+    # --append, so that a container restart adds to the episode instead of truncating
+    # the part of it that already happened. RUN names the file; give each run its own.
+    command: ["record", "/data/${RUN:-run1}.jsonl", "--append"]
+    volumes:
+      - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
+    # NOT unless-stopped: a recorder that comes back by itself after the operator
+    # stopped it starts writing into an episode everyone believes is closed.
+    restart: "no"
     depends_on: [clock, evaluator]
 
   # Enforces nothing until enabled -- see P5. Robot tier only: an intervention
