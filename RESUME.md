@@ -113,6 +113,43 @@ The diff gets its teeth when a real episode moves the phase machine.
   `docker compose` does not resolve the plugin on that Docker build — use
   `docker-compose`, which is why the smoke script takes `COMPOSE=`.
 - The repo is at `~/skillMonitor` on branch `deploy/feat-robot-recorder`.
+
+### The split ran live against TRAV, and two things looked broken but are not
+
+Evaluator on the G1, monitor + gateway + console on the dev PC, TRAV's nav stack up
+(`run_app.sh` → `trav_app`, plus `launch_bridge.sh` for `/t265/odom/sample`). Console at
+`http://127.0.0.1:8081` showed `skill_name: G1HumanoidNavigation`, health `live`.
+
+**DDS crosses the wired link in BOTH directions, with no relay.** The robot's
+observations reach the dev PC and the dev PC's verdicts reach the robot — the recorder
+on the G1 captured 68 observations and 58 verdicts in one file. Session 1's "the dev
+host cannot see the robot's ROS graph" was about the `192.168.140.254` route; over the
+direct `192.168.123.x` link with CycloneDDS bound to the right interface on each side
+(`eth0` on the robot, `eno1` on the dev PC) it simply works. **Milestone 3's relay is
+therefore not needed on ethernet.** Wifi remains unproven and is the experiment's link.
+
+- **"No camera image on the console" is the default, not a fault.** Raw echo is opt-in,
+  one source at a time, and nothing asks until a console user picks a source. Turn it on
+  with a POST to `/api/monitors/_/raw_echo_request` carrying `{"source_id":"camera"}` and
+  the `X-Skill-Monitor` header; `{"source_id":null}` turns it off. Verified live: a valid
+  160x120 PNG, 43747 bytes, 12 samples in the tick. The cap is why it is per-source —
+  `raw_echo.py` measured 320x240 as "not viable" over this link.
+- **"The automaton does not advance when a waypoint is published" is P12, live.** The
+  first phase gates on `enter_condition: mission_started`, and `mission_started` is
+  *"nav_mode == 'AUTOMATIC' and num_waypoints > 0"*. With `nav_mode=MANUAL` no waypoint
+  can move it — the count is not what blocks it, the mode is. This is the clearest
+  demonstration yet of why P12 matters: the entry gate reads the planner's self-report
+  instead of the robot's own sensors.
+
+**The safety gap is now visible on real hardware.** Panel 7 reports that `min_range` is
+folded `last` from `points` at 10 Hz against a 1 Hz tick, discarding nine samples in ten
+— so `collision_risk` can miss an obstacle that appears and clears inside one tick.
+Fourteen keys carry the same warning; `min_range` is the one that matters. Also
+`real_g1.json`'s declared rates are wrong: `odom` measured **502 Hz against a declared
+10**, `status` **40 against 5**, and `goal` declares no `expected_hz` at all.
+
+Nothing that can move the robot was ever started: `path_manager` stayed in MANUAL, and
+`run_movement.sh` / `loco_server.py` were never run.
 - **Milestone 3** — the live view over wifi. Five topics, ~2 KB/s, all `std_msgs/String`
   JSON. `/ltl/required_aps` and `/ltl/state_description` must travel PC→robot or the
   evaluator idles and emits nothing. Compare the gateway route (`--host 0.0.0.0
