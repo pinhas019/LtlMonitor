@@ -49,9 +49,14 @@ echo "[smoke] driving for ${SECONDS_RUNNING}s"
 # In the evaluator image, on the same graph: it already has rclpy, the message types
 # and the DDS settings, so the stimulus cannot accidentally be testing a different
 # transport from the thing it is stimulating.
-$COMPOSE -f "$STACK" run --rm --no-deps --entrypoint /bin/bash evaluator -c \
-    "source /opt/ros/humble/setup.bash && python3 /app/deploy/smoke_stimulus.py \
-     --adapter '$ADAPTER' --seconds '$SECONDS_RUNNING'" || true
+#
+# Mounted, not COPYed: the images take in skill_monitor/ and nothing else, which is
+# correct -- a test fixture baked into the deployed image is a test fixture that ships
+# to the robot. The mount is what keeps deploy/ out of the artifact.
+$COMPOSE -f "$STACK" run --rm --no-deps -v "$PWD/deploy:/smoke:ro" \
+    --entrypoint /bin/bash evaluator -c \
+    "source /opt/ros/humble/setup.bash && python3 /smoke/smoke_stimulus.py \
+     --adapter '$ADAPTER' --seconds '$SECONDS_RUNNING'"
 
 # Let the last tick land before the recorder is torn down by the trap.
 $COMPOSE -f "$STACK" stop recorder >/dev/null 2>&1 || true
