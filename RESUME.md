@@ -77,9 +77,42 @@ pacing only and `replay_node play` requires it down, so this deployment has none
 **The truth record is written on the robot**, because wifi must not be in its path; the
 live feed to the dev PC is separate and allowed to drop frames.
 
-- **Milestone 2** — add a `recorder` service to `deploy/docker-compose.robot.yml`, run
-  `clock`+`evaluator`+`recorder` on two ROS domains on one host first, then the Jetson.
-  No Spot on the robot, so session 1's arm64 blocker does not apply.
+### Milestone 2 — done, on the actual G1
+
+`deploy/smoke_robot_tier.sh` on the robot, then the episode replayed here:
+
+```
+[stimulus] /odom at 10.0 Hz, required_aps=['collision_risk', 'upright']
+  ticks recorded : 26   observations recorded : 26
+  pos_x          : 0.1 -> 25.0  (26 distinct)
+PASS: the observation advanced and the episode is on disk
+
+# copied to the dev PC, played into the monitor, then re-played and diffed
+26 verdicts identical, 0 differ, 0 missing, 0 unexpected
+```
+
+**Honest about what that proves.** The loop works end to end and the replay is
+deterministic — but the smoke stimulus drives only 2 of the 8 APs `formulas_g1.json`
+needs, so every verdict was `UNDECIDED` in phase `Idle`. Determinism on a thin trace.
+The diff gets its teeth when a real episode moves the phase machine.
+
+**G1 facts, measured this session:**
+
+- Ubuntu 20.04, JetPack R35.3.1, kernel 5.10.104-tegra, aarch64, 1.7 T free.
+- **The Python wall is gone.** `tools/README.md` says every container on the G1 is
+  Python 3.8 so the monitor cannot run there. True of TRAV's image (3.8.10, checked),
+  but stock `ros:humble` arm64 runs **Python 3.10.12 + rclpy + CycloneDDS on JetPack 5**.
+  That doc is out of date and running the monitor on the robot is no longer version-blocked.
+- **TRAV runs `rmw_cyclonedds_cpp`; stock `ros:humble` ships only FastDDS.** Every
+  robot-tier image now installs CycloneDDS. Missing it does not degrade to a fallback —
+  rcl refuses to construct a node and the container restart-loops.
+- `eth0` is the wired link to the dev PC; `wlan0` is the university net and the
+  experiment's link. `DDS_INTERFACE` is the one knob. No IP is hardcoded anywhere.
+- Changes made to the robot, which persist: compose v2 installed at
+  `/usr/local/lib/docker/cli-plugins`, and `unitree` added to the `docker` group.
+  `docker compose` does not resolve the plugin on that Docker build — use
+  `docker-compose`, which is why the smoke script takes `COMPOSE=`.
+- The repo is at `~/skillMonitor` on branch `deploy/feat-robot-recorder`.
 - **Milestone 3** — the live view over wifi. Five topics, ~2 KB/s, all `std_msgs/String`
   JSON. `/ltl/required_aps` and `/ltl/state_description` must travel PC→robot or the
   evaluator idles and emits nothing. Compare the gateway route (`--host 0.0.0.0
