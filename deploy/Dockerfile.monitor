@@ -5,7 +5,14 @@ FROM ros:humble
 WORKDIR /app
 
 # Spot from source, to avoid C++ ABI conflicts with the ROS packages.
-RUN apt-get update && apt-get install -y wget build-essential python3-dev graphviz && \
+#
+# rmw_cyclonedds_cpp for the same reason as every other robot-tier image: the stack's
+# compose sets RMW_IMPLEMENTATION=rmw_cyclonedds_cpp for ALL of its services, to match
+# the robot's own, and stock ros:humble ships only rmw_fastrtps_cpp. An image the
+# compose can start that lacks the RMW its environment demands does not degrade -- rcl
+# refuses to construct a node and the container restart-loops. Found exactly that way.
+RUN apt-get update && apt-get install -y wget build-essential python3-dev graphviz \
+        ros-humble-rmw-cyclonedds-cpp && \
     wget http://www.lrde.epita.fr/dload/spot/spot-2.12.1.tar.gz && \
     tar -xzf spot-2.12.1.tar.gz && \
     cd spot-2.12.1 && \

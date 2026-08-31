@@ -464,6 +464,43 @@ def test_an_observation_reads_the_same_off_either_wire():
     assert legacy.seq is None and legacy.legacy is True
 
 
+def test_an_untracked_source_is_not_stale_merely_for_being_quiet():
+    """Found on the real G1: "stale source: vision" on the verdict pane of a healthy
+    robot, and confidence dragged down with it.
+
+    `tracked: false` in the descriptor means this source's liveness deliberately is not
+    monitored. `/next_waypoint` is the case that makes it matter -- a SETPOINT, published
+    when the planner produces one, so a robot holding its current waypoint publishes
+    nothing and an un-refreshed tick is a perfectly healthy run. Same for a goal-matcher
+    nobody started. Only a tracked source that went quiet is a fault.
+    """
+    obs = manifest.normalize_observation({
+        "schema_version": 1, "seq": 1, "t": 1.0, "step": None,
+        "clock": "external", "tick_membership": "arrival",
+        "sensors": {}, "ap_values": {}, "unknown_aps": [], "confidence": 1.0,
+        "data_health": {
+            "odom":   {"refreshed": True,  "tracked": True},
+            "points": {"refreshed": False, "tracked": True},    # tracked and quiet: a fault
+            "goal":   {"refreshed": False, "tracked": False},   # a setpoint: normal
+            "vision": {"refreshed": False, "tracked": False},   # not monitored: normal
+        },
+    })
+    assert obs.stale_sources == ("points",)
+
+
+def test_data_health_without_tracked_still_means_what_it_used_to():
+    """A producer that predates the `tracked` field sent health for tracked sources
+    only, so every entry in it was one whose silence WAS a fault. Absent must therefore
+    read as tracked, or upgrading the consumer first would silence real staleness."""
+    obs = manifest.normalize_observation({
+        "schema_version": 1, "seq": 1, "t": 1.0, "step": None,
+        "clock": "external", "tick_membership": "arrival",
+        "sensors": {}, "ap_values": {}, "unknown_aps": [], "confidence": 1.0,
+        "data_health": {"odom": {"refreshed": True}, "points": {"refreshed": False}},
+    })
+    assert obs.stale_sources == ("points",)
+
+
 def test_reserved_keys_never_reach_the_automaton():
     """`__done__` and friends are metadata about the observation, not part of it: a
     phase guard's eval namespace must never see them."""

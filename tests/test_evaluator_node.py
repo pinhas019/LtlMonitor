@@ -226,8 +226,8 @@ def test_every_declared_source_reports_its_health():
     health = json.loads(published(node, api.OBSERVATION)[0])["data_health"]
     assert set(health) == {s.id for s in node.adapter.spec.sources}
     for source_id, entry in health.items():
-        assert set(entry) == {"rate_hz", "expected_hz", "age_s",
-                              "samples_this_tick", "refreshed", "dropped"}, source_id
+        assert set(entry) == {"rate_hz", "expected_hz", "age_s", "samples_this_tick",
+                              "refreshed", "dropped", "tracked"}, source_id
 
 
 def test_an_ap_without_a_boolean_names_itself_instead_of_defaulting_to_false():

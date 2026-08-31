@@ -6,7 +6,17 @@ WORKDIR /app
 
 # sensor_msgs_py.point_cloud2: PointCloud2 decoding, used by the real_g1 and
 # isaac_lab adapters. action_msgs (GoalStatusArray) ships with ros-base.
-RUN apt-get update && apt-get install -y ros-humble-sensor-msgs-py && \
+#
+# rmw_cyclonedds_cpp because the ROBOT's stack uses it and stock ros:humble ships only
+# rmw_fastrtps_cpp. Two nodes on different RMW implementations do not reliably see each
+# other, so without this the evaluator subscribes to six topics on a live graph and
+# receives nothing -- silently, since an empty window is indistinguishable from a robot
+# that is standing still. Measured on the G1: TRAV runs its containers with
+# RMW_IMPLEMENTATION=rmw_cyclonedds_cpp and CYCLONEDDS_URI pointing at an interface
+# config. Installed, not selected: the compose files choose per deployment.
+RUN apt-get update && apt-get install -y \
+        ros-humble-sensor-msgs-py \
+        ros-humble-rmw-cyclonedds-cpp && \
     rm -rf /var/lib/apt/lists/*
 
 COPY skill_monitor/ ./skill_monitor/

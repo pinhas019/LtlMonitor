@@ -1081,6 +1081,10 @@ class MockBus(MonitorBus):
                 "samples_this_tick": 0 if is_stale else max(1, int(expected)),
                 "refreshed": not is_stale,
                 "dropped": 0,
+                # The descriptor's own flag. The mock's `stale` set is built from
+                # tracked sources, so mirroring it here keeps the mock's console
+                # showing what a real robot's would.
+                "tracked": bool(source.get("tracked", True)),
             }
         return health
 

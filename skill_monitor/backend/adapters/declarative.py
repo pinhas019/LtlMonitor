@@ -176,6 +176,7 @@ class DeclarativeAdapter(SensorAdapter):
                 "samples_this_tick": n,
                 "refreshed": src.id in refreshed,
                 "dropped": self._dropped[src.id],
+                "tracked": bool(src.tracked),
             }
         return health
 

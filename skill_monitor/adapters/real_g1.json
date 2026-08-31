@@ -78,7 +78,7 @@
           }
         }
       ],
-      "expected_hz": 10.0
+      "expected_hz": 500.0
     },
     {
       "id": "goal",
@@ -129,7 +129,7 @@
           }
         }
       ],
-      "expected_hz": 10.0
+      "expected_hz": 5.0
     },
     {
       "id": "status",
@@ -197,7 +197,7 @@
       "id": "camera",
       "topic": "/depth_anything/color_image",
       "type": "sensor_msgs/msg/Image",
-      "expected_hz": 10.0,
+      "expected_hz": 20.0,
       "max_age_s": 5.0,
       "required": false,
       "tracked": false,

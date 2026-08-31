@@ -8,10 +8,17 @@ FROM ros:humble
 
 WORKDIR /app
 
-# No apt layer: std_msgs/String and rclpy are in ros-base, and everything else this
-# service needs (http.server, hashlib, struct) is the standard library. The WebSocket
-# stream is ~30 lines of RFC 6455 framing in clock_node.py rather than a pip dependency
-# in every tier's image.
+# std_msgs/String and rclpy are in ros-base, and everything else this service needs
+# (http.server, hashlib, struct) is the standard library. The WebSocket stream is ~30
+# lines of RFC 6455 framing in clock_node.py rather than a pip dependency in every
+# tier's image.
+#
+# The one package that is not optional: rmw_cyclonedds_cpp. Stock ros:humble ships only
+# rmw_fastrtps_cpp, and the robot's own stack runs CycloneDDS -- a tick published on the
+# wrong RMW is a tick nothing on that graph advances on. The clock needs it for exactly
+# the same reason the evaluator does; see deploy/Dockerfile.evaluator.
+RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp && \
+    rm -rf /var/lib/apt/lists/*
 COPY skill_monitor/ ./skill_monitor/
 COPY pyproject.toml ./
 

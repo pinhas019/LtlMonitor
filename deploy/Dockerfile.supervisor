@@ -5,6 +5,13 @@ FROM ros:humble
 
 WORKDIR /app
 
+# The one package it does need: the stack's compose sets RMW_IMPLEMENTATION to match
+# the robot's CycloneDDS for ALL of its services, and stock ros:humble ships only
+# rmw_fastrtps_cpp. Without it rcl refuses to construct a node and this restart-loops
+# -- so every image the robot compose can start carries the RMW its environment names.
+RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY skill_monitor/ ./skill_monitor/
 COPY pyproject.toml ./
 

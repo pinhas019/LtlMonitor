@@ -29,6 +29,14 @@ FROM ros:humble
 
 WORKDIR /app
 
+# The one apt layer, and it is not optional: the gateway is a DDS subscriber like any
+# other node, so it needs the SAME RMW as the graph it proxies. Stock ros:humble ships
+# only rmw_fastrtps_cpp; the robot tier runs CycloneDDS. Mismatched, this serves an
+# empty /api/monitors against a perfectly healthy robot -- and when RMW_IMPLEMENTATION
+# names an RMW that is absent, rcl refuses to construct a node at all.
+RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp && \
+    rm -rf /var/lib/apt/lists/*
+
 # Nothing to pip install. The HTTP server, the WebSocket framing (RFC 6455) and the
 # clock proxy are all stdlib -- see pyproject.toml, which deliberately declares no
 # install_requires. A websocket dependency would buy async plumbing and

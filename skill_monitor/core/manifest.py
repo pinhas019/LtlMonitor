@@ -392,9 +392,22 @@ def normalize_observation(payload) -> Observation | None:
         health = payload.get("data_health")
         stale = ()
         if isinstance(health, dict):
+            # `tracked` decides, not `refreshed` alone. A source the descriptor declares
+            # `tracked: false` is one whose liveness deliberately is NOT monitored, and
+            # `/next_waypoint` shows the distinction is not academic: it is a SETPOINT,
+            # published when the planner produces one, so a robot holding its current
+            # waypoint publishes nothing and that is a perfectly healthy run. Treating
+            # every un-refreshed source as stale put "stale source" on the verdict pane
+            # of a working G1 -- for its idle waypoint and for a goal-matcher that was
+            # never started -- and dragged confidence down with it.
+            #
+            # Absent `tracked` reads as True, so a producer that sends data_health for
+            # tracked sources only keeps its old meaning.
             stale = tuple(sorted(
                 sid for sid, entry in health.items()
-                if isinstance(entry, dict) and not entry.get("refreshed", True)
+                if isinstance(entry, dict)
+                and entry.get("tracked", True)
+                and not entry.get("refreshed", True)
             ))
         aps = payload.get("ap_values")
         sensors = payload.get("sensors")
