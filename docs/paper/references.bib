@@ -1,0 +1,411 @@
+% references.bib — bibliography for the skill_monitor papers.
+%
+% STATUS MARKERS. Read these before citing anything from this file.
+%
+%   (no marker)  Fields taken from the paper itself or from a reference list in a
+%                paper that was read. Safe to cite.
+%   % VERIFY     Title, arXiv ID and date are from a database lookup; the author
+%                list was NOT confirmed. DO NOT SUBMIT with these unresolved —
+%                fetch the real entry from arXiv or DBLP first.
+%   % CLASSIC    Pre-2024, published at a venue, not arXiv-first. Cite the venue
+%                version from DBLP, not a preprint. Fields here are from memory
+%                and must be checked.
+%
+% Grouped as in docs/paper/reading_list.md.
+
+
+% =====================================================================
+% (i) Natural language -> temporal logic
+% =====================================================================
+
+% THE CLOSEST PRIOR WORK. Read in full before writing Paper A's intro.
+% Grounds every AP into a many-sorted system signature <T,P,C> via a hierarchical
+% BERT classifier; reports 95.5% grounded logical equivalence on VLTL-Bench.
+% Its limitations section concedes the signature is fixed at inference and that it
+% was evaluated on VLTL-Bench only. Neither holds for us: our grounding target is
+% the live adapter schema, our check is sound rather than learned, and we run on
+% hardware. Fields below confirmed against the PDF.
+@article{english2025ginsign,
+  title        = {{GinSign}: Grounding Natural Language Into System Signatures for
+                  Temporal Logic Translation},
+  author       = {English, William and Walker, Chase and Simon, Dominic and
+                  Ewetz, Rickard},
+  journal      = {arXiv preprint arXiv:2512.16770},
+  year         = {2025},
+  eprint       = {2512.16770},
+  archivePrefix= {arXiv},
+  primaryClass = {cs.CL},
+  note         = {University of Florida}
+}
+
+% Lang2LTL. Embedding-similarity grounding against a semantic map. The other
+% framework that does lifting + translation + grounding.
+% Fields cross-checked against GinSign's reference list.
+@inproceedings{liu2023lang2ltl,
+  title        = {Grounding Complex Natural Language Commands for Temporal Tasks
+                  in Unseen Environments},
+  author       = {Liu, Jason Xinyu and Yang, Ziyi and Idrees, Ifrah and
+                  Liang, Sam and Schornstein, Benjamin and Tellex, Stefanie and
+                  Shah, Ankit},
+  booktitle    = {Proceedings of the 7th Conference on Robot Learning (CoRL)},
+  series       = {Proceedings of Machine Learning Research},
+  volume       = {229},
+  pages        = {1084--1110},
+  year         = {2023},
+  publisher    = {PMLR},
+  eprint       = {2302.11649},
+  archivePrefix= {arXiv}
+}
+
+% NL2TL. The lifting-then-translation decomposition the field builds on.
+@inproceedings{chen2023nl2tl,
+  title        = {{NL2TL}: Transforming Natural Languages to Temporal Logics using
+                  Large Language Models},
+  author       = {Chen, Yongchao and Gandhi, Rujul and Zhang, Yang and Fan, Chuchu},
+  booktitle    = {Proceedings of the 2023 Conference on Empirical Methods in
+                  Natural Language Processing (EMNLP)},
+  year         = {2023},
+  eprint       = {2305.07766},
+  archivePrefix= {arXiv}
+}
+
+% nl2spec. Interactive resolution of sub-translations — the human-in-the-loop
+% alternative to our mechanical oracle. Contrast explicitly in Paper A.
+@inproceedings{cosler2023nl2spec,
+  title        = {nl2spec: Interactively Translating Unstructured Natural Language
+                  to Temporal Logics with Large Language Models},
+  author       = {Cosler, Matthias and Hahn, Christopher and Mendoza, Daniel and
+                  Schmitt, Frederik and Trippel, Caroline},
+  booktitle    = {Computer Aided Verification (CAV)},
+  pages        = {383--396},
+  year         = {2023},
+  publisher    = {Springer},
+  doi          = {10.1007/978-3-031-37703-7_18}
+}
+
+% NL2LTL. The template / few-shot baseline.
+@inproceedings{fuggitti2023nl2ltl,
+  title        = {{NL2LTL}: A Python Package for Converting Natural Language (NL)
+                  Instructions to Linear Temporal Logic (LTL) Formulas},
+  author       = {Fuggitti, Francesco and Chakraborti, Tathagata},
+  booktitle    = {AAAI Conference on Artificial Intelligence},
+  year         = {2023}
+}
+
+@inproceedings{hsiung2022lifted,
+  title        = {Generalizing to New Domains by Mapping Natural Language to
+                  Lifted {LTL}},
+  author       = {Hsiung, Eric and Mehta, Hiloni and Chu, Junchi and Liu, Xinyu and
+                  Patel, Roma and Tellex, Stefanie and Konidaris, George},
+  booktitle    = {IEEE International Conference on Robotics and Automation (ICRA)},
+  pages        = {3624--3630},
+  year         = {2022}
+}
+
+% VERIFY — author list not confirmed.
+@article{scpnl2tl2026,
+  title        = {{SCP-NL2TL}: Selective Conformal Prediction with Semantic
+                  Verification for Natural Language to Temporal Logic
+                  Specifications},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2608.05439},
+  year         = {2026},
+  eprint       = {2608.05439},
+  archivePrefix= {arXiv}
+}
+
+
+% =====================================================================
+% (ii) The verify-repair loop. NOT NOVEL — cite, do not claim.
+% =====================================================================
+
+% VERIFY — author list not confirmed.
+% Directly relevant to describer/generate_formulas.py's attempts=2.
+@article{verifyrepairstop2026,
+  title        = {Verify, Repair, Repeat, or Stop? Robust Stopping for Noisy
+                  Verify-Repair Loops in {LLM} Agents},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2607.17641},
+  year         = {2026},
+  eprint       = {2607.17641},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+% On the validation -> next-call interface. This is what our REPAIR_PROMPT
+% ("found by a mechanical check, not an opinion") is doing.
+@article{structuredfeedback2026,
+  title        = {Structured Feedback Improves Repair in an {LLM} Agent Loop},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2607.14167},
+  year         = {2026},
+  eprint       = {2607.14167},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+@article{skillforge2026,
+  title        = {{SkillForge}: Compositional Skill Synthesis with
+                  Verification-in-the-Loop for Generating Formally Verified
+                  {Dafny} Programs},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2608.29841},
+  year         = {2026},
+  eprint       = {2608.29841},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+@article{veriact2026,
+  title        = {{VeriAct}: Beyond Verifiability -- Agentic Synthesis of Correct
+                  and Complete Formal Specifications},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2604.00280},
+  year         = {2026},
+  eprint       = {2604.00280},
+  archivePrefix= {arXiv}
+}
+
+
+% =====================================================================
+% (iii) Runtime verification foundations
+% =====================================================================
+
+% CLASSIC — check fields against DBLP.
+% core/automata.py's MonitorStatus IS this paper's LTL3. Say so; do not present
+% three-valued monitoring as new. Also the monitorability discussion needed to
+% justify the UNDECIDED design in docs/clocking.md:165-198.
+@article{bauer2011runtime,
+  title        = {Runtime Verification for {LTL} and {TLTL}},
+  author       = {Bauer, Andreas and Leucker, Martin and Schallhart, Christian},
+  journal      = {ACM Transactions on Software Engineering and Methodology (TOSEM)},
+  volume       = {20},
+  number       = {4},
+  pages        = {14:1--14:64},
+  year         = {2011}
+}
+
+% CLASSIC — check which Spot paper to cite; there is a version-specific series.
+% Every automaton in core/automata.py comes from spot.translate(). Not citing the
+% backend is a red flag to any formal-methods reviewer.
+@inproceedings{duretlutz2022spot,
+  title        = {From {Spot} 2.0 to {Spot} 2.10: What's New?},
+  author       = {Duret-Lutz, Alexandre and Renault, Etienne and Colange, Maximilien
+                  and Renkin, Florian and Gbaguidi Aisse, Alexandre and
+                  Schlehuber-Caissier, Philipp and Medioni, Thomas and
+                  Martin, Antoine and Dubois, J{\'e}r{\^o}me and Gillard, Cl{\'e}ment
+                  and Lauko, Henrich},
+  booktitle    = {Computer Aided Verification (CAV)},
+  year         = {2022}
+}
+
+% VERIFY — author list not confirmed.
+@article{spotteaching2026,
+  title        = {Teaching {LTL} and $\omega$-automata with {Spot}},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2607.05907},
+  year         = {2026},
+  eprint       = {2607.05907},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed. Edinburgh / ANU.
+% For Paper B, if the finite-trace semantics argument needs to be rigorous.
+@article{ltlfiniteobs2024,
+  title        = {Semantics for Linear-time Temporal Logic with Finite Observations},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2411.14581},
+  year         = {2024},
+  eprint       = {2411.14581},
+  archivePrefix= {arXiv}
+}
+
+
+% =====================================================================
+% (iv) RV tools for robotics and CPS — the Paper B comparison table
+% =====================================================================
+
+% CLASSIC — check fields against DBLP.
+% The ROS-RV baseline a reviewer will name first.
+@inproceedings{ferrando2020rosmonitoring,
+  title        = {{ROSMonitoring}: A Runtime Verification Framework for {ROS}},
+  author       = {Ferrando, Angelo and Cardoso, Rafael C. and Fisher, Michael and
+                  Ancona, Davide and Franceschini, Luca and Mascardi, Viviana},
+  booktitle    = {Towards Autonomous Robotic Systems (TAROS)},
+  year         = {2020}
+}
+
+% VERIFY — author list not confirmed. AIT Austrian Institute of Technology,
+% Toyota Motor NA R&D. Closest tool comparison; also grounds the "why LTL and not
+% STL" paragraph Paper B owes the reader.
+@article{rtamt2025,
+  title        = {{RTAMT} -- Runtime Robustness Monitors with Application to {CPS}
+                  and Robotics},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2501.18608},
+  year         = {2025},
+  eprint       = {2501.18608},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+@article{reelay2026,
+  title        = {{Reelay}: Online Temporal Logic Monitoring Framework},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2604.22384},
+  year         = {2026},
+  eprint       = {2604.22384},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+% Direct architectural comparison for Paper C's two-tier deployment.
+@article{saferos2025,
+  title        = {{Safe-ROS}: An Architecture for Autonomous Robots in
+                  Safety-Critical Domains},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2511.14433},
+  year         = {2025},
+  eprint       = {2511.14433},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+% core/automata.py's MultiMonitor runs one automaton per formula rather than a
+% product automaton. This is the paper that discusses that trade-off.
+@article{multiproperty2026,
+  title        = {Multi-Property Temporal Logic Monitoring},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2605.13668},
+  year         = {2026},
+  eprint       = {2605.13668},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+% A coverage-limits argument to pre-empt rather than be hit with.
+@article{whymonitorsfail2026,
+  title        = {Why Formal Monitors Fail: Attack Distribution Entropy as a
+                  Coverage Bound for {LTL}-Based {LLM} Agent Safety},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2608.01388},
+  year         = {2026},
+  eprint       = {2608.01388},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+% Closest work to our CLIP-based visually_at_goal AP: temporal logic over
+% perceptual embeddings rather than low-dimensional state.
+@article{embeddingtl2026,
+  title        = {Runtime Monitoring of Perception-Based Autonomous Systems via
+                  Embedding Temporal Logic},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2605.12651},
+  year         = {2026},
+  eprint       = {2605.12651},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+% Shares our title-space ("skill" + "runtime assurance") in the LLM-agent domain
+% rather than robotics. Distinguish in one sentence so a reviewer does not.
+@article{skillsentry2026,
+  title        = {{SkillSentry}: Reliable Skill Execution for {LLM} Agents via
+                  Runtime Assurance},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2608.09253},
+  year         = {2026},
+  eprint       = {2608.09253},
+  archivePrefix= {arXiv}
+}
+
+
+% =====================================================================
+% (v) The contrast class: learned failure detection
+% =====================================================================
+% Paper C needs one paragraph answering "VLMs detect robot failures now, why do I
+% need a spec?". Argue interpretability, auditability and zero training data —
+% NOT accuracy, which is not a fight worth picking.
+
+% VERIFY — author list not confirmed.
+@article{foresight2026,
+  title        = {Foresight: Failure Detection for Long-Horizon Robotic
+                  Manipulation with Action-Conditioned World Model Latents},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2606.23085},
+  year         = {2026},
+  eprint       = {2606.23085},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed. UW / NTU / AI2 / CFAR A*STAR.
+@article{failsafe2025,
+  title        = {{FailSafe}: Reasoning and Recovery from Failures in
+                  Vision-Language-Action Models},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2510.01642},
+  year         = {2025},
+  eprint       = {2510.01642},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+@article{patch2026,
+  title        = {{PATCH}: Action-Chunk-Conditioned Latent Patch Innovation
+                  Monitoring for Robot Manipulation},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2606.16690},
+  year         = {2026},
+  eprint       = {2606.16690},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+@article{actprobe2026,
+  title        = {{ActProbe}: Action-Space Probe for Early Failure Detection of
+                  Generative Robot Policies},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2606.08508},
+  year         = {2026},
+  eprint       = {2606.08508},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+@article{vlafail2026,
+  title        = {{VLA-FAIL}: Efficient Task Failure Detection for Finetuned
+                  Vision-Language-Action Models},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2606.21386},
+  year         = {2026},
+  eprint       = {2606.21386},
+  archivePrefix= {arXiv}
+}
+
+
+% =====================================================================
+% (vi) Surveys, for the introductions
+% =====================================================================
+
+% VERIFY — author list not confirmed. Manchester / Nottingham / NMBU.
+@article{fmras2025survey,
+  title        = {Revisiting Formal Methods for Autonomous Robots: A Structured
+                  Survey},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2509.20488},
+  year         = {2025},
+  eprint       = {2509.20488},
+  archivePrefix= {arXiv}
+}
+
+% VERIFY — author list not confirmed.
+@article{tlsynthesis2026survey,
+  title        = {Temporal Logics and Formal Synthesis for Robot Planning and
+                  Control},
+  author       = {TODO},
+  journal      = {arXiv preprint arXiv:2606.21438},
+  year         = {2026},
+  eprint       = {2606.21438},
+  archivePrefix= {arXiv}
+}
