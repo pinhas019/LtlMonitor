@@ -71,16 +71,26 @@
 
 % nl2spec. Interactive resolution of sub-translations — the human-in-the-loop
 % alternative to our mechanical oracle. Contrast explicitly in Paper A.
+% FULLY VERIFIED. DOI resolves; every field including the author list checked.
+% Their Algorithm 1's loop condition is literally `while user not approves` —
+% there is NO mechanical termination criterion, which is the sharpest one-line
+% contrast in this bibliography.
 @inproceedings{cosler2023nl2spec,
   title        = {nl2spec: Interactively Translating Unstructured Natural Language
                   to Temporal Logics with Large Language Models},
   author       = {Cosler, Matthias and Hahn, Christopher and Mendoza, Daniel and
                   Schmitt, Frederik and Trippel, Caroline},
-  booktitle    = {Computer Aided Verification (CAV)},
+  booktitle    = {Computer Aided Verification (CAV), Part {II}},
+  series       = {Lecture Notes in Computer Science},
+  volume       = {13965},
   pages        = {383--396},
   year         = {2023},
+  address      = {Paris, France},
   publisher    = {Springer},
-  doi          = {10.1007/978-3-031-37703-7_18}
+  doi          = {10.1007/978-3-031-37703-7_18},
+  eprint       = {2303.04864},
+  archivePrefix= {arXiv},
+  note         = {arXiv pagination differs from the camera-ready}
 }
 
 % NL2LTL. The template / few-shot baseline.
