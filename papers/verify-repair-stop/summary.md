@@ -157,3 +157,191 @@ Stated by the authors, plus ones visible from the tables:
   across rounds), and does not dominate no-repair.
 - Every result is on a **stochastic LLM verifier or PRM**. No setting in the paper uses a
   deterministic/sound checker. (See section 6.)
+
+---
+
+## 6. For skill_monitor -- E1 DESIGN VERDICT
+
+Context: `skill_monitor/describer/generate_formulas.py::generate()` runs
+`generate -> spec_contract.validate -> repair -> validate` with `attempts: int = 2`, returning
+`(best_spec, surviving_problems)` and early-exiting the moment `problems` is empty.
+`skill_monitor/core/spec_contract.py` is a mechanical static check: it extracts the `True when <expr>`
+rule from each AP description and confirms every identifier is a declared sensor key.
+
+### 6.1 Their formal setting, and how much survives a sound verifier
+
+Their setting **does** assume a noisy verifier -- it is load-bearing, not incidental. `rho0` and
+`rho1` are two of the four parameters; M = 8 *repeated stochastic* verification queries per round are
+the only input to the belief filter; the binomial-mixture EM exists solely because acceptance counts
+are random; Youden's J, Proposition 1, VRR-Guard's Lemma 1, and the entire RQ3/RQ4 half of the paper
+are all statements about verifier noise. Every one of the eight evaluated settings uses an LLM judge,
+an LLM self-judge, a PRM, or (BFCL multi-turn) an executor. **No setting resembles a sound static
+check.**
+
+Map `spec_contract` onto their parameters, and split by what "validity" means:
+
+**(A) Validity = "every sensor key is declared."** Then `rho1 = 0` exactly (the check reports a key
+only when it is genuinely undeclared -- a real NameError at runtime) and `rho0 = 0` for this property,
+so `J = 1`, the best possible corner of their space. Three consequences:
+
+- **Belief filtering is degenerate and the calibration machinery is inapplicable.** With a
+  deterministic verifier, all M votes agree, so `S_k` is in `{0, M}` and repeated querying carries zero
+  extra information. The binomial-mixture EM has no mixture to separate. VRR-Stop's estimator, its
+  <=300 labelled transitions for rho, its sample-complexity bound, and the whole RQ3 identifiability
+  analysis have nothing to estimate. **This is the largest single block of the paper that does not
+  transfer.**
+- **Their headline failure mode is structurally impossible here.** Figure 1's disaster is: valid plan
+  -> *false reject* -> damaging repair -> *false accept*. With rho1 = 0 the first arrow cannot fire.
+  `generate()` never repairs a spec that passed. The 55%-of-correct-plans-damaged statistic is driven
+  by a loop that repairs plans it should have committed; that pathway is closed.
+- **Their own rule then reduces to what is already implemented.** On a reported problem, `b_k = 0`, so
+  `G_k = (1-0)alpha - 0*beta = alpha > 0`: one more repair round is *always* worth it, whatever beta
+  is, because you cannot damage a plan already known to be invalid. Their stopping rule degenerates to
+  "repair until it passes or the budget runs out" -- precisely `generate()`'s early exit. Under
+  interpretation (A) the paper's contribution collapses to something the code already does.
+
+**(B) Validity = "the spec is actually the right monitor" (the ICRA-relevant sense).** Then the
+picture inverts and the paper bites hard. `spec_contract` checks *one* property; it does not check
+formula semantics, phase structure, or whether an AP means what it should. So **`rho0 > 0` and
+probably large**: a spec that passes `validate()` can be semantically wrong and will be committed with
+zero problems. Meanwhile the repairer is an LLM rewriting the *whole* JSON object -- `REPAIR_PROMPT`'s
+plea to "Keep every atomic proposition, formula and phase that was not named above exactly as it was"
+is an explicit admission that **`beta > 0`**. And the collateral damage lands exactly in the blind
+spot: break a temporal operator while fixing a key name, and the contract check waves it through.
+
+So the honest statement is: **the paper's specific machinery (belief filtering, EM calibration,
+J-based identifiability, VRR-Guard) does not transfer to skill_monitor at all** -- it is an estimator
+for a noise source that does not exist here. But **the paper's central mechanism does transfer**, in a
+sharper form than in the paper itself. `b* = alpha/(alpha+beta)` "depends only on the repairer's alpha
+and beta; verifier noise does not move the boundary." skill_monitor has a perfect verifier for a
+narrow property and a noisy repairer that operates on a much wider object. That is the paper's `beta`
+risk with the paper's detection mechanism (a discriminating verifier) *absent for the damaged
+dimension*. Silent damage is not merely possible here -- it is undetectable by the current loop.
+
+### 6.2 Stopping rules compared, and what the evidence favours
+
+Compared: no-repair; fixed-K (K = 1, 3, 5, standing in for Self-Refine / Reflexion / CRITIC / SCoRe);
+majority stopping (`S_k > M/2`); ConfStop-tau (`S_k/M >= tau_conf`); accepted-first; last-accepted;
+verifier-best-of-trajectory; VRR-Stop; VRR-Guard; plus TPM and hindsight best-round as non-deployable
+diagnostics.
+
+The evidence: **fixed-K is the worst deployable family in every stressed setting** (Table 6: 0.246 /
+0.122 / 0.116 for K = 1/3/5, versus 0.700 for doing nothing), and Fig. 10 calls it "a dominated slide
+that pays more rounds for less validity." VRR-Stop wins where calibration holds; VRR-Guard wins where
+it fails. **But note the quieter result: no-repair scores 0.700 and VRR-Stop 0.722, a +2.2 pp gap
+whose CI crosses zero.** In the paper's headline setting the sophisticated rule is not statistically
+distinguishable from never repairing. What it robustly beats is *fixed-K*, and the stress settings are
+constructed so that repair is poisoned. Read this as "fixed-K is fragile", not "adaptive stopping is
+strong".
+
+### 6.3 Does anything bear on k = 2 vs k = 3, or on adaptivity?
+
+**Nothing in this paper justifies k = 2.** The `K* = 2` in Figure 4 is an artifact of *where the
+authors chose to inject the perturbation* (round 3). It is a coincidence of experimental design, and
+citing it as support for `attempts=2` would be a misreading that a reviewer could catch. Do not do it.
+
+What *does* bear on the question:
+
+- **Diminishing returns per round, measured.** In their *favorable* setting -- the closest analogue to
+  a working skill_monitor loop -- per-round repair success falls from **0.415 at round 1 to 0.032 at
+  round 5**. If that shape holds, rounds 3+ buy almost nothing. This is the strongest available
+  *argument* for a small k, but it is an argument from their data, not a result about your system.
+- **Their Fig. 7 is literally the E1 plot.** Its caption: "Round 0 equals the no-repair baseline and
+  round k equals the fixed-budget value Fixed K=k, so each curve traces the full path between the two
+  extremes." That is a directly citable precedent for presenting E1 as a k-sweep including k = 0.
+- **Their thesis is that the right k is data-dependent** -- `b* = alpha/(alpha+beta)` varies per
+  setting, and their eight settings range from monotone-improving to total collapse. So yes: *fixed-k
+  is systematically the wrong shape of rule* whenever beta is non-negligible. Whether beta is
+  non-negligible for skill_monitor is unmeasured (**not verified**) and is the thing E1 should find
+  out.
+- **Adaptive stopping in their sense is not implementable here.** VRR-Stop needs stochastic verifier
+  votes to filter and <=300 labelled alpha/beta transitions to calibrate. You have neither, and the
+  first is unobtainable in principle from a deterministic check.
+
+### 6.4 Verdict
+
+**Recommend (b): sweep k in {0, 1, 2, 3, 4} and report a convergence curve.** Not (a), not (c).
+
+- **Not (a).** `attempts=2` cannot be defended by citing this paper. The paper contains no result that
+  selects k = 2, and its actual thesis is that fixed-k is the fragile choice. Citing it as
+  justification would be worse than citing nothing.
+- **Not (c).** An adaptive rule in this paper's sense requires the noise source you do not have. And
+  under the narrow reading of validity, your loop's `if not problems: return` **already is** the
+  optimal adaptive rule their analysis prescribes (`b_k = 0` implies `G_k = alpha > 0` implies always
+  repair; pass implies commit). Building VRR-Stop here would be re-deriving code you have shipped.
+- **Do (b).** The sweep converts an unjustified constant into a measured curve, kills the reviewer
+  question outright, and -- crucially -- is the only way to learn your own alpha and per-round decay.
+  Include **k = 0** (no-repair): it is the paper's most informative baseline and it is free.
+
+**Cost.** `attempts` is already a keyword argument, so the sweep itself is nearly free; the work is
+instrumentation, because `generate()` currently discards the per-attempt trajectory and returns only
+the final `(spec, problems)`.
+
+| Task | Hours |
+|---|---|
+| Emit a per-attempt trajectory from `generate()` (optional `trace` out-param or a returned list of `(attempt, spec, problems)`), preserving the existing 2-tuple return so no caller breaks | 1.5-2 |
+| E1 harness: loop k in {0,1,2,3,4} over the spec corpus, log validity-at-attempt-k, cache LLM calls so one trajectory serves every k (a k=4 run *is* the k in {0..4} data -- replay, do not re-query) | 2-3 |
+| Convergence plot + one table row per k, in Fig. 7's format | 1-1.5 |
+| **Total for the recommendation** | **~5-7 h** |
+
+**One stretch column, decide by cost.** The paper's real transferable warning is *silent damage*: the
+repairer breaks something `spec_contract` cannot see. Detecting it needs a second, independent
+correctness label per spec (semantic diff against a reference, or a held-out behavioural test), which
+is a different and much larger job -- **realistically 1-2 days**, plus label design. With 13 days to
+the 15 Sept deadline, do **not** attempt the full beta measurement. A cheap ~2-hour proxy that
+captures most of the value: for every repaired spec, **structurally diff the repaired JSON against the
+pre-repair JSON and count edits outside the APs named in the problem list.** That yields a "collateral
+edit rate" -- a directly citable lower bound on beta's opportunity to act, at negligible cost, and it
+makes the `REPAIR_PROMPT` instruction auditable rather than aspirational. If that rate is near zero,
+the paper's core risk demonstrably does not apply to skill_monitor, and you can say so in the paper.
+If it is not near zero, you have found something worth a paragraph.
+
+**Bottom line for the 3-days-from-now start: change `attempts` from a hard-coded intuition into E1's
+independent variable. Budget ~6 hours. Add the collateral-edit-rate counter (~2 h) if the schedule
+allows. Cite this paper for the *shape* of the argument -- that fixed-k is unjustified and that a
+noisy repairer can damage what the verifier cannot see -- never for the number 2.**
+
+---
+
+## 7. Check yourself
+
+**Q1. Why does the stopping boundary `b* = alpha/(alpha+beta)` not contain rho0 or rho1?**
+Because `b*` is the fixed point of the *true-state* dynamics
+`Q_{t+1} = Q_t(1-beta) + (1-Q_t)alpha`, which is driven entirely by the repairer. Verifier noise never
+moves the boundary; it only corrupts your estimate of *where you are* relative to it (through the
+posterior `b_k`), i.e. whether the comparison is reliable. This is exactly why a perfect verifier does
+not make a damaging repairer safe.
+
+**Q2. Llama-3-8B had a decision margin of ~0.74 -- large -- yet VRR-Stop collapsed to 0.223. Mistral
+had a parameter error of Delta_rho0 = -0.66 -- huge -- yet landed within 0.3 pp of TPM. Reconcile.**
+Reliability depends on `J` *and* `Delta` jointly, not on error magnitude. Llama's J = 0.03 flattens the
+binomial-mixture EM likelihood surface, so the posterior `b_k` cannot be located at all and the gain
+*sign* flips regardless of margin -- near-zero J defeats even a large margin. Mistral's error was large
+but did not push `G_k` across zero, so the action was unchanged. The lesson the paper states
+explicitly: calibration quality should be measured by whether the decision sign flips, not by
+parameter error.
+
+**Q3. skill_monitor's verifier is sound. Does that make its verify-repair loop safe from this paper's
+failure mode?**
+No -- it closes one arrow and leaves the other open. Soundness gives rho1 = 0, so a passing spec is
+never falsely rejected and never gets a needless repair; the paper's Figure 1 disaster cannot start.
+But the check covers only "sensor keys are declared", while the repairer rewrites the entire spec.
+Damage to formulas, phases, or AP semantics (beta > 0) is invisible to the check and will be committed
+with zero reported problems -- false acceptance in the sense that matters. The verifier is sound for a
+narrow property, not complete for validity.
+
+**Q4. Under the paper's own criterion with a sound verifier, what does `G_k` evaluate to when the
+contract check reports a problem, and what stopping rule does that imply?**
+Taking validity as "passes the contract", a reported problem means `b_k = 0` with certainty, so
+`G_k = (1-0)alpha - 0*beta = alpha > 0` for tau = 0. Repair is always worthwhile, because a plan
+already known invalid cannot be damaged. The prescribed rule is therefore "repair until it passes or
+the budget is exhausted" -- which is exactly the early exit `generate()` already implements. Their
+machinery adds nothing under that reading; the risk lives entirely in the broader notion of validity
+the check does not cover.
+
+**Q5. Figure 4 shows an interior optimum at K* = 2. Why is this not evidence for `attempts=2`?**
+Because the peak is placed by the experimental construction, not discovered: the authors inject prompt
+mismatch **from round 3 onward** in that diagnostic. Validity rises through rounds 1-2 (repair
+completes drafts truncated by a 256-token budget) and collapses once the perturbation starts. Move the
+injection to round 5 and K* moves too. It is an artifact of the harness, and the paper's own point is
+that the optimal round is data-dependent -- the opposite of a defence of any fixed k.
