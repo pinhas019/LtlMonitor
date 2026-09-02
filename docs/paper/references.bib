@@ -203,9 +203,13 @@
   year         = {2011}
 }
 
-% CLASSIC — check which Spot paper to cite; there is a version-specific series.
-% Every automaton in core/automata.py comes from spot.translate(). Not citing the
-% backend is a red flag to any formal-methods reviewer.
+% VERIFIED against Spot's own doc/org/citing.org, which is the file that generates
+% their citing page. THIS IS THE ONE TO CITE — it is their "Generic reference".
+% The ATVA'16 "Spot 2.0" paper that search engines surface first, and that almost
+% every robotics/RV paper cites, is filed by the maintainers under OBSOLETE
+% REFERENCES. Their standing request: "Tools evolve while published papers don't.
+% Please always specify the version of Spot ... you are using."
+% Their own bib key is duret.22.cav; kept as duretlutz2022spot for continuity.
 @inproceedings{duretlutz2022spot,
   title        = {From {Spot} 2.0 to {Spot} 2.10: What's New?},
   author       = {Duret-Lutz, Alexandre and Renault, Etienne and Colange, Maximilien
@@ -214,7 +218,11 @@
                   Martin, Antoine and Dubois, J{\'e}r{\^o}me and Gillard, Cl{\'e}ment
                   and Lauko, Henrich},
   booktitle    = {Computer Aided Verification (CAV)},
-  year         = {2022}
+  series       = {Lecture Notes in Computer Science},
+  volume       = {13372},
+  pages        = {174--187},
+  year         = {2022},
+  publisher    = {Springer}
 }
 
 % VERIFY — author list not confirmed.

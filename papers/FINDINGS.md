@@ -25,10 +25,16 @@ prefixes at all** — no finite observation can establish that `p` will never ho
 yet any Büchi automaton for it sits in accepting states infinitely often along
 `(¬p)^ω`. The monitor reports `ACCEPTED` where LTL3 says `?`.
 
-**This is live for us.** Both named failure modes in `specs/formulas_g1.json` are
-that shape: `collision_imminent = G(!collision_risk)` and `fell_over = G(upright)`.
-Whenever currently satisfied they read as `ACCEPTED` — "this safety property has
-been established" — when the truth is "nothing has gone wrong yet."
+**This is live for us, and the demonstration is one line.**
+`LTLMonitor("G(!obstacle)")` reports `ACCEPTED` **before a single observation**,
+and `MultiMonitor.all_accepted()` returns `True` on tick 0 for an all-safety spec.
+Both named failure modes in `specs/formulas_g1.json` are that shape:
+`collision_imminent = G(!collision_risk)` and `fell_over = G(upright)`.
+
+It has stayed invisible because the guarantee formulas — the nested-`F` family —
+translate to *terminal* automata, where an accepting state really is irreversible
+and `ACCEPTED` really does mean what the docstring says. The safety modes are the
+ones it is wrong for, and they are the ones that matter.
 
 Deciding ⊤ is a universality question and one automaton cannot answer it. Bauer et
 al. use the product `Ã_φ × Ã_¬φ` (Lemma 2.5 / Def. 2.6). Esparza & Fischer's
@@ -69,8 +75,18 @@ deterministic automaton — none exists for `FGp`. When Spot returns a
 nondeterministic one, `_find_successor` (`:380`) silently takes the first matching
 edge and the verdict is unsound. Nothing asserts otherwise.
 
-Add the assertion. Also worth knowing before building anything: Spot already ships
-`ltl2tgba -M -D`, a bad-prefix monitor (Tabakov & Vardi, RV'10).
+`spot.translate`'s own docstring: "Keep in mind that 'Deterministic' expresses
+just a preference that may not be satisfied." The theory boundary is exact — per
+Spot's `hierarchy.org`, a deterministic Büchi automaton exists **iff the formula
+is a recurrence property or below**. Every formula in the current specs qualifies,
+which is why nothing has broken yet. But the specs are LLM-generated, and one
+fairness-shaped formula (`GF a -> GF b`) is enough. Spot then returns a
+nondeterministic BA **silently** — no exception, no warning — `_find_successor`
+starts picking an arbitrary branch, and the line-149 assert stays quiet because
+completeness still holds.
+
+Fix is two lines: `spot.is_deterministic()` and `spot.is_complete()` at
+construction, raising with the formula named.
 
 ## 3b. Missing APs default to `False`, which is fail-open
 
@@ -111,6 +127,12 @@ keeps *n* parallel automata at runtime.
 
 Do **not** cite that paper for semantic equivalence of the two strategies. It does
 not claim it, and in their past-time setting it is false for a different reason.
+
+## 3d. `_get_edge_aps` rebuilds its map per edge, per call, on the hot path
+
+Minor, and performance only. `_get_edge_aps` reconstructs `var_to_ap` for every
+edge on every call, and it is called each tick from `get_required_aps()`. Build it
+once at construction.
 
 ## 4. Unsatisfiable specs pass the oracle
 
