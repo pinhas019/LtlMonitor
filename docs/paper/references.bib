@@ -94,12 +94,20 @@
 }
 
 % NL2LTL. The template / few-shot baseline.
+% RESOLVED. Demo track, confirmed two ways: vol. 37 no. 13 is the AAAI-23 special
+% programs / demonstrations volume, and the authors' own BibTeX in the repo
+% annotates it "System Demonstration." NO arXiv ID EXISTS — searched three ways.
 @inproceedings{fuggitti2023nl2ltl,
   title        = {{NL2LTL}: A Python Package for Converting Natural Language (NL)
                   Instructions to Linear Temporal Logic (LTL) Formulas},
   author       = {Fuggitti, Francesco and Chakraborti, Tathagata},
   booktitle    = {AAAI Conference on Artificial Intelligence},
-  year         = {2023}
+  volume       = {37},
+  number       = {13},
+  pages        = {16428--16430},
+  year         = {2023},
+  doi          = {10.1609/aaai.v37i13.27068},
+  note         = {System demonstration}
 }
 
 @inproceedings{hsiung2022lifted,
@@ -276,14 +284,27 @@
   archivePrefix= {arXiv}
 }
 
-% VERIFY — author list not confirmed.
-% Direct architectural comparison for Paper C's two-tier deployment.
-@article{saferos2025,
+% RESOLVED, and it is peer-reviewed — FMAS 2025, not a bare preprint.
+% NOT MERELY AN ARCHITECTURAL COMPARISON: on enforcement it is a competitor. Their
+% cmd_vel_interceptor sits IN the datapath with a Dafny proof that stop_requested
+% implies a zero Twist, so the "it assumes a cooperative planner" argument does not
+% land against them. Out-publishing does not stop commands, it outnumbers them.
+% The pushback that does land is in papers/safe-ros/summary.md: the proof is of a
+% Dafny re-model rather than the Python node, and it assumes a cooperative graph
+% (correct remapping, no bypassing publisher) that is never stated or tested.
+% Their SIF reads only raw /scan and never the planner's state — which is exactly
+% the independence property architecture.md admits we lack until P12 lands.
+% Determinism and replay are absent from the paper entirely; that is the clean gap.
+@inproceedings{saferos2025,
   title        = {{Safe-ROS}: An Architecture for Autonomous Robots in
                   Safety-Critical Domains},
-  author       = {TODO},
-  journal      = {arXiv preprint arXiv:2511.14433},
+  author       = {Benjumea, Diana C. and Farrell, Marie and Dennis, Louise A.},
+  booktitle    = {Formal Methods for Autonomous Systems (FMAS)},
+  series       = {Electronic Proceedings in Theoretical Computer Science},
+  volume       = {436},
+  pages        = {48--68},
   year         = {2025},
+  doi          = {10.4204/EPTCS.436.6},
   eprint       = {2511.14433},
   archivePrefix= {arXiv}
 }
@@ -312,17 +333,27 @@
   archivePrefix= {arXiv}
 }
 
-% VERIFY — author list not confirmed.
-% Closest work to our CLIP-based visually_at_goal AP: temporal logic over
-% perceptual embeddings rather than low-dimensional state.
+% RESOLVED. Authors read off page 1 with emails. Note Parv Kapoor and Ashish
+% Kapoor are different people at different institutions.
+% THE EARLIER NOTE HERE HAD THIS BACKWARDS. ETL still thresholds — their Def. 6
+% is a Boolean and Def. 8 is plain LTL. What they attack is the intermediate
+% low-dimensional state variable and the bespoke detector built to produce it.
+% Their predicate form (Z_target, d, eps, cmp, agg) with agg=min, d=cosine and
+% targets = encoded reference images IS `visually_at_goal`, which is therefore
+% the one AP already doing what this paper recommends. The APs that ARE instances
+% of the critique are `collision_risk` and the five planner-self-report APs at
+% RESUME.md:259. Our real exposure is that 0.75 is uncalibrated; their section 4
+% gives two calibration methods for exactly that.
 @article{embeddingtl2026,
   title        = {Runtime Monitoring of Perception-Based Autonomous Systems via
                   Embedding Temporal Logic},
-  author       = {TODO},
+  author       = {Kapoor, Parv and Hammer, Abigail and Kapoor, Ashish and
+                  Leung, Karen and Kang, Eunsuk},
   journal      = {arXiv preprint arXiv:2605.12651},
   year         = {2026},
   eprint       = {2605.12651},
-  archivePrefix= {arXiv}
+  archivePrefix= {arXiv},
+  primaryClass = {cs.LG}
 }
 
 % VERIFY — author list not confirmed.
@@ -406,15 +437,46 @@
 % (vi) Surveys, for the introductions
 % =====================================================================
 
-% VERIFY — author list not confirmed. Manchester / Nottingham / NMBU.
-@article{fmras2025survey,
+% RESOLVED, and it was wrong twice: the author list, and the entry type. This is
+% a 12-page TAROS 2025 paper presenting "initial results", not a long survey.
+% DO NOT CITE IT FOR: a hardware-vs-simulation count (there is none — deployment
+% is not a survey dimension), or for naming research gaps (there is no gaps
+% section; the "Requirements and Specifications" grand challenge is relayed from
+% Leahy et al. 2024, not their own finding).
+% DO CITE IT FOR: RV 24 vs model checking 130 of 181 papers; and the sharper one,
+% of the 65 papers pairing a state-transition model with temporal-logic properties
+% — exactly our pair — 58 verify by model checking.
+% Their 181-paper corpus is a citable Zenodo dataset, doi:10.5281/zenodo.15199605.
+@inproceedings{fmras2025survey,
   title        = {Revisiting Formal Methods for Autonomous Robots: A Structured
                   Survey},
-  author       = {TODO},
-  journal      = {arXiv preprint arXiv:2509.20488},
+  author       = {Azaiez, Atef and Anisi, David A. and Farrell, Marie and
+                  Luckcuck, Matt},
+  booktitle    = {Towards Autonomous Robotic Systems (TAROS)},
+  series       = {Lecture Notes in Computer Science},
+  volume       = {16045},
+  pages        = {338--352},
   year         = {2025},
+  address      = {York, UK},
+  publisher    = {Springer},
+  doi          = {10.1007/978-3-032-01486-3_26},
   eprint       = {2509.20488},
   archivePrefix= {arXiv}
+}
+
+% CLASSIC — check fields against DBLP before submitting.
+% THE CANONICAL SURVEY IN THIS AREA, and its absence from a formal-methods-for-
+% robotics bibliography is a visible red flag. Added because the TAROS survey
+% above cites it and nothing of its 27 references was in this file.
+@article{luckcuck2019survey,
+  title        = {Formal Specification and Verification of Autonomous Robotic
+                  Systems: A Survey},
+  author       = {Luckcuck, Matt and Farrell, Marie and Dennis, Louise A. and
+                  Dixon, Clare and Fisher, Michael},
+  journal      = {ACM Computing Surveys},
+  volume       = {52},
+  number       = {5},
+  year         = {2019}
 }
 
 % VERIFY — author list not confirmed.
