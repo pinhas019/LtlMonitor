@@ -37,6 +37,22 @@ restatement is the cleanest target: empty state → ⊥, universal state → ⊤
 Cheapest honest fix if the product is too much for now: rename the member, and
 correct the docstring to say what it actually tests.
 
+**A correction to the obvious fix.** Spot's dedicated monitor construction —
+`translate(f, 'monitor', 'det', 'complete', 'sbacc')` — looks like it subsumes
+this, and for safety formulas it does: `det` is *always* achievable there
+(determinising a finite automaton always works), and `complete` adds exactly the
+one rejecting sink `_find_sink_states()` already looks for. But **do not switch
+wholesale.** Spot's own docs: a monitor "recognizes the smallest safety property
+containing the input", so it "cannot be used to check for eventualities such as
+`F(a)`". The entire nested-`F` family — `F(mission_started && F(path_active &&
+...))`, which is the heart of the phase-tracking design and what
+`format_automaton()`'s state annotation is built around — would collapse to a
+single state and never report anything.
+
+So the shape of the fix is **per formula class**, not one construction for all:
+Spot monitors for the safety modes, the current Büchi path (with a corrected
+`ACCEPTED`) for the nested-`F` progress formulas.
+
 ## 2. `_find_sink_states` is sound but incomplete
 
 `core/automata.py:387` tests non-accepting **and** exactly one outgoing edge
