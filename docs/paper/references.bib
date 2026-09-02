@@ -479,13 +479,57 @@
   year         = {2019}
 }
 
-% VERIFY — author list not confirmed.
+% RESOLVED (KTH). Whether a journal or book-chapter version exists is NOT
+% verified — no DOI, venue footer or copyright line anywhere in the PDF.
+% USE IT FOR THE BOUNDARY, NOT FOR A GAP CLAIM. Its coverage of monitoring is not
+% thin, it is zero and measurably so: "runtime" appears 0 times, "monitor" once
+% and only inside a bibliography entry's title; shield, supervisory, LTL3,
+% three-valued, LTLf, finite trace all 0. But that silence is SCOPE — it is scoped
+% to "offline model-based formal synthesis" — so "robotics does not monitor" would
+% over-claim and fmras2025survey would contradict it.
+% The clean contrast: all three of their problems take a robot model in and return
+% a behaviour out. We invert both arrows. And in their 3.1.3 an unrealizable
+% specification is a synthesis failure to be repaired away; for us it is exactly
+% the case worth detecting.
 @article{tlsynthesis2026survey,
   title        = {Temporal Logics and Formal Synthesis for Robot Planning and
                   Control},
-  author       = {TODO},
+  author       = {Tumova, Jana and Verhagen, Joris and Vahs, Matti},
   journal      = {arXiv preprint arXiv:2606.21438},
   year         = {2026},
   eprint       = {2606.21438},
-  archivePrefix= {arXiv}
+  archivePrefix= {arXiv},
+  primaryClass = {cs.RO},
+  note         = {KTH Royal Institute of Technology}
 }
+
+
+% =====================================================================
+% TO ADD — identified as missing, NOT YET FETCHED
+% =====================================================================
+% Deliberately left as a list rather than half-invented entries. Fetch each from
+% DBLP before use; do not write any of these into a draft from this comment.
+%
+%   ConformalNL2LTL (Wang & Kantaros, 2025) — PRIORITY. The direct alternative to
+%     an LLM plus a sound oracle: conformal prediction over the translation
+%     instead. Pairs with scpnl2tl2026, and is a novelty threat to Paper A that
+%     nothing in this file currently covers.
+%   Maler & Nickovic (2004) — the root of both rtamt2025 and reelay2026, which are
+%     currently cited without their ancestor.
+%   Yang et al. (2024), "Safety chip" — LTL constraints on an LLM-driven robot
+%     agent. The closest foil for the intervention ladder.
+%   Fainekos (2011) — specification repair. Precedent for the verify-repair loop,
+%     and the source of the "unrealizable spec is a failure to repair away" stance
+%     we argue against.
+%   Shah et al. (2018) — specification acquisition from demonstrations. The
+%     non-LLM answer to where a spec comes from.
+%   Kress-Gazit et al. (2018) — peer-reviewed synthesis anchor; a better citation
+%     for the monitoring-vs-synthesis boundary than a preprint.
+%   Adam et al. (2024, CASE) — offline model checking to runtime verification on a
+%     real field robot. Closest prior art to our hardware claim.
+%   Leahy et al. (2024) — the correct home for a specification-acquisition
+%     motivation sentence (fmras2025survey relays it; do not cite the relay).
+%   Henzinger, Manna & Pnueli (1992), "What good are digital clocks?", ICALP —
+%     the principled defence of a fixed-period tick that docs/clocking.md argues
+%     from first principles.
+
