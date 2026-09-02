@@ -60,7 +60,9 @@ sound — and the deployment.
 - [ ] `duretlutz2022spot` — every automaton comes from `spot.translate()`. Not
       citing the backend is a red flag.
 - [ ] `rtamt2025` — closest tool comparison, and the source of the "why LTL and
-      not STL" paragraph we owe the reader.
+      not STL" paragraph we owe the reader. **Cite the STTT 2024 journal version, not
+      the arXiv preprint** — arXiv:2501.18608 is the accepted manuscript, and the key
+      saying 2025 is a misnomer.
 - [ ] `saferos2025` — architectural comparison for the two-tier deployment.
 - [ ] `ferrando2020rosmonitoring` — the ROS-RV baseline a reviewer names first.
 - [ ] `reelay2026` — for the tool table.
