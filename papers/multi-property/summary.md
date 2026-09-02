@@ -160,3 +160,285 @@ the relative multipliers are smaller with the fast binary feeder.
 8. Distributed monitoring over publish-subscribe networks and FPGA synthesis are future work only.
 
 ---
+
+## 6. For `skill_monitor`
+
+Files in scope: `/home/user/LtlMonitor/skill_monitor/core/automata.py` —
+`MultiMonitor` (line 416), `LTLMonitor.get_required_aps` (line 327),
+`LTLMonitor._find_sink_states` (line 387), `LTLMonitor._compute_status` (line 404).
+
+### Q1 — What the literature says about product vs. parallel
+
+**Terminology to adopt.** Call our setting **multi-property monitoring**, and the alternative
+**single-property monitoring** (Demir and Ulus's own words). Their Table I is the vocabulary
+table: *monitor structure* (one dedicated monitor vs. one shared monitor), *construction*
+(independent vs. unified), *computation topology* (tree vs. DAG), *computation reuse* (none
+vs. shared), *evaluation* (multiple passes vs. single pass), and **outputs (one per monitor
+vs. one per property)**. Note that "one output per property" appears as a *design requirement*
+of their unified monitor, not as an artefact of the naive baseline — they went to the trouble
+of keeping designated roots precisely so attribution survives sharing. That is our argument,
+made by someone else, in a venue a reviewer will accept.
+
+**The real trade, honestly stated.** There are three points on the axis, not two:
+
+| | one monitor per formula (`MultiMonitor` today) | one shared structure, per-property roots (LoomRV Multi) | one monolithic conjunction (Reelay-AND / a product automaton) |
+|---|---|---|---|
+| State cost | sum of component sizes, Σ\|Qᵢ\| | one deduplicated DAG | product, up to Π\|Qᵢ\| in the automaton setting *(standard automata theory; **not** measured in this paper)* |
+| Verdict attribution | **per formula, free** | **per formula, preserved by design** | **lost** — one verdict for the whole set |
+| Which formula's state to display | each monitor's own `current_state` | each root | a joint state that projects back only with extra bookkeeping |
+| Add / remove a formula | independent, at any time | compile-time only; schedule immutable after finalisation | full retranslation |
+| Redundant work | shared subformulas re-evaluated; trace ingested once per monitor if naive | eliminated | eliminated, but pays for the extra `∧` nodes |
+| Measured cost, 30 properties, dense, JSON | 9.63 s (LoomRV Seq) | **3.77 s** | 4.05 s (LoomRV-AND) |
+
+**Is anything *lost* by monitoring separately?** Per this paper: only computation — redundant
+subformula evaluation and redundant trace ingestion. It never claims a semantic loss, and in
+its past-time setting there is none. **In our future-time three-valued setting there *is* a
+possible loss, and the paper cannot tell us about it — see Q2.** Cite this paper for cost and
+attribution; never for semantic equivalence.
+
+**Two facts about our own design worth stating explicitly**, because a reviewer will otherwise
+assume we simply took the easy road:
+
+- Our `Σ|Qᵢ|` is genuinely small — a liveness formula plus two `G(...)` invariants are a
+  handful of states each — whereas a degeneralised product over the same set is where the
+  blowup risk lives. Put the actual number in the paper (`LTLMonitor.num_states()` gives it).
+- **Componentwise acceptance is strictly more informative than a single conjunction
+  automaton's acceptance.** `all_accepted()` is exactly the *generalized*-Büchi condition over
+  the component automata; translating `φ₁ ∧ φ₂ ∧ φ₃` into one Büchi automaton degeneralises
+  that condition into a rotating-counter construction, from which the individual components'
+  acceptance is no longer readable off the state. Keeping them apart preserves information
+  that a product destroys. That is a formal-methods argument, not just an engineering one.
+
+### Q2 — The correctness subtlety. Yes, there is one. Take it seriously.
+
+> Everything in this subsection is our own reasoning under LTL3 (Bauer, Leucker and
+> Schlingloff — `papers/ltl3-bauer/`). **The paper contains none of it** and cannot, for the
+> reason in Limitation 2. It has not been machine-checked; the counterexamples below are small
+> enough to confirm by hand or with Spot in ten minutes, and that should be done before
+> anything goes in the paper.
+
+Write `[u ⊨ φ]` for the LTL3 verdict on a finite prefix `u`: `⊤` if every infinite extension
+satisfies φ (a *good prefix*), `⊥` if no extension does (a *bad prefix*), `?` otherwise.
+
+**Result A — the good news composes exactly.**
+`[u ⊨ φ₁∧φ₂] = ⊤  ⟺  [u ⊨ φ₁] = ⊤ and [u ⊨ φ₂] = ⊤`.
+Proof: `∀w. uw ⊨ φ₁∧φ₂` iff `(∀w. uw ⊨ φ₁) ∧ (∀w. uw ⊨ φ₂)` — the universal quantifier
+distributes over the conjunction in the matrix. Both directions hold. **So conjunctive
+composition of ⊤ is sound and complete; an `all_accepted()`-style rule is exactly right.**
+
+**Result B — the bad news composes only one way.**
+`[u ⊨ φᵢ] = ⊥ for some i  ⟹  [u ⊨ φ₁∧φ₂] = ⊥`. **The converse is false.**
+So `any_violated()` is **sound** (we never raise a violation the conjunction would not also
+call a violation — no false alarms) but **incomplete** (the conjunction can be `⊥` while every
+component is still `?`). In Bauer–Leucker–Schlingloff's vocabulary this is a **loss of
+anticipation**: parallel monitors can report a violation *later than*, or *never* where, a
+joint monitor reports it immediately. This is exactly what a formal-methods reviewer will probe.
+
+**Counterexample 1 — safety × liveness, our actual spec shape.**
+Let `φ₁ = F g` (a liveness goal) and `φ₂ = G(h → G ¬g)` (a safety mode: once halted, never
+reach the goal). Take the one-step prefix `u = ⟨h true, g false⟩`.
+- `[u ⊨ φ₁] = ?` — `F g` has no bad prefix at all; some extension always contains `g`.
+- `[u ⊨ φ₂] = ?` — no bad prefix yet; the extension where `g` never occurs satisfies it.
+- `[u ⊨ φ₁∧φ₂] = ⊥` — every extension must contain `g` (φ₁) and must not (φ₂, after `h`).
+
+Two independent monitors sit at `INCONCLUSIVE` **forever**. A conjunction monitor reports
+`VIOLATED` immediately. This is not a delay; it is a permanent miss.
+
+**Counterexample 2 — both properties are pure safety, so "safety is fine" is not the escape.**
+`φ₁ = G(a → X b)`, `φ₂ = G(a → X ¬b)`, prefix `u = ⟨a⟩`. Neither is `⊥` on `u` (each has a
+satisfying extension), but `φ₁∧φ₂ ≡ G ¬a`, which *is* `⊥` on `u`. So the honest answer to
+"no for safety properties, yes otherwise" is **no — it can differ even when every formula is a
+safety property.** Here the delay is one step; with nesting or metric bounds it can be
+arbitrarily long.
+
+**So when *is* independent monitoring provably equivalent?** Three usable conditions:
+
+- **(S1) Disjoint atomic propositions.** If `AP(φᵢ) ∩ AP(φⱼ) = ∅` for all `i ≠ j`, independent
+  monitoring is *exactly* equivalent to joint monitoring on all three verdicts. Sketch: each
+  `φᵢ`'s truth depends only on its own APs, so witnessing extensions for the components merge
+  coordinate-wise into one common extension. **Cheap, syntactic, checkable at spec-load.**
+- **(S2) Pure state invariants.** If every formula is `G(ψ)` with `ψ` a Boolean combination of
+  *current-step* APs (no nesting, no `X`, no bounds), then `[u ⊨ G ψ] = ⊥` iff `ψ` fails at
+  some position of `u`, and `⊥` of the conjunction iff `⊥` of some conjunct. Exact.
+  **`G(!collision_risk)` and `G(upright)` are both of this shape, so those two together are
+  provably safe.** Our exposure is not there.
+- **(S3) Offline product-emptiness certificate — the recommendation.** The general condition is
+  decidable and cheap *once*, at spec-load time, off the control loop: build
+  `spot.product(a₁, …, a_n)` and check whether any reachable product state is **empty (no
+  accepting run from it) while every one of its component projections is non-empty**. If no
+  such state exists, parallel monitoring loses nothing for *this* specification set, and we can
+  say so with a certificate rather than a hope. If one exists, it is a concrete witness prefix
+  that a reviewer would otherwise construct for us. **This buys the product's completeness at
+  compile time while keeping n independent automata on the hot path — the best of both, and a
+  defensible contribution in its own right.**
+
+**Where `skill_monitor` is actually exposed.** Not `G(!collision_risk)` and `G(upright)` — S2
+covers them. The risk is the **liveness formula against a safety mode over shared APs**, and
+especially anything in the `TIMEOUT`/`PROGRESS` categories: a bounded-liveness obligation (the
+`timing_bounds` `max_steps` machinery in `format_automaton`'s state annotations) combined with a
+safety mode that forbids the very proposition the deadline requires. Concretely —
+`F[0,10] goal_reached` as a PROGRESS property plus `G(docked → G ¬goal_reached)` as a named
+safety mode: once `docked` holds the conjunction is dead, but both monitors keep reporting
+`INCONCLUSIVE` until the deadline elapses, and the PROGRESS fault fires ten steps late. Our
+specs are LLM-generated, so we cannot assume such interactions will never be written.
+
+**A second, unrelated issue found while reading `automata.py`** — flagged as an observation
+about our code, not a paper claim, and **not verified against a real Spot** (the docstring on
+`LTLMonitor.graph` states Spot is not installed on that host):
+
+- `_compute_status` (line 404) reports `ACCEPTED` whenever the current state is Büchi-accepting.
+  **That is not LTL3's ⊤.** `G(a)` after reading `a` sits in an accepting state, yet a later
+  `¬a` refutes it — the prefix is not a good prefix. The docstring already hedges ("the property
+  holds over the finite prefix observed so far"), but the paper must say so precisely or a
+  reviewer will call `ACCEPTED` a mislabelled ⊤. If we want the real ⊤ verdict, the test is an
+  *accepting sink* (a state whose residual language is universal), and by Result A
+  `all_accepted()` over accepting sinks is then exactly the LTL3 ⊤ of the conjunction — a clean,
+  citable statement.
+- `_find_sink_states` (line 387) recognises a violation sink **syntactically**: non-accepting,
+  exactly one outgoing edge, self-loop on `bddtrue`. This is *sound* (such a state truly cannot
+  accept) but potentially *incomplete*: a dead region spanning more than one state, or a dead
+  state whose self-loop edges were not merged into a single `bddtrue` edge, is missed, and the
+  monitor reports `INCONCLUSIVE` forever where it should report `VIOLATED`. Spot's postprocessing
+  usually collapses these (simulation-based merging makes all empty-language states equivalent,
+  and `merge_edges` ORs parallel edges), but **nothing in our code guarantees it and nothing
+  tests it against a real Spot.** The robust test is backward reachability: state `s` is dead iff
+  no accepting state is reachable from `s`. Worth replacing — it is a few lines, and it removes a
+  silent-miss failure mode from a safety monitor.
+
+### Q3 — Is there an optimisation worth adopting?
+
+**What does *not* transfer: the shared subformula DAG itself.** LoomRV's deduplication works
+because sequential-network monitors are *compositional over subformulas* — every subformula is a
+first-class node with its own state and update rule, so identical subformulas are literally
+identical objects to merge. `spot.translate()` is a whole-formula construction: the automaton
+for `G(!collision_risk)` exposes states and BDD edge conditions, not subformula nodes. There is
+nothing to hash and nothing to merge. **The paper's central technique is not available to an
+automaton-based monitor**, and we should say that plainly rather than gesture at it as future work.
+
+**What *does* transfer, and is already in our code.** Their discrete-time analysis is explicit
+that when node evaluation is cheap, the dominant win is **ingesting the trace once and fanning it
+out to every property** — they get 3.2× over their own sequential baseline at only 1.31× node
+compression, and attribute it to avoiding 10 separate initialisations and parses. That is exactly
+what `MultiMonitor.step()` does today: one shared `observation` dict, built once, handed to every
+`LTLMonitor`. **This paper is direct empirical support for the observation-sharing half of our
+design**, and that is a better use of the citation than the DAG.
+
+**Interaction with our per-state required-AP optimisation: bad fit, and in our favour.**
+LoomRV's execution model is **eager, unconditional and state-independent**: every node in the DAG
+is evaluated on every timestep in topological order, single pass, and all `n` atomic predicates
+`p₁…p_n` are supplied as inputs at every step (Fig. 3). There is no mechanism — and, given the
+statically sized arena and the immutable schedule, no easy place to add one — for skipping a
+predicate because nothing currently depends on it. Adopting the shared-DAG design would therefore
+**cost us `get_required_aps()`**, our most valuable optimisation precisely because some APs are
+evaluated by an LLM on a slow path. The two systems live in opposite cost regimes: LoomRV assumes
+AP valuations are free inputs and that node evaluation and memory traffic dominate; `skill_monitor`
+assumes AP evaluation dominates everything else by orders of magnitude. **Say this in the
+related-work paragraph — it converts "we did not do the clever thing" into "the clever thing
+optimises the wrong term for us."**
+
+Note that the pruning is *not* what puts us at risk in Q2. At a product state the required APs
+would be the union of what all components need at that joint state — the same set
+`MultiMonitor.get_required_aps()` computes. The pruning is orthogonal to the composition question.
+Two smaller cautions, both about our code rather than the paper:
+
+- A `VIOLATED` monitor returns `set()` and drops out of the union (line 335). Sound for its own
+  verdict, and harmless for the conjunction (already `⊥`), but the set of evaluated APs shrinks
+  after a fault — worth a sentence so nobody reads a post-fault trace as complete.
+- `_observation_to_bdd` (line 367) does `observation.get(name, False)`: **any AP not supplied
+  silently becomes False.** For `G(!collision_risk)` that default reads as "safe" — a fail-open
+  default. The more aggressively we prune AP evaluation, and the more often the LLM slow path
+  fails to return in time, the more this matters. Consider raising, or carrying an explicit
+  unknown value, rather than defaulting.
+
+**Three things genuinely worth borrowing:**
+1. **The Multi-vs-AND ablation as an experiment template.** Running `n` monitors against one
+   conjoined formula and reporting *both* cost and verdict quality is a small experiment that
+   pre-empts the obvious reviewer question. Their result gives the expected shape of the cost
+   answer; ours would add the attribution answer they do not measure.
+2. **Their "node compression" metric, translated.** Our analogue is AP-level: how much smaller
+   `MultiMonitor.get_required_aps()` is than the full AP set, averaged over a run, and how many
+   LLM-evaluated AP calls that saves. That is a reportable ICRA number, and it is the metric
+   their framework structurally cannot produce.
+3. **The S3 product-emptiness certificate** (our proposal, Q2) — offline product, online parallel
+   monitors.
+
+### Q4 — The sentence
+
+Primary, for the design-justification paragraph:
+
+> We instantiate one deterministic Büchi monitor per formula rather than a single monitor for
+> their conjunction, so that each named failure mode retains its own verdict, its own automaton
+> state and its own fault category; recent multi-property monitoring work likewise treats one
+> output per property as a first-class requirement, and reports that folding a property set into
+> a single conjoined formula is at best cost-neutral and measurably slower once per-node
+> evaluation is non-trivial, while yielding a single undifferentiated verdict [multiproperty2026].
+
+Shorter, if space is tight:
+
+> Following recent multi-property monitoring practice [multiproperty2026], we keep one monitor
+> and one verdict per formula rather than conjoining the specification into a single automaton,
+> preserving per-failure-mode attribution at a state cost linear rather than multiplicative in
+> the number of properties.
+
+If the S3 check gets implemented, this is the stronger version and worth the extra clause:
+
+> We monitor each formula with its own automaton rather than their product; because independent
+> three-valued monitoring is sound but not anticipation-complete for a conjunction, we discharge
+> the difference once at specification-load time by checking the product for states that are
+> empty while all component projections remain live, keeping per-property attribution online at
+> no loss of detection [multiproperty2026, bauer2011runtime].
+
+*Do not* cite this paper for the claim that independent monitoring is semantically equivalent to
+joint monitoring. It does not say that, and in our setting it is false (Q2).
+
+---
+
+## 7. Check yourself
+
+**1. Why can this paper not answer whether monitoring `φ₁` and `φ₂` separately is equivalent to
+monitoring `φ₁ ∧ φ₂`?**
+Because it monitors *past-time* LTL/MTL with a definite Boolean verdict at every timestep. Under
+those semantics `output(φ₁) ∧ output(φ₂) = output(φ₁∧φ₂)` holds pointwise and trivially, so the
+question never arises. Composition can only fail in a future-time setting where a finite prefix
+leaves the verdict undetermined — exactly the three-valued LTL3 setting `MonitorStatus` implements.
+
+**2. State the soundness and completeness of `any_violated()` and `all_accepted()` with respect to
+the conjunction, and name the counterexample class.**
+`all_accepted()` (read as ⊤) is **sound and complete**: `∀w` distributes over `∧`. `any_violated()`
+is **sound but not complete**: if some component is `⊥` the conjunction is `⊥`, but the conjunction
+can be `⊥` while every component is `?`. The counterexample class is *interacting formulas over
+shared APs* — e.g. `F g` with `G(h → G ¬g)` after `h`, where both components stay `?` forever while
+the conjunction is dead. It also bites when **all** formulas are safety (`G(a → X b)` with
+`G(a → X ¬b)` after `a`), so "we only monitor safety properties" is not a defence.
+
+**3. What is LoomRV's "Multi vs. AND" result, and what does it license us to claim?**
+LoomRV Multi (shared DAG, one root per property) against LoomRV-AND (all 30 properties conjoined
+into one formula): a tie in discrete time (0.80 vs 0.80 s JSON), a win for Multi in dense time
+(3.77 vs 4.05 s JSON; 3.45 vs 3.72 s binary), traced to 107 shared-DAG nodes against 136 for the
+conjunction's extra 29 `∧` nodes. It licenses: *the monolithic-conjunction strategy buys no speed
+and loses per-property attribution.* It does **not** license any claim about semantic equivalence,
+about the state-space size of a Büchi product, or about robotics workloads.
+
+**4. Why is LoomRV's shared-DAG technique the wrong optimisation for `skill_monitor` — one
+sentence for each of the two reasons?**
+(i) *It is unavailable*: subformula deduplication needs a compositional per-subformula monitor
+construction, and `spot.translate()` produces a whole-formula automaton with no subformula nodes
+to share. (ii) *It optimises the wrong term*: LoomRV evaluates its entire DAG and consumes all `n`
+predicates unconditionally every timestep, whereas our cost is dominated by LLM-evaluated APs,
+which `get_required_aps()` prunes per automaton state — an optimisation that a shared-DAG,
+statically scheduled, statically sized-arena design has no place to accommodate.
+
+---
+
+## Cross-references in this repo
+
+- `papers/reelay/` — Reelay (arXiv:2604.22384), this paper's **baseline** and its ref. [4]; same second author.
+- `papers/ltl3-bauer/` — the LTL3 semantics all of §6 Q2 is stated in; `MonitorStatus` *is* this.
+- `papers/spot/` — the backend that builds every automaton in `core/automata.py`.
+- `papers/rtamt/` — the other per-property monitoring toolchain in the reading list.
+- The paper's own multi-property pointers are all from **formal verification** rather than runtime
+  verification (its refs [20]–[24]): Goldberg et al., DATE 2018; Dureja et al., FMCAD 2019;
+  Das et al. (PURSE), DATE 2024; Das et al. (SISCO), ASP-DAC 2025; Roy et al. (MPBMC), VLSID 2026.
+  Its refs [25], [26] (Baumeister et al., RV 2020 and CAV 2025) are the common-subexpression-
+  elimination line for stream-based monitors. If a reviewer asks for prior art on property
+  ordering or clustering, PURSE and SISCO are the names — **we have not read them.**

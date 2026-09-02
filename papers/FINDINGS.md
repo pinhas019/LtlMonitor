@@ -56,6 +56,46 @@ edge and the verdict is unsound. Nothing asserts otherwise.
 Add the assertion. Also worth knowing before building anything: Spot already ships
 `ltl2tgba -M -D`, a bad-prefix monitor (Tabakov & Vardi, RV'10).
 
+## 3b. Missing APs default to `False`, which is fail-open
+
+From `multi-property/`. `_observation_to_bdd` (`core/automata.py:367`) builds a
+full cube over the automaton's AP set and defaults absent APs to `False`. For
+`G(!collision_risk)` that is **fail-open**: an unevaluated `collision_risk` reads
+as "no obstacle" and the safety property looks satisfied.
+
+That interacts badly with two features working as designed — `get_required_aps()`
+prunes aggressively, and an AP with no extractable rule goes to a slow LLM path
+that may not have answered yet. This is the same hazard the UNDECIDED design in
+`docs/clocking.md:165-198` exists to close, and it is unimplemented.
+
+## 3c. `any_violated()` is sound but not anticipation-complete
+
+From `multi-property/`. `MultiMonitor` runs one automaton per formula, which is
+the right call for attribution — and the paper supports it: "one output per
+property" is an explicit design requirement of their unified monitor, and the
+conjoined-formula strategy is a tie in discrete time and measurably slower in
+dense time while producing one undifferentiated verdict.
+
+But the composition is not exact in one direction. ⊤ composes exactly, so
+`all_accepted()` is sound and complete. ⊥ does not: **the conjunction can be ⊥
+while every component sits at `?`**, so a joint monitor would fire where ours
+stays silent.
+
+It bites even when every formula is safety — `G(a→Xb)` and `G(a→X¬b)` after `a`
+are each `?`, but their conjunction is `G¬a`, which is ⊥. So "safety formulas are
+fine" is not the defence. Our `G(!collision_risk)` / `G(upright)` pair *is*
+provably safe, being pure state invariants; the exposure is a liveness, PROGRESS
+or TIMEOUT formula against a safety mode over shared APs — e.g. `F g` with
+`G(h → G¬g)` after `h`, where both monitors say INCONCLUSIVE forever.
+
+Suggested fix that keeps the hot path: an **offline product-emptiness certificate
+at spec load** — look for a reachable product state that is empty while every
+component projection is live. Buys the product's completeness at compile time,
+keeps *n* parallel automata at runtime.
+
+Do **not** cite that paper for semantic equivalence of the two strategies. It does
+not claim it, and in their past-time setting it is false for a different reason.
+
 ## 4. Unsatisfiable specs pass the oracle
 
 From `lang2ltl/`. `G(!p) & F(p)` passes a free-variable check and is
