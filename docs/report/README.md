@@ -21,7 +21,7 @@ non-scalable default fonts and the build dies with
 
 ## It is two pages, with a little room
 
-884 words of body prose, one status table, three references; page two is nearly full.
+944 words of body prose, one status table, three references; page two is nearly full.
 
 Two register choices are deliberate and easy to undo by accident:
 
