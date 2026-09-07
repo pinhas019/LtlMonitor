@@ -21,12 +21,17 @@ non-scalable default fonts and the build dies with
 
 ## It is two pages, with a little room
 
-863 words of body prose, one status table, three references; page two runs about
-five-sixths full. The report is written at **overview altitude** --- status per
-workstream and a dated plan, not a defect log --- which is what the supervisor asked
-for. Resist pulling specific numbers, file paths or individual bug write-ups back in:
-that is the register this report deliberately does not use, and it is also what the
-page budget was spent on. If something must be added, the room is on page two.
+884 words of body prose, one status table, three references; page two is nearly full.
+
+Two register choices are deliberate and easy to undo by accident:
+
+- **Overview altitude.** Status per workstream, not a defect log. No specific defects,
+  file paths or individual bug write-ups --- those were removed on purpose, not for
+  space.
+- **No calendar, and no hard commitments.** "Next steps" is ordered by dependency
+  rather than by date, and forward-looking sentences are phrased as intent rather than
+  undertaking. The one date in the file is the report's own, in `\date{}`. If you add a
+  step, give it a position in the sequence, not a deadline.
 
 ## Before submitting
 

@@ -41,7 +41,7 @@ A free-language description of a robot skill is compiled into a runtime monitor
 the skill execute and reports where it is and where it is going wrong. The engine is
 meant to be skill-agnostic: changing the skill, or the robot, should change the
 generated specification and not the engine. This report summarises where that work
-stands across its three strands and what the coming weeks hold.
+stands across its strands, and what comes next.
 
 \section{Approach}
 
@@ -83,7 +83,7 @@ full navigation experiment has not yet taken place.
 \textbf{High-fidelity simulation.} Three embodiment adapters --- the real G1, MuJoCo and
 Isaac Lab --- expose an identical sensor schema over entirely different topics, so one
 monitor and one specification run across all three unchanged. Sensor bridging for Isaac
-is settled. The purpose here is to re-execute episodes as counterfactuals rather than to
+is in place. The purpose here is to re-execute episodes as counterfactuals rather than to
 visualise them, so the work is gated on fidelity validation against recorded runs. What
 remains is to run the robot's own navigation stack inside the simulator rather than a
 stand-in, and to implement scenario reset so that episodes can be driven automatically.
@@ -91,8 +91,8 @@ stand-in, and to implement scenario reset so that episodes can be driven automat
 \textbf{Literature and positioning.} Twenty papers were read closely and summarised. The
 review settled how this work is positioned against the nearest prior art and, in the
 process, produced a ranked list of corrections to our own implementation --- chiefly in
-how satisfaction is reported for safety properties --- which are now scheduled rather
-than open-ended.
+how satisfaction is reported for safety properties --- which are now understood well
+enough to act on.
 
 \begin{table}[t]
 \centering\small
@@ -104,7 +104,7 @@ Monitoring engine & built and exercised; suite in continuous integration & corre
 Continuous MiniGrid & environment and monitor integration in place & close the parity issue \\
 Robot (G1 with TRAV) & first hardware run; replay determinism verified & the navigation experiment \\
 High-fidelity simulation & adapters and sensor bridging ready & robot's own stack in sim; scenario reset \\
-Literature and positioning & complete & fold into the paper draft \\
+Literature and positioning & reading and summaries done & fold into the paper draft \\
 \bottomrule
 \end{tabular}
 \caption{\small Status by workstream.}
@@ -114,44 +114,47 @@ Literature and positioning & complete & fold into the paper draft \\
 
 The engine, the synthesis pipeline and the deployment path are in place and exercised,
 and the test suite --- 1242 cases, ROS-free by construction --- runs on every change.
-What is not yet in place is evidence. The monitor has been shown to be portable and
-deterministic; it has not yet been shown to be \emph{useful}, because the navigation
-experiment that would measure detection and recovery has not run. Integration of the
-TRAV navigation stack on the G1 is close to complete, and that experiment is the
-immediate priority. Everything downstream --- the simulation work and the comparison
-between detection alone and detection with recovery --- depends on the recording it
-produces, which is why the schedule below is sequential rather than parallel.
+The monitor has been shown to be portable and deterministic across machines. What
+remains to be established is its effectiveness: the navigation experiment that would
+measure detection and recovery has not yet run, and integration of the TRAV navigation
+stack on the G1 is still advancing. That experiment is the immediate priority, and most
+of what follows depends on the recording it produces --- which is why the steps below
+are ordered by dependency rather than run in parallel.
 
-\section{Plan}
+\section{Next steps, in order}
+
+The sequence below is set by dependencies rather than by a calendar: the recording
+produced by the first step is an input to most of the rest, and the pace of the later
+steps will follow from what it contains.
 
 {\small
 \begin{enumerate}
-\item \textbf{11 Sep} --- navigation episode on the G1 exercising the full
-  specification, recorded end to end.
-\item \textbf{15 Sep} --- replay that recording and confirm verdict equality on a
-  substantial trace; apply the safety-semantics correction from the review.
-\item \textbf{25 Sep} --- planner independence: remove the remaining dependence on the
-  navigation stack's own status reporting, and calibrate the open thresholds against the
-  recording.
-\item \textbf{2 Oct} --- simulator running the robot's navigation stack, with scenario
-  reset in place.
-\item \textbf{9 Oct} --- fidelity validation: reproduce the recorded episodes in
-  simulation and report how many fall outside tolerance. Nothing downstream is trusted
-  until this passes.
-\item \textbf{16 Oct} --- detection-only versus detection-with-recovery comparison, run
-  in simulation.
+\item A navigation episode on the G1 exercising the full specification, recorded end to
+  end. This is the gating item.
+\item Replay of that recording, to confirm verdict equality on a substantial trace,
+  together with the safety-semantics correction identified by the review.
+\item Planner independence: removing the remaining dependence on the navigation stack's
+  own status reporting, and calibrating the open thresholds against the recording.
+\item The simulator brought onto the robot's own navigation stack, with scenario reset
+  in place so that episodes can be driven automatically. This can proceed alongside the
+  earlier steps whenever the robot is unavailable.
+\item Fidelity validation: reproducing the recorded episodes in simulation and reporting
+  how many fall outside tolerance. Its outcome determines how much weight the
+  simulation results can carry.
+\item A comparison between detection alone and detection with recovery, run in
+  simulation once the preceding steps allow.
 \end{enumerate}}
 
-\section{Risks to the schedule}
+\section{Risks}
 
-Two things could move these dates. The navigation experiment depends on TRAV integration
+Two things bear on the pace. The navigation experiment depends on TRAV integration
 completing on the robot, and throughout this project hardware availability, rather than
 software readiness, has been the binding constraint. Separately, the simulation strand is
-worth exactly what its fidelity validation says it is worth: if too many recorded
-episodes fall outside tolerance, counterfactual re-execution stops being usable as
-evidence and the comparison has to move back onto the robot, which is considerably
-slower. Both risks surface early --- the first on 11 September, the second on 9 October
---- rather than at the end.
+worth what its fidelity validation shows it to be worth: if too many recorded episodes
+fall outside tolerance, counterfactual re-execution becomes harder to rely on as
+evidence and more of the comparison has to move back onto the robot, which is
+considerably slower. Both surface early in the sequence above rather than at the end,
+which is the main reason for ordering it that way.
 
 \bibliographystyle{abbrv}
 {\footnotesize\bibliography{references}}
