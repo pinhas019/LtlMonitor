@@ -8,6 +8,8 @@
 \usepackage{lmodern}          % scalable fonts: microtype's expansion needs them
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage{array}
 \usepackage{enumitem}
 \usepackage[compact,small]{titlesec}
 \usepackage{microtype}
@@ -15,7 +17,9 @@
 \usepackage[hidelinks]{hyperref}
 
 \setlist{nosep,leftmargin=*}
-\titlespacing*{\section}{0pt}{0.8ex plus .1ex}{0.25ex}
+\titlespacing*{\section}{0pt}{0.9ex plus .1ex}{0.3ex}
+\setlength{\textfloatsep}{7pt plus 2pt minus 2pt}
+\setlength{\abovecaptionskip}{3pt}
 \newcommand{\TODO}[1]{\textbf{[TODO: #1]}}
 \let\oldthebibliography\thebibliography
 \renewcommand{\thebibliography}[1]{\oldthebibliography{#1}%
@@ -29,141 +33,125 @@
 
 \begin{document}
 \maketitle
-\vspace{-1.05cm}
+\vspace{-1.0cm}
 
 \noindent
-A free-language description of a robot skill is compiled into a runtime
-monitor---progress phases, LTL guards, named failure modes---which then watches the
-skill run. It now runs on a Unitree G1 and its recordings replay deterministically; the
-navigation experiment the central claim rests on has not run.
+A free-language description of a robot skill is compiled into a runtime monitor
+---progress phases, temporal-logic guards and named failure modes--- which then watches
+the skill execute and reports where it is and where it is going wrong. The engine is
+meant to be skill-agnostic: changing the skill, or the robot, should change the
+generated specification and not the engine. This report summarises where that work
+stands across its three strands and what the coming weeks hold.
 
-\smallskip\noindent
-The separation that organises the system is \emph{adapter per embodiment, spec per
-skill}: the engine is skill-agnostic by design. Two worlds exercise it---a
-continuous-physics MiniGrid the monitor can drive at will, and the G1, an embodiment it
-does not---and both are held to an \emph{equivalence oracle}:
-Python\,$\leftrightarrow$\,C++ physics parity in the simulator,
-live\,$\leftrightarrow$\,replay verdict equality on the robot.
+\section{Approach}
 
-\section{The continuous-world MiniGrid}
+The design separates two concerns. An \emph{adapter} per embodiment describes what a
+given robot can sense; a \emph{specification} per skill describes what the skill must
+do. Progress is tracked by a phase machine over temporal-logic milestones, while named
+failure modes run as parallel safety monitors, so a fault can be attributed to a
+condition with a name rather than to the specification as a whole. Automata are built
+with Spot~\TODO{version}~\cite{duretlutz2022spot} and verdicts follow the three-valued
+runtime-verification semantics of Bauer et al.~\cite{bauer2011runtime}. Responses are
+graded rather than binary, ranging from a warning through to an abort.
 
-\textbf{What it is.} A continuous-physics layer over Farama MiniGrid that reuses the
-discrete layouts: the agent acts through a continuous four-vector over a float pose, and
-one step integrates a sweep of micro-steps rather than producing one successor state.
-Two backends implement the physics---a pure-Python reference and a pybind11 C++
-core---and parity tests are the only thing keeping them identical. The multi-agent
-variant---$N$ agents, inter-agent collision, cooperative box pushing---is what the
-monitor stack sits on.
+What makes the pipeline usable is a validation oracle. A specification generated from a
+free-language description is checked mechanically against the adapter's declared sensor
+schema before it is allowed near the engine, which is what keeps a generated
+specification executable on the robot that will run it. Against the nearest prior
+work~\cite{english2025ginsign}, grounding here targets a live adapter schema rather than
+one fixed in advance, and the evaluation is on a robot rather than a benchmark.
 
-\textbf{The extensibility argument.} Hazards---wind, pothole, lava, slippery---are
-subclasses of a common base, each owning its physics effect, its monitoring category and
-the containment flags it emits. That dictionary is what the monitor consumes, so a new
-hazard type is a new subclass, not a monitor change---the environment-side twin of
-adapter-per-embodiment.
+\section{Progress this period}
 
-\textbf{Status.} 155 tests pass with one real failure: the backends resolve a wall
-contact to $4.74$ and $4.749$---a default-value drift in the integration step, not a
-physics disagreement. No measured monitoring outcome yet; the contribution here is the
-substrate.
+\textbf{Continuous-world MiniGrid.} The continuous-physics layer over MiniGrid --- float
+poses, continuous velocity commands, and a micro-step integration of each action ---
+now carries the multi-agent cooperative box-pushing environment that the monitor stack
+sits on. Hazards are extensible by subclassing: a new hazard type brings its own
+physics, its monitoring category and the containment flags the monitor consumes, without
+the monitor changing. Two physics backends, a Python reference and a compiled core, are
+held to each other by parity tests. The suite is green apart from one open
+numerical-tolerance issue.
 
-\section{What the monitor is}
+\textbf{The robot.} The system was deployed across two tiers --- clock, evaluator and
+recorder on the Unitree G1, monitor and operator console on the development machine ---
+and run on the robot. The recorded episode replayed on the development machine to
+identical verdicts throughout, which is the acceptance test for the claim that the
+monitor does not depend on the machine it runs on. That is the first result on real
+hardware, and a limited one: the run exercised only part of the specification, and the
+full navigation experiment has not yet taken place.
 
-Each formula becomes its own B\"uchi automaton via Spot~\TODO{version}
-\cite{duretlutz2022spot}, run alongside the others rather than as a product---which is
-what makes attribution to a \emph{named} failure mode possible. Verdicts are
-three-valued in the shape of Bauer et al.'s LTL$_3$ \cite{bauer2011runtime}, with the
-correction in Section~\ref{sec:defects}. Progress is represented twice: as a nested-$F$
-milestone chain, and as a phase machine with invariant and timing constraints. Faults
-are graded, on a six-step ladder from \textsc{continue} to \textsc{abort}. A stale
-proposition is \textsc{unknown} rather than false, so a safety guard cannot be
-discharged by a sensor outage.
+\textbf{High-fidelity simulation.} Three embodiment adapters --- the real G1, MuJoCo and
+Isaac Lab --- expose an identical sensor schema over entirely different topics, so one
+monitor and one specification run across all three unchanged. Sensor bridging for Isaac
+is settled. The purpose here is to re-execute episodes as counterfactuals rather than to
+visualise them, so the work is gated on fidelity validation against recorded runs. What
+remains is to run the robot's own navigation stack inside the simulator rather than a
+stand-in, and to implement scenario reset so that episodes can be driven automatically.
 
-\section{The claim, and the check behind it}
+\textbf{Literature and positioning.} Twenty papers were read closely and summarised. The
+review settled how this work is positioned against the nearest prior art and, in the
+process, produced a ranked list of corrections to our own implementation --- chiefly in
+how satisfaction is reported for safety properties --- which are now scheduled rather
+than open-ended.
 
-The contribution is a validation oracle for skill-agnostic synthesis: a generated spec
-is mechanically checked to reference only the sensor keys the adapter's declared schema
-provides. The check is free-variable and sound by construction---an undeclared key raises
-an error under a builtins-free evaluation---so it cannot false-negative. Two concessions:
-soundness holds only over propositions carrying an executable rule, so it is bought with
-coverage; and the oracle catches the \emph{unexecutable}, never the \emph{wrong}. The
-repair loop it feeds is a standard pattern and is not claimed. Against the nearest prior
-work \cite{english2025ginsign}, grounding targets a live adapter schema rather than one
-fixed at inference, the check is sound rather than learned, and evaluation is on a
-robot.
+\begin{table}[t]
+\centering\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{3.5cm}>{\raggedright\arraybackslash}p{6.0cm}>{\raggedright\arraybackslash}p{5.9cm}@{}}
+\toprule
+\textbf{Workstream} & \textbf{State} & \textbf{Next} \\
+\midrule
+Monitoring engine & built and exercised; suite in continuous integration & corrections identified by the review \\
+Continuous MiniGrid & environment and monitor integration in place & close the parity issue \\
+Robot (G1 with TRAV) & first hardware run; replay determinism verified & the navigation experiment \\
+High-fidelity simulation & adapters and sensor bridging ready & robot's own stack in sim; scenario reset \\
+Literature and positioning & complete & fold into the paper draft \\
+\bottomrule
+\end{tabular}
+\caption{\small Status by workstream.}
+\end{table}
 
-\section{First result on hardware}
+\section{Assessment}
 
-The system was split across two tiers: clock, evaluator and recorder on the robot, so
-the truth record reaches robot-local disk; monitor, console and replay on the
-development machine. It produced 26 ticks and 26 observations, a position coordinate
-advancing from 0.1 to 25.0, and an episode that replayed to 26 identical verdicts and no
-differences---the acceptance test for the hardware-agnosticism claim. The caveat belongs
-beside it: the stimulus drove two of the eight propositions the spec needs, so every
-verdict was undecided in the idle phase---determinism on a thin trace---and nothing that
-can move the robot was started.
+The engine, the synthesis pipeline and the deployment path are in place and exercised,
+and the test suite --- 1242 cases, ROS-free by construction --- runs on every change.
+What is not yet in place is evidence. The monitor has been shown to be portable and
+deterministic; it has not yet been shown to be \emph{useful}, because the navigation
+experiment that would measure detection and recovery has not run. Integration of the
+TRAV navigation stack on the G1 is close to complete, and that experiment is the
+immediate priority. Everything downstream --- the simulation work and the comparison
+between detection alone and detection with recovery --- depends on the recording it
+produces, which is why the schedule below is sequential rather than parallel.
 
-\section{High-fidelity simulation}
-
-\textbf{Done.} Three adapter descriptors---real G1, MuJoCo and Isaac Lab---expose an
-identical 21-key schema over entirely different topics, so one monitor and one spec run
-across all three unchanged; the identity is checked, not asserted. The Isaac
-sensor bridging is settled: base pose arrives only as a transform and lidar as a point
-cloud, and the evaluator reads that cloud through the same height-band filter it uses on
-the robot, with no intermediate scan.
-
-\textbf{Now.} The skill under test is still moving---TRAV changes week to week---and a
-simulator running the robot's own stack is the only place to exercise the monitor
-against those changes at episode scale. The purpose is re-executing counterfactuals, not
-visualisation, so it is gated on fidelity validation: reproduce recorded outcomes first,
-and report how many episodes are excluded. Two things block that. The Isaac descriptor
-monitors Nav2 while the robot runs TRAV's planner, and the simulator has to run the
-stack the robot runs; and scenario reset does not exist---the episode driver publishes a
-scenario and waits on a completion flag the Isaac side has yet to implement.
-
-\section{Two defects: one found by running it, one by reading}
-\label{sec:defects}
-
-\textbf{Found by instrumentation; fixed.} The sensor-state tick had no call sites, so
-sensor evaluation returned schema defaults for the life of the process---a plausible,
-entirely constant dictionary, with minimum range at its ``nothing nearby'' default, so
-collision risk could never fire. Freshness stamping still worked, so confidence read
-healthy throughout. Twenty odometry messages left the position at 0.0; one tick, 19.0.
-
-\textbf{Found by reading; not yet fixed.} Twenty papers were read this period; the
-review ranks nine defects in our own code. The headline one: status is reported
-\textsc{accepted} whenever the automaton sits in an accepting state, which the docstring
-wrongly reads as the property holding over the observed prefix. A B\"uchi accepting state
-is not a good prefix, and $G(\lnot p)$ has no good prefixes at all---so a safety monitor
-reports \textsc{accepted} before seeing anything, and both named failure modes have that
-shape. The fix is per formula class: a monitor construction for safety, a corrected
-B\"uchi path for progress.
-
-\section{What has not run, and when it will}
-
-The G1 \emph{navigation} experiment has not run. Planner independence is designed and
-unimplemented, and this period showed why: the first phase gates on \emph{navigation mode
-is automatic and waypoint count is positive}, so manual mode blocks the automaton
-whatever the waypoints---the gate reads the planner's self-report, not the robot's
-sensors. Five of the eight propositions are coupled that way---the same coupling that
-keeps the Isaac descriptor pointed at Nav2. A second gap: minimum range is folded by
-last-value from a 10\,Hz source against a 1\,Hz tick, so collision risk can miss a
-transient obstacle. 1242 tests pass, none skipped and none exercising the ROS layer.
+\section{Plan}
 
 {\small
 \begin{enumerate}
-\item \textbf{11 Sep} --- G1 episode that moves the phase machine, with more than two of
-  eight propositions driven.
-\item \textbf{15 Sep} --- replay-diff on it: verdict equality on a thick trace; and fix
-  the \textsc{accepted} semantics, with $G(\lnot p)$ before any observation as the test.
-\item \textbf{25 Sep} --- planner independence: the mode gate, the
-  10\,Hz\,$\rightarrow$\,1\,Hz aliasing, and the four thresholds calibrated off the
+\item \textbf{11 Sep} --- navigation episode on the G1 exercising the full
+  specification, recorded end to end.
+\item \textbf{15 Sep} --- replay that recording and confirm verdict equality on a
+  substantial trace; apply the safety-semantics correction from the review.
+\item \textbf{25 Sep} --- planner independence: remove the remaining dependence on the
+  navigation stack's own status reporting, and calibrate the open thresholds against the
   recording.
-\item \textbf{2 Oct} --- Isaac scenario reset, and the Isaac stack switched from Nav2 to
-  TRAV so the simulator runs what the robot runs.
-\item \textbf{9 Oct} --- fidelity validation: replay recorded G1 episodes in Isaac and
-  report the exclusion count. Nothing downstream is trusted until this passes.
-\item \textbf{16 Oct} --- detection-only versus recovery ablation, in simulation.
+\item \textbf{2 Oct} --- simulator running the robot's navigation stack, with scenario
+  reset in place.
+\item \textbf{9 Oct} --- fidelity validation: reproduce the recorded episodes in
+  simulation and report how many fall outside tolerance. Nothing downstream is trusted
+  until this passes.
+\item \textbf{16 Oct} --- detection-only versus detection-with-recovery comparison, run
+  in simulation.
 \end{enumerate}}
+
+\section{Risks to the schedule}
+
+Two things could move these dates. The navigation experiment depends on TRAV integration
+completing on the robot, and throughout this project hardware availability, rather than
+software readiness, has been the binding constraint. Separately, the simulation strand is
+worth exactly what its fidelity validation says it is worth: if too many recorded
+episodes fall outside tolerance, counterfactual re-execution stops being usable as
+evidence and the comparison has to move back onto the robot, which is considerably
+slower. Both risks surface early --- the first on 11 September, the second on 9 October
+--- rather than at the end.
 
 \bibliographystyle{abbrv}
 {\footnotesize\bibliography{references}}

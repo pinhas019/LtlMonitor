@@ -19,17 +19,18 @@ Verified here against TeX Live 2023 (Ubuntu `texlive-latex-base`,
 non-scalable default fonts and the build dies with
 `auto expansion is only possible with scalable fonts`.
 
-## It is two pages by a small margin
+## It is two pages, with a little room
 
-908 words of body prose, one table, three references. The layout is tuned to land
-exactly on two pages: 2.0 cm margins, compact `titlesec` headings, `\small` table,
-`\footnotesize` bibliography. **Adding a paragraph will push it to three.** If you need
-room, the cut order is: the table (worth about nine lines), then the two-concessions
-sentence in "The claim, and the check behind it", then the opening paragraph.
+863 words of body prose, one status table, three references; page two runs about
+five-sixths full. The report is written at **overview altitude** --- status per
+workstream and a dated plan, not a defect log --- which is what the supervisor asked
+for. Resist pulling specific numbers, file paths or individual bug write-ups back in:
+that is the register this report deliberately does not use, and it is also what the
+page budget was spent on. If something must be added, the room is on page two.
 
 ## Before submitting
 
-- One `\TODO{version}` remains, in "What the monitor is". Spot's own citing page
+- One `\TODO{version}` remains, in "Approach". Spot's own citing page
   requires naming the version you ran; read it off the machine that produced the
   results and replace the marker. It typesets as **[TODO: version]**, so it cannot be
   missed.
@@ -39,5 +40,5 @@ sentence in "The claim, and the check behind it", then the opening paragraph.
   `author = {TODO}`, which BibTeX typesets silently instead of erroring on. Keep it
   that way if you add a citation.
 - `ferrando2020rosmonitoring` and `rtamt2024` are staged but uncited: they were carried
-  by a sentence contrasting this work with the closest deployed tools, cut for length.
-  Restore both together if the sentence comes back.
+  by a sentence contrasting this work with the closest deployed tools, cut when the
+  report moved to overview altitude. Restore both together if the sentence comes back.
