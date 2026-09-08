@@ -19,11 +19,20 @@ Verified here against TeX Live 2023 (Ubuntu `texlive-latex-base`,
 non-scalable default fonts and the build dies with
 `auto expansion is only possible with scalable fonts`.
 
-## It is two pages, with one slot reserved
+## Structure: the claim leads
 
-896 words of body prose, one status table, one specification example, five references.
-Page two is full --- there is no headroom left. Anything added now needs something else
-cut first.
+The report opens with **The claim** --- what is being asserted, why grounding is the
+obstacle, and the three conditions that would settle it --- and only then explains the
+mechanism. Everything after that is organised as evidence for or against those three
+conditions. This ordering is the point of the document; do not reinstate a
+technical-overview opening.
+
+## It is two pages, and full
+
+943 words of body prose, one specification example, five references; page two runs about
+seven-eighths full. There is no status table any more: with progress reported per
+workstream and a section assessing the claim, it duplicated both. Anything added now
+needs something cut first.
 
 Two register choices are deliberate and easy to undo by accident:
 
