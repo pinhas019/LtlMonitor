@@ -33,40 +33,42 @@
 
 \section{The claim}
 
-Monitoring whether a robot skill is progressing, and where it is going wrong, normally
-requires a specification written by hand for each skill and each robot. The claim of
-this work is that such a monitor can instead be \emph{synthesised} from a free-language
-description of the skill, with the engine unchanged across skills and across
-embodiments.
+A robot skill executing in an unstructured environment deviates from its intended
+behaviour; the question is how to tell, early enough to intervene. The claim of this work
+is that skill execution can be represented as a finite set of \emph{progress states}:
+equivalence classes of world--robot configurations that are indistinguishable with respect
+to task advancement, connected by boolean transition guards. A monitor that tracks which
+progress state a skill is in, rather than judging success from the current observation
+alone, is both cheaper to evaluate and harder to mislead.
 
-The obstacle is grounding. A language model asked to write a temporal-logic
-specification from a description of a skill has no way of knowing which quantities the
-robot can actually observe, so it writes conditions over terms that do not exist on the
-target platform. An ungrounded specification is not a weak monitor; it is not a monitor
-at all. Existing work addresses this by grounding into a signature authored by hand and
-fixed before inference, or by judging groundedness with a learned
-classifier~\cite{english2025ginsign}.
+Two properties follow. \emph{Dimensionality reduction}: the robot's high-dimensional
+continuous state --- joint angles, velocities, perception, process and middleware state
+--- projects onto a small discrete set of semantically meaningful phases.
+\emph{Explainability}: the monitor produces a human-readable trace, so it can say
+\emph{why} a failure is imminent rather than only that one is.
 
-The proposal here is that grounding can target the robot's own declared sensor schema,
-live, and be checked mechanically. Each embodiment publishes an \emph{adapter} saying
-what it can sense; each skill has a \emph{specification}; and a validation oracle rejects
-any generated specification referring to anything outside that schema. Because this is a
-free-variable check rather than a judgement, it cannot admit a specification that would
-fail on the robot.
+The weakness this addresses is the limited context awareness of current language- and
+vision-based monitors, which reason from what is currently observable. If a robot drops
+an object at the placement location, such a monitor sees no object in frame, sees that it
+is at the placement location, and concludes the skill succeeded. A progress-state monitor
+knows the skill never left \texttt{goTo placement location}, and reports failure. Because
+every skill carries the same structure, task progression is a concatenation of skill
+progressions and one monitor serves both levels.
 
-Three things would settle the claim: that one engine runs unchanged across skills and
-embodiments; that specifications generated this way execute on the robot they were
-generated for; and that the resulting monitor detects real failures, with intervention on
-its verdicts improving outcomes.
+Three things would settle the claim: that progress-state descriptions can be produced for
+both coded and learned skills; that a monitor given them measurably outperforms the same
+monitor without them; and that this holds on a real humanoid, not only in benchmark
+environments.
 
 \section{How it works}
 
-Progress is tracked by a phase machine over temporal-logic milestones, while named
-failure modes run as parallel safety monitors, so a fault can be attributed to a
-condition with a name rather than to the specification as a whole. Automata are built
-with Spot~3~\cite{duretlutz2022spot} and verdicts follow the three-valued semantics of
-Bauer et al.~\cite{bauer2011runtime}. Responses are graded rather than binary, from a
-warning through to an abort. A compiled specification for the navigation skill reads, in
+The progress states of a skill appear in the implementation as \emph{phases}, and their
+transition guards as temporal-logic formulae; named failure modes run as parallel safety
+monitors, so a fault can be attributed to a condition with a name rather than to the
+specification as a whole. Guards are compiled to automata with
+Spot~3~\cite{duretlutz2022spot} and verdicts follow the three-valued semantics of Bauer
+et al.~\cite{bauer2011runtime}. Responses are graded, from a warning through to an
+abort. A compiled specification for the navigation skill reads, in
 abbreviated form:
 
 \begin{center}\footnotesize
@@ -77,73 +79,79 @@ safety & \texttt{G(!collision\_risk)}\qquad \texttt{G(upright)} \\
 \end{center}
 
 \noindent
-Each proposition carries an executable rule over the adapter's declared sensor keys. The
+Each proposition carries an executable rule over the sensor keys the robot's adapter
+declares. A generated description is checked against that schema before it is allowed to
+run, which is what makes a description written in free language executable on the robot it
+was written for; existing work instead grounds into a signature fixed in advance, or
+judges groundedness with a learned classifier~\cite{english2025ginsign}. The
 implementation is at \url{https://github.com/pinhas019/LtlMonitor}.
 
 \section{Progress this period}
 
 \textbf{MiniGrid and MAAOS.} The continuous-physics layer over MiniGrid carries the
 multi-agent cooperative box-push environment the monitor runs against. Three
-specifications are loaded: one task-level, and one for each MAAOS skill. The monitor
-watches a coordination sequence (reach the box, align on one side, push together, place
-it on target), safety guards around lava and loss of the push formation, and a deadlock
-condition on both agents' poses. Adding a skill is a specification file and nothing else;
+specifications are loaded: one task-level, and one for each MAAOS skill. It watches a
+coordination sequence (reach the box, align, push together, place it on target), safety
+guards around lava and loss of the push formation, and a deadlock condition on both
+agents' poses. Adding a skill is a specification file and nothing else;
 adding a hazard type still requires a change in the environment as well.
 
 \textbf{The robot.} The system was deployed across two tiers --- clock, evaluator and
 recorder on the Unitree G1, monitor and operator console on the development machine ---
-and run on the robot. The recorded episode replayed on the development machine to
-identical verdicts throughout, which is the test for the claim that the monitor does not
-depend on the machine it runs on. That is the first result on hardware, and a limited
-one: the run exercised only part of the specification.
+and run on the robot, recording the episode as it went. It is the first result on
+hardware, and a limited one: the run exercised only part of the specification.
 
 \textbf{Navigation application.} I am working with Elias on the navigation application
 intended for deployment on the G1.
 
-\textbf{High-fidelity simulation.} Under development. Sensor bridging for Isaac is in
-place. The purpose is to re-execute episodes as counterfactuals rather than to visualise
-them, so the work is gated on fidelity validation against recorded runs. What remains is
-the robot's own navigation stack inside the simulator, and scenario reset.
+\textbf{High-fidelity simulation.} Under development; sensor bridging for Isaac is in
+place. Its purpose is to re-execute episodes as counterfactuals rather than visualise
+them, so it is gated on fidelity validation against recorded runs. What remains is the
+robot's own stack inside the simulator, and scenario reset.
 
-\textbf{Literature.} Ongoing. Twenty papers have been read closely and summarised so
-far. The review has settled how this work is positioned against the nearest prior art and
-produced a ranked list of corrections to our own implementation.
+\textbf{Literature.} Ongoing. Twenty papers read closely and summarised so far; the
+review has settled how the work is positioned against the nearest prior art, and produced
+a ranked list of corrections to our own implementation.
 
 \section{How far the claim has got}
 
-Against the first condition, one engine now runs unchanged across three embodiments ---
-the real G1, MuJoCo and Isaac Lab expose an identical sensor schema over entirely
-different topics --- and across more than one skill, since adding a skill is a
-specification file alone.
+\textbf{First condition.} Progress-state descriptions exist for navigation and for the
+MAAOS skills --- three specifications are loaded, one task-level and one per skill --- and
+adding a skill is a specification file alone, with one engine running unchanged across
+three embodiments. All are coded skills; nothing has yet been described for a learned
+policy, the harder half of the condition.
 
-The third condition has its first evidence, from the cooperative box-push work. On an
-injected-deadlock scenario the unmonitored run exhausted its whole 80-step budget and
-failed in every seed; detection alone halted it at step 10, and halting followed by a
-single re-plan turned the same scenario into a success in every seed, in 45 steps, with
-no false alarms on clean runs or runs with non-fatal hazards. A second case bears on the
-second condition: running the language-model-evaluated variant against the real push
-skill showed that two predicates demanded a formation that skill never sustains. The
-monitor was flagging correct behaviour and the fault lay in the generated specification
---- exactly what the oracle exists to catch before a specification runs at all. These
-runs drove scripted reference plans rather than the live MAAOS planner, so they establish
-detection and the value of intervention, but not yet either under the planner.
+\textbf{Second condition.} The cooperative box-push work gives the first direct
+comparison. On an injected-deadlock scenario the unmonitored run exhausted its whole
+80-step budget and failed in every seed; detection alone halted it at step 10, and halt
+plus a single re-plan turned the same scenario into a success in every seed, in 45 steps,
+with no false alarms on clean or non-fatal-hazard runs. A second case
+cuts the other way: against the real push skill, two predicates demanded a formation it
+never sustains, so the monitor was flagging correct behaviour and the fault lay in the
+description. These runs drove scripted reference plans rather
+than the live MAAOS planner, so they establish detection and the value of intervention,
+but not yet either under the planner.
 
-Once the navigation application is deployed on the G1, the monitor will be used to assess
-it: the first skill developed independently of the monitor, and so the sharpest available
-test of the first two conditions.
+\textbf{Third condition.} The G1 recording replayed to identical verdicts, so the monitor
+does not depend on the machine it runs on; the navigation experiment itself has not run. Once the navigation application is
+deployed, the monitor will be used to assess it --- the first skill developed
+independently of the monitor.
 
 \section{Next steps}
 
 The pace is set by two things becoming available rather than by a calendar. The first is
 the high-fidelity simulation: once it is ready, episodes can be driven automatically and
-in volume, which is what the claim needs in order to be evaluated rather than
-demonstrated. The second is a wider set of skills --- which is where the navigation
-application and further MAAOS skills come in.
+in volume, which is what the claim needs to be evaluated rather than demonstrated. The second is a wider set of skills --- the navigation application,
+further MAAOS skills, and a learned policy, which is what the first condition needs.
 
-Alongside those, we intend to compare this monitor against existing runtime-verification
-tools for ROS~\cite{ferrando2020rosmonitoring,rtamt2024}, on the axes where we expect to
-differ: synthesis of the specification from a free-language description, grounding in a
-declared sensor schema, and portability of one specification across embodiments.
+The monitor is currently evaluated by a language model. The intended direction is a
+vision--language monitor, taking the 2025 MIT work on vision--language failure detection
+as the baseline to build on; none of that is built yet. Evaluation follows the same two
+stages: an ablation on ALFWorld comparing the same monitor with and without the
+progress-state description, and then VLABench and NaVila once the vision--language monitor
+exists. Alongside those, we intend to position the work against existing
+runtime-verification tools for ROS~\cite{ferrando2020rosmonitoring,rtamt2024}, which
+monitor hand-written specifications rather than ones derived from a skill description.
 
 \bibliographystyle{abbrv}
 {\footnotesize\bibliography{references}}

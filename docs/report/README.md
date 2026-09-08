@@ -19,33 +19,47 @@ Verified here against TeX Live 2023 (Ubuntu `texlive-latex-base`,
 non-scalable default fonts and the build dies with
 `auto expansion is only possible with scalable fonts`.
 
-## Structure: the claim leads
+## Structure: the proposal's claim leads
 
-The report opens with **The claim** --- what is being asserted, why grounding is the
-obstacle, and the three conditions that would settle it --- and only then explains the
-mechanism. Everything after that is organised as evidence for or against those three
-conditions. This ordering is the point of the document; do not reinstate a
-technical-overview opening.
+The report opens with **The claim**, and the claim is the one from the research proposal:
+skill execution represented as a finite set of **progress states** --- equivalence classes
+of world-robot configurations indistinguishable with respect to task advancement, joined
+by transition guards --- yielding dimensionality reduction and explainability, and fixing
+the limited context awareness of language- and vision-based monitors.
+
+An earlier draft led instead with the *grounding* claim (that a generated specification
+can be checked against a live sensor schema). That is the tools-paper positioning for the
+implementation, not the thesis claim. It now appears once, demoted, in "How it works".
+Do not promote it back.
+
+The three conditions at the end of the claim section are the proposal's own research
+goals: descriptions for **coded and learned** skills; a monitor given them measurably
+outperforming the same monitor without them; and this holding on a **real humanoid**, not
+only in benchmarks. "How far the claim has got" is structured against those three, in
+order. If the conditions change, that section changes with them.
+
+Two sentences carry more weight than anything else on the page and must not be cut for
+space: the dropped-object example in the claim section, and the scripted-reference-plans
+caveat in the second condition.
 
 ## It is two pages, and full
 
-943 words of body prose, one specification example, five references; page two runs about
-seven-eighths full. There is no status table any more: with progress reported per
-workstream and a section assessing the claim, it duplicated both. Anything added now
-needs something cut first.
+1027 words of body prose, one specification example, five references. Anything added now
+needs something cut first. Cut order: the simulation paragraph in "Progress this period",
+then the ROS-comparison clause in "Next steps".
 
 Two register choices are deliberate and easy to undo by accident:
 
-- **Overview altitude.** Status per workstream, not a defect log. No specific defects,
-  file paths or individual bug write-ups --- those were removed on purpose, not for
-  space.
+- **Overview altitude.** Status per workstream, not a defect log.
 - **No calendar, and no hard commitments.** "Next steps" is paced by what becomes
-  available rather than by dates, and forward-looking sentences are phrased as intent
-  rather than undertaking. The one date in the file is the report's own, in `\date{}`.
+  available rather than by dates. The one date in the file is the report's own.
 
 ## Before submitting
 
 - No `\TODO` markers remain. The Spot version is Spot 3.
+- **ALFWorld, VLABench, NaVila and the 2025 MIT vision-language work are named in prose
+  with no `\cite`, deliberately.** The proposal carries them as unresolved `[ref]`
+  placeholders and there is no verified BibTeX for any of them. Do not invent entries.
 - **The scripted-plan caveat in Assessment is load-bearing.** The deadlock figures come
   from runs driving scripted reference plans, not the live MAAOS planner, and the
   measured episodes and ablation results live on a different branch of the MiniGrid
