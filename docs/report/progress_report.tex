@@ -40,8 +40,8 @@ A free-language description of a robot skill is compiled into a runtime monitor
 ---progress phases, temporal-logic guards and named failure modes--- which then watches
 the skill execute and reports where it is and where it is going wrong. The engine is
 meant to be skill-agnostic: changing the skill, or the robot, should change the
-generated specification and not the engine. This report summarises where that work
-stands across its strands, and what comes next.
+generated specification and not the engine. The implementation is at
+\url{https://github.com/pinhas019/LtlMonitor}.
 
 \section{Approach}
 
@@ -50,61 +50,69 @@ given robot can sense; a \emph{specification} per skill describes what the skill
 do. Progress is tracked by a phase machine over temporal-logic milestones, while named
 failure modes run as parallel safety monitors, so a fault can be attributed to a
 condition with a name rather than to the specification as a whole. Automata are built
-with Spot~\TODO{version}~\cite{duretlutz2022spot} and verdicts follow the three-valued
+with Spot~3~\cite{duretlutz2022spot}, and verdicts follow the three-valued
 runtime-verification semantics of Bauer et al.~\cite{bauer2011runtime}. Responses are
 graded rather than binary, ranging from a warning through to an abort.
 
-What makes the pipeline usable is a validation oracle. A specification generated from a
-free-language description is checked mechanically against the adapter's declared sensor
-schema before it is allowed near the engine, which is what keeps a generated
-specification executable on the robot that will run it. Against the nearest prior
-work~\cite{english2025ginsign}, grounding here targets a live adapter schema rather than
-one fixed in advance, and the evaluation is on a robot rather than a benchmark.
+A compiled specification for the navigation skill reads, in abbreviated form:
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}ll@{}}
+progress & \texttt{F(mission\_started \& F(path\_active \& F(moving\_to\_target \& F(mission\_finished))))} \\
+safety & \texttt{G(!collision\_risk)}\qquad \texttt{G(upright)} \\
+\end{tabular}
+\end{center}
+
+\noindent
+Each proposition carries an executable rule over the adapter's declared sensor keys, and
+a validation oracle checks a generated specification against that schema before it
+reaches the engine --- which is what keeps a generated specification runnable on the
+robot that will run it. Against the nearest prior work~\cite{english2025ginsign},
+grounding here targets a live adapter schema rather than one fixed in advance.
 
 \section{Progress this period}
 
-\textbf{Continuous-world MiniGrid.} The continuous-physics layer over MiniGrid --- float
-poses, continuous velocity commands, and a micro-step integration of each action ---
-now carries the multi-agent cooperative box-pushing environment that the monitor stack
-sits on. Hazards are extensible by subclassing: a new hazard type brings its own
-physics, its monitoring category and the containment flags the monitor consumes, without
-the monitor changing. Two physics backends, a Python reference and a compiled core, are
-held to each other by parity tests. The suite is green apart from one open
-numerical-tolerance issue.
+\textbf{MiniGrid and MAAOS.} The continuous-physics layer over MiniGrid --- float poses,
+continuous velocity commands and a micro-step integration of each action --- carries the
+multi-agent cooperative box-pushing environment that the monitor is integrated with under
+MAAOS. Hazards are extensible by subclassing: a new hazard type brings its own physics,
+its monitoring category and the containment flags the monitor consumes, without the
+monitor changing.
 
 \textbf{The robot.} The system was deployed across two tiers --- clock, evaluator and
 recorder on the Unitree G1, monitor and operator console on the development machine ---
 and run on the robot. The recorded episode replayed on the development machine to
-identical verdicts throughout, which is the acceptance test for the claim that the
-monitor does not depend on the machine it runs on. That is the first result on real
-hardware, and a limited one: the run exercised only part of the specification, and the
-full navigation experiment has not yet taken place.
+identical verdicts throughout, which is the test for the claim that the monitor does not
+depend on the machine it runs on. That is the first result on hardware, and a limited
+one: the run exercised only part of the specification.
 
-\textbf{High-fidelity simulation.} Three embodiment adapters --- the real G1, MuJoCo and
-Isaac Lab --- expose an identical sensor schema over entirely different topics, so one
-monitor and one specification run across all three unchanged. Sensor bridging for Isaac
-is in place. The purpose here is to re-execute episodes as counterfactuals rather than to
-visualise them, so the work is gated on fidelity validation against recorded runs. What
-remains is to run the robot's own navigation stack inside the simulator rather than a
-stand-in, and to implement scenario reset so that episodes can be driven automatically.
+\textbf{Navigation application.} I am working with Elias on the navigation application
+intended for deployment on the G1.
 
-\textbf{Literature and positioning.} Twenty papers were read closely and summarised. The
-review settled how this work is positioned against the nearest prior art and, in the
-process, produced a ranked list of corrections to our own implementation --- chiefly in
-how satisfaction is reported for safety properties --- which are now understood well
-enough to act on.
+\textbf{High-fidelity simulation.} Under development. Three embodiment adapters --- the
+real G1, MuJoCo and Isaac Lab --- expose an identical sensor schema over entirely
+different topics, so one monitor and one specification run across all three unchanged,
+and sensor bridging for Isaac is in place. The purpose is to re-execute episodes as
+counterfactuals rather than to visualise them, so the work is gated on fidelity
+validation against recorded runs. What remains is to run the robot's own navigation
+stack inside the simulator, and scenario reset.
+
+\textbf{Literature.} Ongoing. Twenty papers have been read closely and summarised so
+far. The review has settled how this work is positioned against the nearest prior art
+and produced a ranked list of corrections to our own implementation, chiefly in how
+satisfaction is reported for safety properties.
 
 \begin{table}[t]
 \centering\small
-\begin{tabular}{@{}>{\raggedright\arraybackslash}p{3.5cm}>{\raggedright\arraybackslash}p{6.0cm}>{\raggedright\arraybackslash}p{5.9cm}@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{3.5cm}>{\raggedright\arraybackslash}p{5.9cm}>{\raggedright\arraybackslash}p{6.0cm}@{}}
 \toprule
 \textbf{Workstream} & \textbf{State} & \textbf{Next} \\
 \midrule
 Monitoring engine & built and exercised; suite in continuous integration & corrections identified by the review \\
-Continuous MiniGrid & environment and monitor integration in place & close the parity issue \\
-Robot (G1 with TRAV) & first hardware run; replay determinism verified & the navigation experiment \\
-High-fidelity simulation & adapters and sensor bridging ready & robot's own stack in sim; scenario reset \\
-Literature and positioning & reading and summaries done & fold into the paper draft \\
+MiniGrid and MAAOS & environment and monitor integration in place & further skills to test against \\
+Robot (G1) & first hardware run; replay determinism verified & navigation application, with Elias \\
+High-fidelity simulation & under development; adapters and bridging in place & robot's own stack in sim; scenario reset \\
+Literature and positioning & ongoing & comparison against existing monitors \\
 \bottomrule
 \end{tabular}
 \caption{\small Status by workstream.}
@@ -112,49 +120,28 @@ Literature and positioning & reading and summaries done & fold into the paper dr
 
 \section{Assessment}
 
-The engine, the synthesis pipeline and the deployment path are in place and exercised,
-and the test suite --- 1242 cases, ROS-free by construction --- runs on every change.
-The monitor has been shown to be portable and deterministic across machines. What
-remains to be established is its effectiveness: the navigation experiment that would
-measure detection and recovery has not yet run, and integration of the TRAV navigation
-stack on the G1 is still advancing. That experiment is the immediate priority, and most
-of what follows depends on the recording it produces --- which is why the steps below
-are ordered by dependency rather than run in parallel.
+The engine, the synthesis pipeline and the deployment path are in place and exercised.
+Where the monitor has so far shown itself useful is in the MAAOS integration.
+\TODO{MAAOS scenarios: what the monitor caught, how, and what it changed}
 
-\section{Next steps, in order}
+Once the navigation application is deployed on the G1, the monitor will be used to
+assess it. That will be the first time the monitor is applied to a skill developed
+independently of it, which is the sharpest available test of the skill-agnostic claim:
+the specification should change and the engine should not.
 
-The sequence below is set by dependencies rather than by a calendar: the recording
-produced by the first step is an input to most of the rest, and the pace of the later
-steps will follow from what it contains.
+\section{Next steps}
 
-{\small
-\begin{enumerate}
-\item A navigation episode on the G1 exercising the full specification, recorded end to
-  end. This is the gating item.
-\item Replay of that recording, to confirm verdict equality on a substantial trace,
-  together with the safety-semantics correction identified by the review.
-\item Planner independence: removing the remaining dependence on the navigation stack's
-  own status reporting, and calibrating the open thresholds against the recording.
-\item The simulator brought onto the robot's own navigation stack, with scenario reset
-  in place so that episodes can be driven automatically. This can proceed alongside the
-  earlier steps whenever the robot is unavailable.
-\item Fidelity validation: reproducing the recorded episodes in simulation and reporting
-  how many fall outside tolerance. Its outcome determines how much weight the
-  simulation results can carry.
-\item A comparison between detection alone and detection with recovery, run in
-  simulation once the preceding steps allow.
-\end{enumerate}}
+The pace is set by two things becoming available rather than by a calendar. The first is
+the high-fidelity simulation: once it is ready, episodes can be driven automatically and
+in volume, which is what the monitor needs in order to be evaluated rather than merely
+demonstrated. The second is a wider set of skills --- the claim is that the engine is
+skill-agnostic, and testing that needs skills beyond navigation, which is where the
+navigation application and further MAAOS skills come in.
 
-\section{Risks}
-
-Two things bear on the pace. The navigation experiment depends on TRAV integration
-completing on the robot, and throughout this project hardware availability, rather than
-software readiness, has been the binding constraint. Separately, the simulation strand is
-worth what its fidelity validation shows it to be worth: if too many recorded episodes
-fall outside tolerance, counterfactual re-execution becomes harder to rely on as
-evidence and more of the comparison has to move back onto the robot, which is
-considerably slower. Both surface early in the sequence above rather than at the end,
-which is the main reason for ordering it that way.
+Alongside those, we intend to compare this monitor against existing runtime-verification
+tools for ROS~\cite{ferrando2020rosmonitoring,rtamt2024}, on the axes where we expect to
+differ: synthesis of the specification from a free-language description, grounding in a
+declared sensor schema, and portability of one specification across embodiments.
 
 \bibliographystyle{abbrv}
 {\footnotesize\bibliography{references}}

@@ -19,31 +19,30 @@ Verified here against TeX Live 2023 (Ubuntu `texlive-latex-base`,
 non-scalable default fonts and the build dies with
 `auto expansion is only possible with scalable fonts`.
 
-## It is two pages, with a little room
+## It is two pages, with one slot reserved
 
-944 words of body prose, one status table, three references; page two is nearly full.
+711 words of body prose, one status table, one specification example, five references.
+Page two has roughly 140 words of headroom, and that headroom is **reserved for the
+MAAOS paragraph** in Assessment. Drop that content in and the report stays at two
+pages; add anything else first and it will not.
 
 Two register choices are deliberate and easy to undo by accident:
 
 - **Overview altitude.** Status per workstream, not a defect log. No specific defects,
   file paths or individual bug write-ups --- those were removed on purpose, not for
   space.
-- **No calendar, and no hard commitments.** "Next steps" is ordered by dependency
-  rather than by date, and forward-looking sentences are phrased as intent rather than
-  undertaking. The one date in the file is the report's own, in `\date{}`. If you add a
-  step, give it a position in the sequence, not a deadline.
+- **No calendar, and no hard commitments.** "Next steps" is paced by what becomes
+  available rather than by dates, and forward-looking sentences are phrased as intent
+  rather than undertaking. The one date in the file is the report's own, in `\date{}`.
 
 ## Before submitting
 
-- One `\TODO{version}` remains, in "Approach". Spot's own citing page
-  requires naming the version you ran; read it off the machine that produced the
-  results and replace the marker. It typesets as **[TODO: version]**, so it cannot be
-  missed.
+- One `\TODO{}` remains, in Assessment: the MAAOS scenarios --- what the monitor
+  caught, how, and what it changed. It typesets as **[TODO: ...]**, so it cannot be
+  missed. Nothing else is outstanding; the Spot version is resolved to Spot 3.
 - `references.bib` holds five entries; three are cited and printed. Every entry was
   copied from the resolved `papers/<slug>/bibtex.md`, **not** from
   `docs/paper/references.bib` --- sixteen entries in that file still carry a literal
   `author = {TODO}`, which BibTeX typesets silently instead of erroring on. Keep it
   that way if you add a citation.
-- `ferrando2020rosmonitoring` and `rtamt2024` are staged but uncited: they were carried
-  by a sentence contrasting this work with the closest deployed tools, cut when the
-  report moved to overview altitude. Restore both together if the sentence comes back.
+- All five entries in `references.bib` are now cited and printed.
