@@ -21,10 +21,9 @@ non-scalable default fonts and the build dies with
 
 ## It is two pages, with one slot reserved
 
-711 words of body prose, one status table, one specification example, five references.
-Page two has roughly 140 words of headroom, and that headroom is **reserved for the
-MAAOS paragraph** in Assessment. Drop that content in and the report stays at two
-pages; add anything else first and it will not.
+896 words of body prose, one status table, one specification example, five references.
+Page two is full --- there is no headroom left. Anything added now needs something else
+cut first.
 
 Two register choices are deliberate and easy to undo by accident:
 
@@ -37,9 +36,16 @@ Two register choices are deliberate and easy to undo by accident:
 
 ## Before submitting
 
-- One `\TODO{}` remains, in Assessment: the MAAOS scenarios --- what the monitor
-  caught, how, and what it changed. It typesets as **[TODO: ...]**, so it cannot be
-  missed. Nothing else is outstanding; the Spot version is resolved to Spot 3.
+- No `\TODO` markers remain. The Spot version is Spot 3.
+- **The scripted-plan caveat in Assessment is load-bearing.** The deadlock figures come
+  from runs driving scripted reference plans, not the live MAAOS planner, and the
+  measured episodes and ablation results live on a different branch of the MiniGrid
+  repository (`pinhas-monitor-benchmark`) from the working one. Do not drop that
+  sentence to save a line --- without it the paragraph claims more than the evidence
+  supports.
+- Adding a **hazard** type is not specification-only; adding a **skill** is. An earlier
+  draft had this backwards. The environment's hazard categories are a hardcoded chain,
+  so a new hazard needs an environment change plus a matching proposition name.
 - `references.bib` holds five entries; three are cited and printed. Every entry was
   copied from the resolved `papers/<slug>/bibtex.md`, **not** from
   `docs/paper/references.bib` --- sixteen entries in that file still carry a literal

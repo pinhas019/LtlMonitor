@@ -50,9 +50,9 @@ given robot can sense; a \emph{specification} per skill describes what the skill
 do. Progress is tracked by a phase machine over temporal-logic milestones, while named
 failure modes run as parallel safety monitors, so a fault can be attributed to a
 condition with a name rather than to the specification as a whole. Automata are built
-with Spot~3~\cite{duretlutz2022spot}, and verdicts follow the three-valued
-runtime-verification semantics of Bauer et al.~\cite{bauer2011runtime}. Responses are
-graded rather than binary, ranging from a warning through to an abort.
+with Spot~3~\cite{duretlutz2022spot}, and verdicts follow the three-valued semantics of
+Bauer et al.~\cite{bauer2011runtime}. Responses are graded rather than binary, from a
+warning through to an abort.
 
 A compiled specification for the navigation skill reads, in abbreviated form:
 
@@ -66,18 +66,22 @@ safety & \texttt{G(!collision\_risk)}\qquad \texttt{G(upright)} \\
 \noindent
 Each proposition carries an executable rule over the adapter's declared sensor keys, and
 a validation oracle checks a generated specification against that schema before it
-reaches the engine --- which is what keeps a generated specification runnable on the
-robot that will run it. Against the nearest prior work~\cite{english2025ginsign},
+reaches the engine --- which is what keeps it runnable on the robot that will run it. Against the nearest prior work~\cite{english2025ginsign},
 grounding here targets a live adapter schema rather than one fixed in advance.
 
 \section{Progress this period}
 
 \textbf{MiniGrid and MAAOS.} The continuous-physics layer over MiniGrid --- float poses,
 continuous velocity commands and a micro-step integration of each action --- carries the
-multi-agent cooperative box-pushing environment that the monitor is integrated with under
-MAAOS. Hazards are extensible by subclassing: a new hazard type brings its own physics,
-its monitoring category and the containment flags the monitor consumes, without the
-monitor changing.
+multi-agent cooperative box-push environment the monitor runs against. Three
+specifications are loaded: one task-level, and one for each MAAOS skill. The monitor
+watches a coordination
+sequence (reach the box, align on one side, push together, place it on target), safety
+guards around lava and loss of the push formation, and a deadlock condition on both
+agents' poses; hazard containment reaches it as per-agent and per-box flags. Adding a
+skill is a specification file and nothing else, which is the skill-agnostic claim in its
+most direct form. Adding a hazard type still requires a change in the environment as
+well.
 
 \textbf{The robot.} The system was deployed across two tiers --- clock, evaluator and
 recorder on the Unitree G1, monitor and operator console on the development machine ---
@@ -91,11 +95,11 @@ intended for deployment on the G1.
 
 \textbf{High-fidelity simulation.} Under development. Three embodiment adapters --- the
 real G1, MuJoCo and Isaac Lab --- expose an identical sensor schema over entirely
-different topics, so one monitor and one specification run across all three unchanged,
-and sensor bridging for Isaac is in place. The purpose is to re-execute episodes as
+different topics, so one monitor and one specification run across all three unchanged;
+sensor bridging for Isaac is in place. The purpose is to re-execute episodes as
 counterfactuals rather than to visualise them, so the work is gated on fidelity
-validation against recorded runs. What remains is to run the robot's own navigation
-stack inside the simulator, and scenario reset.
+validation against recorded runs. What remains is the robot's own navigation stack
+inside the simulator, and scenario reset.
 
 \textbf{Literature.} Ongoing. Twenty papers have been read closely and summarised so
 far. The review has settled how this work is positioned against the nearest prior art
@@ -109,7 +113,7 @@ satisfaction is reported for safety properties.
 \textbf{Workstream} & \textbf{State} & \textbf{Next} \\
 \midrule
 Monitoring engine & built and exercised; suite in continuous integration & corrections identified by the review \\
-MiniGrid and MAAOS & environment and monitor integration in place & further skills to test against \\
+MiniGrid and MAAOS & integrated; intervention measured on scripted plans & the same under the live planner \\
 Robot (G1) & first hardware run; replay determinism verified & navigation application, with Elias \\
 High-fidelity simulation & under development; adapters and bridging in place & robot's own stack in sim; scenario reset \\
 Literature and positioning & ongoing & comparison against existing monitors \\
@@ -121,8 +125,18 @@ Literature and positioning & ongoing & comparison against existing monitors \\
 \section{Assessment}
 
 The engine, the synthesis pipeline and the deployment path are in place and exercised.
-Where the monitor has so far shown itself useful is in the MAAOS integration.
-\TODO{MAAOS scenarios: what the monitor caught, how, and what it changed}
+Where the monitor has so far shown itself useful is the cooperative box-push work. On an
+injected-deadlock scenario the unmonitored run exhausted its whole 80-step budget and
+failed in every seed; detection alone halted it at step 10, and halting followed by a
+single re-plan turned the same scenario into a success in every seed, in 45 steps. On
+clean runs and runs with non-fatal hazards it raised no false alarms. A second use:
+running the language-model-evaluated variant against the real push
+skill showed that two predicates demanded a formation that skill never sustains. The
+monitor was flagging correct behaviour, and the fault lay in the generated specification
+rather than in the skill or the engine --- which is the case the validation oracle exists
+to catch earlier. These runs drove scripted reference plans rather than the live MAAOS
+planner, so they establish that the monitor detects and that intervention changes the
+outcome, not yet that it does so under the planner.
 
 Once the navigation application is deployed on the G1, the monitor will be used to
 assess it. That will be the first time the monitor is applied to a skill developed
@@ -135,7 +149,7 @@ The pace is set by two things becoming available rather than by a calendar. The 
 the high-fidelity simulation: once it is ready, episodes can be driven automatically and
 in volume, which is what the monitor needs in order to be evaluated rather than merely
 demonstrated. The second is a wider set of skills --- the claim is that the engine is
-skill-agnostic, and testing that needs skills beyond navigation, which is where the
+skill-agnostic, and testing it needs skills beyond navigation --- which is where the
 navigation application and further MAAOS skills come in.
 
 Alongside those, we intend to compare this monitor against existing runtime-verification
