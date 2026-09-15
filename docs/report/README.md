@@ -19,44 +19,50 @@ Verified here against TeX Live 2023 (Ubuntu `texlive-latex-base`,
 non-scalable default fonts and the build dies with
 `auto expansion is only possible with scalable fonts`.
 
-## Structure: the proposal's claim leads
+## Structure: the claim, then the repository, then results by setting
 
-The report opens with **The claim**, and the claim is the one from the research proposal:
-skill execution represented as a finite set of **progress states** --- equivalence classes
-of world-robot configurations indistinguishable with respect to task advancement, joined
-by transition guards --- yielding dimensionality reduction and explainability, and fixing
-the limited context awareness of language- and vision-based monitors.
+**The claim** comes first, and it is the proposal's: skill execution as a finite set of
+**progress states** --- equivalence classes of world-robot configurations indistinguishable
+with respect to task advancement, joined by transition guards --- giving dimensionality
+reduction and explainability, and fixing the limited context awareness of language- and
+vision-based monitors.
 
-An earlier draft led instead with the *grounding* claim (that a generated specification
-can be checked against a live sensor schema). That is the tools-paper positioning for the
-implementation, not the thesis claim. It now appears once, demoted, in "How it works".
-Do not promote it back.
+**This repository** then frames `LtlMonitor` as the ongoing development of the question the
+project started from: can a skill described in natural language be lifted to LTL, given an
+LTL description of its progress, and monitored against it? **TRAV and MAAOS are examples,
+not subjects** --- the report says so explicitly and the prose must keep it that way.
 
-The three conditions at the end of the claim section are the proposal's own research
-goals: descriptions for **coded and learned** skills; a monitor given them measurably
-outperforming the same monitor without them; and this holding on a **real humanoid**, not
-only in benchmarks. "How far the claim has got" is structured against those three, in
-order. If the conditions change, that section changes with them.
+**Results are organised by setting**, not by workstream and not by condition. Earlier
+drafts had a three-condition list closing the claim section and an evidence section keyed
+to it; both were removed deliberately. Do not reinstate either --- and note that the
+progress and evidence sections used to say the same things twice, which is what paid for
+the current structure.
 
-Two sentences carry more weight than anything else on the page and must not be cut for
-space: the dropped-object example in the claim section, and the scripted-reference-plans
-caveat in the second condition.
+Three things must survive any future trim: the dropped-object example in the claim
+section, the scripted-reference-plans caveat under MAAOS, and the sentence crediting
+**MAAOS as Fouzi's project**.
 
-## It is two pages, and full
+## It is two pages, with room reserved
 
-1027 words of body prose, one specification example, five references. Anything added now
-needs something cut first. Cut order: the simulation paragraph in "Progress this period",
-then the ROS-comparison clause in "Next steps".
+966 words of body prose, one specification example, five references. Page two has roughly
+110 words of headroom and **that headroom is reserved for the two `\TODO` figure slots**
+under MiniGrid and simple tasks. Fill those and the report stays at two pages; add
+anything else first and it will not.
 
 Two register choices are deliberate and easy to undo by accident:
 
-- **Overview altitude.** Status per workstream, not a defect log.
+- **Overview altitude.** Status and results, not a defect log.
 - **No calendar, and no hard commitments.** "Next steps" is paced by what becomes
-  available rather than by dates. The one date in the file is the report's own.
+  available rather than by dates; "Why this should carry to the G1" is an argument from
+  mechanism, phrased as expectation rather than promise. The one date in the file is the
+  report's own.
 
 ## Before submitting
 
-- No `\TODO` markers remain. The Spot version is Spot 3.
+- **Two `\TODO` markers remain**, under MiniGrid and simple tasks in "Where it has been
+  applied": the monitor-OFF / detection-only / detection-with-recovery figures from the
+  consolidated ablation report. They typeset as **[TODO: ...]** so they cannot be missed.
+  The Spot version is Spot 3.
 - **ALFWorld, VLABench, NaVila and the 2025 MIT vision-language work are named in prose
   with no `\cite`, deliberately.** The proposal carries them as unresolved `[ref]`
   placeholders and there is no verified BibTeX for any of them. Do not invent entries.
