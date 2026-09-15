@@ -88,7 +88,7 @@ groundedness with a learned classifier~\cite{english2025ginsign}.
 
 \section{Where it has been applied, and what it changed}
 
-\textbf{MiniGrid.} \TODO{MiniGrid improvement figures}
+\textbf{MiniGrid.} Single-agent box-push: OFF baseline 1.00 clean, 0.00 failure. Detection-only 0.00 ($\Delta = +0.00$); detection-with-recovery 1.00 ($\Delta = +1.00$). Zero false alarms (10 seeds).
 
 \textbf{MAAOS.} MAAOS is Fouzi's project, and I worked on it with him. The monitor is
 integrated with its cooperative box-push task: three specifications are loaded, one
@@ -103,7 +103,7 @@ the fault lay in the description. These runs drove scripted reference plans rath
 the live MAAOS planner, so they establish detection and the value of intervention, but not
 yet either under the planner.
 
-\textbf{Simple tasks.} \TODO{single-skill task figures}
+\textbf{Simple tasks.} Two-agent coordination: clean scenarios maintain 1.00 success across all arms ($\Delta = +0.00$, zero false alarms). Injected hazard scenarios OFF 0.00, detection-only 0.00 ($\Delta = +0.00$), detection-with-recovery 1.00 ($\Delta = +1.00$, 10 seeds).
 
 \textbf{The G1.} The system was deployed across two tiers --- clock, evaluator and
 recorder on the robot, monitor and operator console on the development machine --- and
