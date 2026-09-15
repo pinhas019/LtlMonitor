@@ -1,6 +1,7 @@
 % Progress report -- Skill Progress Monitoring
-% Build:  pdflatex progress_report && bibtex progress_report && pdflatex progress_report && pdflatex progress_report
-% Target: 2 pages. See docs/report/README.md before adding anything.
+% Build:  pdflatex progress_report && pdflatex progress_report
+% No bibliography -- citations were removed deliberately. See docs/report/README.md.
+% Target: 2 pages.
 
 \documentclass[11pt,a4paper]{article}
 
@@ -17,9 +18,6 @@
 \setlist{nosep,leftmargin=*}
 \titlespacing*{\section}{0pt}{0.9ex plus .1ex}{0.3ex}
 \newcommand{\TODO}[1]{\textbf{[TODO: #1]}}
-\let\oldthebibliography\thebibliography
-\renewcommand{\thebibliography}[1]{\oldthebibliography{#1}%
-  \setlength{\itemsep}{0pt}\setlength{\parsep}{0pt}}
 
 \title{\vspace{-1.2cm}Skill Progress Monitoring\\[2pt]\large Progress Report}
 \author{Pinhas Nehoray Aburmad\\
@@ -38,37 +36,32 @@ behaviour; the question is how to tell, early enough to intervene. The claim of 
 is that skill execution can be represented as a finite set of \emph{progress states}: the
 \emph{semantic} state of the robot with respect to the task, as equivalence classes of
 world--robot configurations indistinguishable with respect to task advancement. Transitions
-between them are boolean guards, which is what makes assessment cheap: the semantics live
-in the states, the per-tick work is a boolean evaluation.
-
-Two properties follow. \emph{Dimensionality reduction}: the robot's high-dimensional
-continuous state --- joint angles, velocities, perception, middleware --- projects onto a
-small discrete set of semantically meaningful phases.
-\emph{Explainability}: the monitor produces a human-readable trace, so it can say
+between them are boolean guards, which is what makes assessment cheap --- the semantics
+live in the states, and the per-tick work is a boolean evaluation. Because the monitor's
+position in that structure is explicit, it produces a human-readable trace and can say
 \emph{why} a failure is imminent rather than only that one is.
 
 The weakness this addresses is the limited context awareness of current language- and
-vision-based monitors, which reason only from what is currently observable. Progress
-states ground the assessment instead, lifting it out of a single free-text prompt into a
-semi-structured state-graph machine --- LangGraph-like --- in which the monitor's position
-is explicit and carried between ticks. Because every skill carries the same structure,
-task progression is a concatenation of skill progressions and one monitor serves both
-levels. Settling the claim needs a measurable gain over the same monitor without progress
-states, for learned as well as hand-written skills, and on real hardware.
+vision-based monitors, which reason only from what is currently observable. Progress states
+ground the assessment instead, lifting it out of a single free-text prompt into a
+semi-structured state graph in which the monitor's position is carried between ticks.
+Because every skill carries the same structure, task progression is a concatenation of
+skill progressions and one monitor serves both levels. Settling the claim needs a
+measurable gain over the same monitor without progress states, for learned as well as
+hand-written skills, and on real hardware.
 
 \section{This repository: two streams}
 
 \url{https://github.com/pinhas019/LtlMonitor} is the ongoing development of the question
-this project started from: can a skill described in natural language be lifted to LTL,
-given an LTL description of its progress, and monitored against it at runtime? The work
-advances in two streams. \emph{Skill description}: a language model drafts the skill's
-progress structure, which is converted to LTL and compiled to automata with
-Spot~3~\cite{duretlutz2022spot}. \emph{Skill monitoring}: at runtime a language model and
-Python boolean guard evaluators supply the atomic propositions, and verdicts follow the
-three-valued semantics of Bauer et al.~\cite{bauer2011runtime}, graded from a warning
-through to an abort. Named failure modes run as parallel safety monitors, so a fault is
-attributed to a named condition rather than to the specification as a whole. One skill's
-compiled specification reads, in abbreviated form:
+this project started from: lifting a skill described in natural language into LTL, deriving
+an LTL description of its progress, and monitoring the skill against that description at
+runtime. The work advances in two streams. \emph{Skill description}: a language model
+drafts the skill's progress structure, which is converted to LTL and compiled to automata
+with Spot~3. \emph{Skill monitoring}: at runtime a language model and Python boolean guard
+evaluators supply the atomic propositions, and verdicts follow three-valued LTL semantics,
+graded from a warning through to an abort. Named failure modes run as parallel safety
+monitors, so a fault is attributed to a named condition rather than to the specification as
+a whole. One skill's compiled specification reads, in abbreviated form:
 
 \begin{center}\footnotesize
 \begin{tabular}{@{}ll@{}}
@@ -82,7 +75,7 @@ Each proposition carries an executable rule over the sensor keys the robot's ada
 declares, and a generated description is checked against that schema before it runs, which
 is what makes a free-language description executable on the robot it was written for;
 existing work instead grounds into a signature fixed in advance, or judges groundedness
-with a learned classifier~\cite{english2025ginsign}.
+with a learned classifier.
 
 The monitor currently runs against simple tasks in a continuous version of MiniGrid,
 integrated with MAAOS, and is under development for monitoring Elias's TRAV navigation
@@ -90,9 +83,17 @@ application on the humanoid. MAAOS is Fouzi's project, and I worked on it with h
 
 \section{Results: where it helped, where it did not, and why}
 
-The ablation runs three arms per scenario --- monitor off, detection-only, detection with
-re-planning --- over single-agent and cooperative box-push, at ten seeds per cell for the
-deterministic monitors and five for the LLM-backed ones.
+\textbf{The environment and the task.} Both tasks are box-push in a continuous version of
+MiniGrid: a grid world whose agents move and push under continuous dynamics rather than in
+unit steps, with lava tiles as hazards. In the single-agent task one agent must reach a
+heavy box and push it onto a goal tile. The cooperative task gives the same box to two
+agents, which must both reach it, align on the same side, and push it synchronously ---
+a formation that breaks if either agent drifts, so the skill interleaves alignment
+corrections with pushing. Each task runs under three scenarios: a clean plan, a
+hazard-navigation approach to the box, and an injected fault --- a corrupted plan for the
+single agent, a coordination deadlock for the pair. The ablation runs three arms per
+scenario --- monitor off, detection-only, detection with re-planning --- at ten seeds per
+cell for the deterministic monitors and five for the LLM-backed ones.
 
 \textbf{Where it helped: only when detection was coupled to recovery.} On the corrupted
 single-agent plan the unmonitored baseline succeeded in no seed and detection with
@@ -127,12 +128,14 @@ but not yet under the planner or in continuous physics.
 The system was deployed across two tiers --- clock, evaluator and recorder on the robot,
 monitor and operator console on the development machine --- and run, recording the episode
 as it went; the recording replayed to identical verdicts, so a verdict does not depend on
-the machine producing it. It remains under development: only part of the specification was
-exercised, the navigation experiment has not run, and good assessment on hardware will need
-a vision--language model in the proposition layer, which is not built. The mechanism itself
-is embodiment-independent --- the real G1, MuJoCo and Isaac Lab adapters expose an identical
+the machine producing it. It is currently under development: only part of the specification
+was exercised and the navigation experiment has not run. The intended use is to monitor
+Elias's TRAV navigation application on the robot, which will be the first skill developed
+independently of the monitor; good assessment there will also need a vision--language model
+in the proposition layer, which is not built. The mechanism itself is
+embodiment-independent --- the real G1, MuJoCo and Isaac Lab adapters expose an identical
 sensor schema over entirely different topics, and one engine runs across all three
-unchanged --- and the failure classes caught here are the ones that dominate a humanoid in
+unchanged --- and the failure classes caught so far are the ones that dominate a humanoid in
 an unstructured environment, not gridworld artefacts.
 
 \section{Next steps}
@@ -140,15 +143,20 @@ an unstructured environment, not gridworld artefacts.
 Deploy on the high-fidelity simulator, Isaac Sim or MuJoCo, which is what lets the claim be
 evaluated in volume rather than demonstrated, and extend to more skills --- pick-and-place
 next, alongside the navigation application and a learned policy. For the proposition layer
-the intended direction is a vision--language monitor, with the 2025 MIT work on
-vision--language failure detection as the baseline; evaluation follows in two stages, an
-ALFWorld ablation comparing the monitor with and without the progress-state description,
-then VLABench and NaVila. The literature review on description and monitoring is complete
-and the work will be refined against it, including positioning against runtime-verification
-tools for ROS~\cite{ferrando2020rosmonitoring,rtamt2024}, which monitor hand-written
-specifications rather than ones derived from a skill description.
+the intended direction is a vision--language monitor, evaluated in two stages: an ablation
+comparing the monitor with and without the progress-state description, then vision--language
+benchmarks once that monitor exists.
 
-\bibliographystyle{abbrv}
-{\footnotesize\bibliography{references}}
+The literature review on description and monitoring is complete, and the work will be
+refined against it. The next reading is the twenty-paper queue in the repository's
+\texttt{papers/} folder, in three groups: the positioning papers on grounding natural
+language into temporal logic (GinSign, Lang2LTL, NL2TL, nl2spec, NL2LTL) and on
+verify--repair loops; the foundations and tools the implementation already rests on (LTL$_3$
+runtime verification, Spot, RTAMT, ROSMonitoring, Reelay, Safe-ROS, finite-observation
+semantics); and the contrast class --- the vision--language failure detectors Foresight and
+FailSafe, embedding-based temporal-logic monitoring, and multi-property monitoring --- which
+is where the objection ``VLMs detect robot failures now, why do I need a specification?''
+has to be answered, on interpretability, auditability and zero training data rather than on
+accuracy.
 
 \end{document}
