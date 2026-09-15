@@ -30,9 +30,12 @@ the four-pass build. Do not re-add `\cite` markers piecemeal.
 
 **The claim.** Progress states are the **semantic** state of the robot with respect to the
 task --- equivalence classes of world-robot configurations indistinguishable with respect
-to task advancement. Boolean guards are the *transitions*, and their role in the argument
-is that they make per-tick assessment **cheap**; do not re-describe them as where the
-semantics live. The skill **can** deviate --- not *must*, not *does*.
+to task advancement. The transitions are **semantic predicates**, and only *part* of those
+predicates translates into boolean guards --- an earlier draft said flatly that "transitions
+between them are boolean guards", which overclaims. The guards' role in the argument is that
+they make per-tick assessment **cheap where it applies**; do not re-describe them as where
+the semantics live, and do not restore the unqualified version. The skill **can** deviate ---
+not *must*, not *does*.
 
 Three things were removed deliberately and must not be reinstated:
 
@@ -54,7 +57,9 @@ and the question mark read as though the project were still asking rather than b
 
 **Where it runs.** Simple tasks in a **continuous version of MiniGrid**, integrated with
 MAAOS; TRAV navigation is *under development*, not deployed. TRAV and MAAOS are examples,
-not the subject.
+not the subject. The credit line is specific and should stay specific: *MAAOS is Fouzi's
+project, and I worked on it to integrate it into the continuous version of MiniGrid* --- the
+contribution is the integration, not the project.
 
 **Results** open by **describing the environment and the task** --- continuous-dynamics grid
 world, lava hazards, the single-agent push, the two-agent align-and-push formation, and the
@@ -83,22 +88,35 @@ independently of the monitor --- and that good assessment there needs a **VLM in
 proposition layer**, which is not built. The embodiment-independence argument (three
 adapters, one schema, one engine) is folded into this section; it used to be its own.
 
-**Next steps**: deploy on the simulator (Isaac Sim / MuJoCo), extend to more skills
-(pick-and-place next), and refine against the literature review, which is **complete** on
-description and monitoring. The **next reading is the twenty-paper queue in `papers/`**,
-named in prose in its three groups --- positioning (NL-to-LTL grounding, verify-repair),
-foundations and tools (LTL3, Spot, RTAMT, ROSMonitoring, Reelay, Safe-ROS), and the
-contrast class (Foresight, FailSafe, embedding TL, multi-property). Keep the contrast
-class's framing: the "why not just a VLM?" objection is answered on interpretability,
-auditability and zero training data --- **not** on accuracy, which is not a fight worth
-picking. See `papers/README.md`.
+**Next steps is a three-item bulleted list**, and should stay one --- prose here was hard to
+scan:
+
+1. **Simulation integration** (Isaac Sim / MuJoCo; the robot's own stack and scenario reset
+   are what remain), which is also where pick-and-place and a learned policy come in.
+2. **Deploy on the G1 and the TRAV navigation application**, evaluated by the same
+   monitor-on / monitor-off ablation as MiniGrid. This bullet must carry the **expectation
+   that the monitored arm completes more runs**, and the reason: the failures that end a
+   navigation episode (stalling, a stuck recovery loop, a safety-guard violation) are the
+   classes detection already caught in simulation, where catching them early enough to
+   re-plan is what converted a failed run into a completed one. TRAV is being developed
+   independently of the monitor, so this is the first test on a skill the monitor did not
+   shape.
+3. **Papers review** --- the review on description and monitoring is **complete**; the
+   twenty-paper queue in `papers/` is the next reading, introduced in three directions:
+   positioning (NL-to-LTL grounding, verify-repair), foundations and tools (LTL3, Spot,
+   RTAMT, ROSMonitoring, Reelay, Safe-ROS), and the contrast class (Foresight, FailSafe,
+   embedding TL). Keep the contrast class's framing: the "why not just a VLM?" objection is
+   answered on interpretability, auditability and zero training data --- **not** on accuracy,
+   which is not a fight worth picking. See `papers/README.md`.
 
 ## It is two pages, and it is full
 
-~1300 words of body prose and one specification example. Removing the bibliography bought
-the space the environment description now occupies; there is no headroom left. If a trim is
-forced, cut in this order --- the two-stage vision--language evaluation sentence, then the
-contrast-class clause in "Next steps", then the specification example table.
+~1320 words of body prose and one specification example, and it is at the page boundary ---
+adding two sentences pushes it to three pages. Paying for the Next-steps bullets already cost
+the "settling the claim" sentence, the GinSign contrast clause, and half the
+embodiment-independence argument in the G1 section. If a trim is forced again, cut in this
+order --- the contrast-class clause in "Next steps", the remaining embodiment-independence
+clause, then the specification example table.
 
 Two register choices are deliberate and easy to undo by accident:
 
