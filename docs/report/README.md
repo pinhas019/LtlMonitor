@@ -101,13 +101,16 @@ scan:
    re-plan is what converted a failed run into a completed one. TRAV is being developed
    independently of the monitor, so this is the first test on a skill the monitor did not
    shape.
-3. **Papers review** --- the review on description and monitoring is **complete**; the
-   twenty-paper queue in `papers/` is the next reading, introduced in three directions:
-   positioning (NL-to-LTL grounding, verify-repair), foundations and tools (LTL3, Spot,
-   RTAMT, ROSMonitoring, Reelay, Safe-ROS), and the contrast class (Foresight, FailSafe,
-   embedding TL). Keep the contrast class's framing: the "why not just a VLM?" objection is
-   answered on interpretability, auditability and zero training data --- **not** on accuracy,
-   which is not a fight worth picking. See `papers/README.md`.
+3. **Papers review** --- the review on description and monitoring is **complete**; the queue
+   in `papers/` continues in three directions. This bullet lists **directions and what each
+   is aimed at getting**, not papers: individual titles were removed deliberately, since a
+   reading list tells a supervisor nothing about where the research goes. Keep each direction
+   to one clause plus its aim --- NL-to-temporal-logic (can the translation come off the
+   shelf, keeping the contribution on the progress structure), runtime-verification
+   foundations and tools (what to adopt, and how to state the difference from monitors handed
+   a written specification), and vision-language failure detection (the baseline to measure
+   against, and what it offers the G1's proposition layer). The titles behind each direction
+   are in `papers/README.md`.
 
 ## It is two pages, and it is full
 

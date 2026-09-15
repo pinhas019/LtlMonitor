@@ -147,17 +147,14 @@ simulation, where catching them early enough to re-plan is what converted a fail
 a completed one. Since the navigation application is being developed independently of the
 monitor, this is the first test of the claim on a skill the monitor did not shape.
 
-\item \textbf{Papers review.} The review on description and monitoring is complete; the
-twenty-paper queue in the repository's \texttt{papers/} folder is the next reading, in three
-directions. \emph{Positioning} --- grounding natural language into temporal logic (GinSign,
-Lang2LTL, NL2TL, nl2spec) and verify--repair loops: they translate a command into a formula,
-where this work derives a progress structure and monitors against it. \emph{Foundations and
-tools} --- LTL$_3$ runtime verification, Spot, RTAMT, ROSMonitoring, Reelay and Safe-ROS,
-which the implementation rests on and which monitor hand-written specifications rather than
-derived ones. \emph{The contrast class} --- the vision--language failure detectors Foresight
-and FailSafe, and embedding-based temporal-logic monitoring, where the objection ``VLMs
-detect robot failures now, why do I need a specification?'' has to be answered on
-interpretability, auditability and zero training data, not on accuracy.
+\item \textbf{Papers review.} The review on description and monitoring is complete; the queue
+in \texttt{papers/} continues in three directions, each aimed at something specific.
+\emph{Natural language to temporal logic}: whether the translation can be taken off the
+shelf, which would keep the contribution on the progress structure rather than the parsing.
+\emph{Runtime-verification foundations and tools}: what to adopt from existing engines and
+semantics, and how to state the difference from monitors handed a written specification.
+\emph{Vision--language failure detection}: the baseline to measure against, and what it
+offers the proposition layer the G1 needs.
 \end{itemize}
 
 \end{document}
