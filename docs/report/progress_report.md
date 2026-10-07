@@ -1,0 +1,134 @@
+# Skill Progress Monitoring
+
+**Progress Report**
+
+Pinhas Nehoray Aburmad
+Supervisor: Prof. Ronen Brafman
+Department of Computer Science, Ben-Gurion University of the Negev
+
+7 September 2026
+
+---
+
+## The claim
+
+A robot skill executing in an unstructured environment can deviate from its intended
+behaviour; the question is how to tell, early enough to intervene. The claim of this work is
+that skill execution can be represented as a finite set of *progress states*: the *semantic*
+state of the robot with respect to the task, as equivalence classes of world–robot
+configurations indistinguishable with respect to task advancement. The transitions between
+them are semantic predicates, and part of those predicates translates into boolean guards —
+which is what makes assessment cheap where it applies: the semantics live in the states, and
+much of the per-tick work reduces to a boolean evaluation. Because the monitor's position in
+that structure is explicit, it produces a human-readable trace and can say *why* a failure is
+imminent rather than only that one is.
+
+The weakness this addresses is the limited context awareness of current language- and
+vision-based monitors, which reason only from what is currently observable. Progress states
+ground the assessment instead, lifting it out of a single free-text prompt into a
+semi-structured state graph in which the monitor's position is carried between ticks. Because
+every skill carries the same structure, task progression is a concatenation of skill
+progressions and one monitor serves both levels.
+
+## This repository: two streams
+
+<https://github.com/pinhas019/LtlMonitor> is the ongoing development of the question this
+project started from: lifting a skill described in natural language into LTL, deriving an LTL
+description of its progress, and monitoring the skill against that description at runtime.
+The work advances in two streams. *Skill description*: a language model drafts the skill's
+progress structure, which is converted to LTL and compiled to automata with Spot 3. *Skill
+monitoring*: at runtime a language model and Python boolean guard evaluators supply the
+atomic propositions, and verdicts follow three-valued LTL semantics, graded from a warning
+through to an abort, and named failure modes run as parallel safety monitors. A compiled
+specification reads, in abbreviated form:
+
+| | |
+|---|---|
+| progress | `F(mission_started & F(path_active & F(moving_to_target & F(mission_finished))))` |
+| safety | `G(!collision_risk)`  `G(upright)` |
+
+Each proposition carries an executable rule over the sensor keys the robot's adapter
+declares, and a generated description is checked against that schema before it runs — which
+is what makes a free-language description executable on the robot it was written for.
+
+The monitor currently runs against simple tasks in a continuous version of MiniGrid,
+integrated with MAAOS, and is under development for monitoring Elias's TRAV navigation
+application on the humanoid. MAAOS is Fouzi's project, and I worked on it to integrate it
+into the continuous version of MiniGrid.
+
+## Results: where it helped, where it did not, and why
+
+**The environment and the task.** Both tasks are box-push in a continuous version of
+MiniGrid: a grid world whose agents move and push under continuous dynamics rather than unit
+steps, with lava tiles as hazards. In the single-agent task one agent must reach a heavy box
+and push it onto a goal tile. The cooperative task gives the same box to two agents, which
+must both reach it, align on the same side and push synchronously — a formation that breaks
+if either drifts, so the skill interleaves alignment corrections with pushing. Each task runs
+three scenarios: a clean plan, a hazard-navigation approach to the box, and an injected fault
+— a corrupted plan for the single agent, a coordination deadlock for the pair — under three
+arms each: monitor off, detection-only, detection with re-planning, at ten seeds per cell for
+the deterministic monitors and five for the LLM-backed ones.
+
+**Where it helped: only when detection was coupled to recovery.** On the corrupted
+single-agent plan the unmonitored baseline succeeded in no seed and detection with
+re-planning in every one (Δ = +1.00). The cooperative deadlock repeats it: unmonitored, the
+run exhausted its 80-step budget and failed in every seed; the rule-based LTL monitor with
+re-planning recovered every seed (Δ = +1.00) in about 45 steps, and the LLM-labelled variant
+matched it.
+
+**Where it did not: detection alone, everywhere.** Every detection-only arm scored Δ = +0.00.
+Halting at the violation — step 10 of 80 on the deadlock — stops the trajectory drifting
+further, but stopping is not reaching the goal: the monitor's measured value is in what the
+verdict lets the planner do next, not in the verdict.
+
+**Where it did not: the unstructured LLM judge.** A pure natural-language judge scored
+Δ = +0.00 even with recovery enabled, where the LTL monitors scored +1.00 on the same
+scenario and seeds. A free-text verdict says something is wrong without locating it in the
+skill's progress, so the re-planner has nothing specific to act on — the argument for
+progress states, measured.
+
+**False alarms, and a specification fault.** Clean and hazard-navigation scenarios held at
+1.00 success with zero false alarms across all monitors and arms. The one failure was a
+specification fault of my own: a predicate demanded the two agents stay continuously aligned,
+whereas the real push skill interleaves alignment with pushing, so the monitor flagged
+correct behaviour on every clean run. Relaxing the formula fixed it; a stronger judge model
+did not — the fault lay in the description, not the monitor. These runs drove scripted
+reference plans rather than the live MAAOS planner, and the figures come from discrete-mode
+episodes, so they establish detection and the value of intervening on it but not yet under
+the planner or in continuous physics.
+
+## The G1
+
+The system was deployed across two tiers — clock, evaluator and recorder on the robot,
+monitor and operator console on the development machine — and run, recording the episode as
+it went; the recording replayed to identical verdicts, so a verdict does not depend on the
+machine producing it. It is currently under development: only part of the specification was
+exercised and the navigation experiment has not run. The intended use is to monitor Elias's
+TRAV navigation application on the robot; good assessment there will also need a
+vision–language model in the proposition layer, which is not built. The mechanism itself is
+embodiment-independent: the real G1, MuJoCo and Isaac Lab adapters expose an identical sensor
+schema over entirely different topics, and one engine runs across all three unchanged.
+
+## Next steps
+
+- **Simulation integration.** Bring the monitor up inside the high-fidelity simulator, Isaac
+  Sim or MuJoCo; what remains there is the robot's own stack and scenario reset. This is what
+  lets the claim be evaluated in volume rather than demonstrated, and where the next skills —
+  pick-and-place, then a learned policy — come in.
+
+- **Deploy on the G1 and the TRAV navigation application.** The evaluation is the same
+  ablation as in MiniGrid, monitor on against monitor off, and we expect the monitored arm to
+  complete more runs. The failures that end a navigation episode — stalling, a stuck recovery
+  loop, a safety-guard violation — are the classes detection already caught in simulation,
+  where catching them early enough to re-plan is what converted a failed run into a completed
+  one. Since the navigation application is being developed independently of the monitor, this
+  is the first test of the claim on a skill the monitor did not shape.
+
+- **Papers review.** The review on description and monitoring is complete; the queue in
+  `papers/` continues in three directions, each aimed at something specific. *Natural language
+  to temporal logic*: whether the translation can be taken off the shelf, which would keep the
+  contribution on the progress structure rather than the parsing. *Runtime-verification
+  foundations and tools*: what to adopt from existing engines and semantics, and how to state
+  the difference from monitors handed a written specification. *Vision–language failure
+  detection*: the baseline to measure against, and what it offers the proposition layer the G1
+  needs.

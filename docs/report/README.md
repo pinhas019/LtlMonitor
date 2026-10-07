@@ -1,16 +1,28 @@
 # Progress report
 
-`progress_report.tex` --- a two-page progress report for the supervisor. Source only;
-the PDF is not tracked.
+A progress report for the supervisor.
 
-## Build
+## Format: Markdown is the one to edit
+
+**`progress_report.md` is the live document.** Edit it there.
+
+`progress_report.tex` is the earlier LaTeX version, kept for the moment because it is what
+produced the PDF that was sent. It is **no longer the source of truth** --- the two were
+verified word-for-word identical at the point of conversion, and any edit since has gone into
+the Markdown only. Do not edit both; if the LaTeX is ever needed again, re-derive it from the
+Markdown rather than hand-syncing.
+
+The structural rules below apply to whichever file is being edited --- they are about what the
+report says, not how it is typeset.
+
+### Building the LaTeX version, if it is still around
 
 ```bash
 pdflatex progress_report && pdflatex progress_report
 ```
 
 **Two passes, no `bibtex`.** The report has no bibliography --- see "No citations" below.
-Or upload `progress_report.tex` to Overleaf and build with pdfLaTeX. Verified here against
+Or upload `progress_report.tex` to Overleaf and build with pdfLaTeX. Verified against
 TeX Live 2023 (Ubuntu `texlive-latex-base`, `-latex-recommended`, `-latex-extra`,
 `-fonts-recommended`, `lmodern`): **2 pages, no warnings, no overfull or underfull boxes.**
 
@@ -112,10 +124,13 @@ scan:
    against, and what it offers the G1's proposition layer). The titles behind each direction
    are in `papers/README.md`.
 
-## It is two pages, and it is full
+## Length: it was exactly two pages
 
-~1320 words of body prose and one specification example, and it is at the page boundary ---
-adding two sentences pushes it to three pages. Paying for the Next-steps bullets already cost
+~1320 words of body prose and one specification example. In the LaTeX version that was
+*exactly* two pages with nothing to spare --- adding two sentences pushed it to three.
+Markdown has no page boundary, so the constraint is no longer mechanical; keep it anyway as
+the register this report is written in. It is a two-page report, and that is why it reads the
+way it does. Paying for the Next-steps bullets already cost
 the "settling the claim" sentence, the GinSign contrast clause, and half the
 embodiment-independence argument in the G1 section. If a trim is forced again, cut in this
 order --- the contrast-class clause in "Next steps", the remaining embodiment-independence
