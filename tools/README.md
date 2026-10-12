@@ -52,3 +52,14 @@ empty scene rather than a message naming the missing frame.
 The `filtered_map` display needs `grid_map_rviz_plugin`, which on the G1's own host had
 to be built natively — see `g1_gridmap_navigation_refinement.md` in the TRAV repo. Every
 other display is a stock `rviz_default_plugins` one.
+
+## `analyze_episodes.py`
+
+Renders episode records (`core/episode_record.py`, written by
+`backend/ablation_runner.py`) as the results table: one row per arm × policy × scenario
+family, with success rate and Wilson interval, the change against policy `off` (Fisher
+exact p-value, bootstrap interval), detection precision / recall / F1 against the
+injected ground truth, time to detection and recoveries. The statistics live in
+`skill_monitor/core/analysis.py`; this file only reads and prints.
+
+    python tools/analyze_episodes.py full.jsonl flat.jsonl --out results.md
