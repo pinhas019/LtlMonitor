@@ -1,0 +1,56 @@
+{
+  "faults": {
+    "No fault": {
+      "fell": false,
+      "dx_m": 4.09,
+      "fired_at": []
+    },
+    "Push (300 N, sideways)": {
+      "fell": true,
+      "dx_m": 1.18,
+      "fired_at": [
+        3.02
+      ]
+    },
+    "Slip (friction \u03bc 0.1)": {
+      "fell": true,
+      "dx_m": 3.23,
+      "fired_at": [
+        3.02
+      ]
+    },
+    "Weaken (torque \u00d7 0.5)": {
+      "fell": true,
+      "dx_m": 2.3,
+      "fired_at": [
+        3.02
+      ]
+    },
+    "Stall (legs stop, command stays)": {
+      "fell": false,
+      "dx_m": 1.46,
+      "fired_at": [
+        3.02
+      ]
+    },
+    "Odometry drift (0.1 m/s)": {
+      "fell": false,
+      "dx_m": 4.09,
+      "fired_at": [
+        3.02
+      ]
+    }
+  },
+  "stall": {
+    "stall_at_s": 6.0,
+    "no_progress_first_true_s": 17.0,
+    "latency_s": 11.0,
+    "commanded_mps_after_stall": 0.5,
+    "measured_mps_last5s": 0.015
+  },
+  "block_route_min_range_m": {
+    "before": 2.91,
+    "after": 1.83
+  },
+  "push_frames_fell": true
+}
