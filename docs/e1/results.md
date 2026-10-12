@@ -34,6 +34,35 @@ A fault *mattered* when the episode failed under `off` (judged from ground truth
 | stall | 15/20 | 15/15 | 14/15 | 1/15 | 1 |
 | weaken | 20/20 | 19/20 | 19/20 | 19/20 | 0 |
 
+## Paired: full spec against each flat arm, scenario by scenario
+
+*detect*: policy `off`, episodes that failed, ticks from injection to the first intervention. *deliver*: policy `recover`, episodes both arms completed, simulated seconds to finish. Lower is better; the sign test counts the pairs where the full spec was lower against those where it was higher.
+
+| family | against | measure | pairs | median full | median other | full lower / tie / higher | sign test p |
+|---|---|---|---|---|---|---|---|
+| block_route | flat | deliver | 6 | 28.5 | 28.5 | 0 / 6 / 0 | 1 |
+| block_route | flat_strict | deliver | 6 | 28.5 | 28.5 | 0 / 6 / 0 | 1 |
+| obstacle | flat | deliver | 12 | 20.0 | 20.0 | 0 / 12 / 0 | 1 |
+| obstacle | flat_strict | deliver | 12 | 20.0 | 20.0 | 0 / 12 / 0 | 1 |
+| odom_drift | flat | detect | 1 | 3.0 | 3.0 | 0 / 1 / 0 | 1 |
+| odom_drift | flat | deliver | 12 | 15.5 | 15.5 | 0 / 12 / 0 | 1 |
+| odom_drift | flat_strict | detect | 1 | 3.0 | 3.0 | 0 / 1 / 0 | 1 |
+| odom_drift | flat_strict | deliver | 12 | 15.5 | 15.5 | 0 / 12 / 0 | 1 |
+| push | flat | detect | 19 | 1.0 | 1.0 | 0 / 19 / 0 | 1 |
+| push | flat_strict | detect | 19 | 1.0 | 1.0 | 0 / 19 / 0 | 1 |
+| scan_dropout | flat | deliver | 20 | 16.0 | 16.0 | 0 / 20 / 0 | 1 |
+| scan_dropout | flat_strict | deliver | 20 | 16.0 | 16.0 | 0 / 20 / 0 | 1 |
+| slip | flat | detect | 10 | 7.0 | 7.0 | 0 / 10 / 0 | 1 |
+| slip | flat | deliver | 9 | 20.0 | 20.0 | 0 / 9 / 0 | 1 |
+| slip | flat_strict | detect | 10 | 7.0 | 7.0 | 0 / 10 / 0 | 1 |
+| slip | flat_strict | deliver | 9 | 20.0 | 20.0 | 0 / 9 / 0 | 1 |
+| stall | flat | detect | 14 | 11.0 | 11.0 | 0 / 14 / 0 | 1 |
+| stall | flat | deliver | 5 | 50.0 | 50.0 | 0 / 5 / 0 | 1 |
+| stall | flat_strict | detect | 1 | 12.0 | 33.0 | 1 / 0 / 0 | 1 |
+| stall | flat_strict | deliver | 5 | 50.0 | 50.0 | 0 / 5 / 0 | 1 |
+| weaken | flat | detect | 19 | 2.0 | 2.0 | 0 / 19 / 0 | 1 |
+| weaken | flat_strict | detect | 19 | 2.0 | 2.0 | 0 / 19 / 0 | 1 |
+
 ## Outcomes (all families pooled; success judged from simulator ground truth)
 
 | arm | policy | n | success (95% CI) | Δ vs off | mean recoveries |
