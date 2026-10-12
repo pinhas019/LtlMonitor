@@ -21,7 +21,6 @@ What is pinned is what the schema redesign does not touch -- the `odom`, `points
 ones being redesigned.
 """
 
-import inspect
 import json
 import math
 import sys
@@ -733,33 +732,35 @@ def test_a_ticked_state_never_warns_however_fast_the_topic():
     assert caught == [], [str(w.message) for w in caught]
 
 
-def test_nothing_in_the_declarative_adapter_drives_the_clock(monkeypatch):
-    """Pinning the live regression itself, so merging cannot make it invisible.
+def test_the_declarative_adapter_tick_advances_the_observation(monkeypatch):
+    """The replacement for the tripwire that pinned the old regression -- nothing called
+    `tick()`, so `get_sensor_eval()` returned schema defaults for the life of the
+    process. P3 landed: the evaluator calls `adapter.tick()` on every clock pulse
+    (`tests/test_evaluator_tick.py` drives that end to end), and the adapter's `tick()`
+    is what closes the window.
 
-    `DeclarativeAdapter._on_message` calls `update()` and nothing calls `tick()`, so
-    `get_sensor_eval()` returns the schema defaults for the life of the process. P3 is
-    the package that drives the clock; when it does, THIS test fails, and that failure
-    is the notification.
-
-    It asserts on the MECHANISM, not on the values. A test that feeds messages and
-    checks the values did not move still passes once a `tick()` method and a
-    `register_clock()` exist, because a unit test spins no node and starts no timer --
-    so the notification it was supposed to deliver would never arrive.
+    Asserts on the values moving, through the adapter's own `tick()`, so a future change
+    that stops folding fails here and not only in a node test.
     """
+    import ros_stub
+    ros_stub.install()
     from skill_monitor.backend.adapters import declarative
 
-    source = inspect.getsource(declarative)
-    assert ".tick(" not in source, (
-        "declarative.py now calls tick(): P3 has landed. Replace this test with one "
-        "that asserts the observation DOES advance")
-
     adapter = declarative.DeclarativeAdapter("real_g1")
-    assert not hasattr(adapter, "tick"), "the adapter grew a tick() -- see above"
-    assert not hasattr(adapter, "register_clock"), (
-        "the adapter grew a clock hook -- see above")
+    status = next(s for s in adapter.spec.sources if s.id == "status")
+    default = adapter.get_sensor_eval()["nav_state"]
+    adapter._on_message(status, ros_stub.Message(data=json.dumps(
+        {"mode": "AUTOMATIC", "state": "following", "finished": False,
+         "num_waypoints": 2, "current_target_idx": 0})))
+    assert adapter.get_sensor_eval()["nav_state"] == default, "folded before the tick"
 
-    # Registering subscriptions must not create a timer either: a timer that calls
-    # nothing is how this ends up half-wired and looking finished.
+    adapter.tick()
+    assert adapter.get_sensor_eval()["nav_state"] == "following"
+    assert adapter.data_health()["status"]["refreshed"] is True
+    assert adapter.state.pending_samples() == 0
+
+    # The adapter must not drive itself: the clock is the evaluator's, and an adapter
+    # with its own timer would fold on a schedule the monitor's `seq` knows nothing of.
     subscriptions, timers = [], []
 
     class _FakeNode:
@@ -773,17 +774,19 @@ def test_nothing_in_the_declarative_adapter_drives_the_clock(monkeypatch):
     monkeypatch.setattr(declarative, "_msg_class", lambda type_str: object)
     adapter.register_subscriptions(_FakeNode())
     assert len(subscriptions) == len(adapter.spec.sources), "sanity: it did subscribe"
-    assert timers == [], "a timer was created, but nothing calls tick()"
+    assert timers == [], "the adapter created its own timer; the evaluator's clock drives it"
 
     # ...and the consequence, through the real message path rather than around it.
     odom = next(s for s in adapter.spec.sources if s.id == "odom")
     before = adapter.get_sensor_eval()
     for _ in range(50):
         adapter._on_message(odom, _shipped_odom(pz=0.2, vx=1.25))
-
     assert adapter.get_sensor_eval() == before, "something else is writing the values"
-    assert adapter.state.updates_since_tick == 50, (
-        "the window is where those 50 messages went, and it is not being closed")
+    assert adapter.state.updates_since_tick == 50
+
+    adapter.tick()
+    assert adapter.get_sensor_eval() != before, "the tick closed the window and moved nothing"
+    assert adapter.state.updates_since_tick == 0
 
 
 # ---------------------------------------------------- within-message chaining

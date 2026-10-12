@@ -181,6 +181,20 @@ class SensorAdapter(ABC):
         """Confidence in this tick's sensor_eval, 0.0-1.0. Default 1.0."""
         return 1.0
 
+    # -- the tick ------------------------------------------------------------
+    # The evaluator calls `tick()` once per clock pulse and then reads
+    # `get_sensor_eval()` and `data_health()`, both of which describe the tick that
+    # just closed. Defaulted so a hand-written adapter, which keeps no window, needs
+    # no change to run under a clock.
+
+    def tick(self) -> None:
+        """Close this tick's sensor window. Default: nothing to fold."""
+
+    def data_health(self) -> dict:
+        """Per-source health for the tick just closed, keyed by source id, in the shape
+        `api.validate_observation` requires. Default: no sources are declared."""
+        return {}
+
     # -- raw echo ------------------------------------------------------------
     # The evaluator publishes the raw echo out of these two calls and knows nothing else
     # about them. Defaulted here rather than probed with `hasattr` at the call site, so

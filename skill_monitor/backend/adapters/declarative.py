@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import time
 
 from skill_monitor.core import adapter_spec
 from skill_monitor.backend.adapters.base import Freshness, SensorAdapter
@@ -72,6 +73,15 @@ class DeclarativeAdapter(SensorAdapter):
             tracked, stale_after=stale_after,
             **({"clock": clock} if clock is not None else {}),
         )
+        # Per-source arrival bookkeeping for `data_health()`. Counted here rather than
+        # read back from SensorState because a message whose steps extract nothing
+        # still arrived, and the health block is about arrivals.
+        self._clock = clock if clock is not None else time.monotonic
+        self._started = self._clock()
+        self._last_tick_at: float | None = None
+        self._last_rx: dict[str, float | None] = {s.id: None for s in self.spec.sources}
+        self._samples: dict[str, int] = {s.id: 0 for s in self.spec.sources}
+        self._health: dict = {}
         # Off until something asks. See raw_echo.py for what a summary looks like and
         # what bounds its size and rate; `tick_hz` is what the stride is derived from.
         self._echo = RawEcho({s.id: s.topic for s in self.spec.sources},
@@ -96,6 +106,8 @@ class DeclarativeAdapter(SensorAdapter):
         if payload is None and src.decode == "json":
             return
         contribution = self.state.update(src.id, payload)
+        self._last_rx[src.id] = self._clock()
+        self._samples[src.id] += 1
         if src.tracked:
             self._fresh.stamp(src.id)
         # The one place a raw ROS message still exists: after this method returns it has
@@ -113,6 +125,43 @@ class DeclarativeAdapter(SensorAdapter):
 
     def take_raw_echo(self) -> tuple[str, dict] | None:
         return self._echo.take()
+
+    # -- the tick ------------------------------------------------------------
+
+    def tick(self) -> None:
+        """Fold the open window into this tick's values and record per-source health.
+
+        The health block is computed from the same window the fold consumed, so it
+        describes exactly the tick `get_sensor_eval()` now returns. The counters reset
+        even when the fold raises: `SensorState.tick()` drops the window on failure,
+        and counts that outlived their samples would describe a tick that never closed.
+        """
+        now = self._clock()
+        nominal = 1.0 / self.spec.tick_hz
+        elapsed = (now - self._last_tick_at) if self._last_tick_at is not None else nominal
+        elapsed = elapsed if elapsed > 0 else nominal
+        samples, self._samples = self._samples, {sid: 0 for sid in self._samples}
+        self._last_tick_at = now
+        self.state.tick()
+
+        refreshed = self.state.refreshed_sources()
+        health = {}
+        for src in self.spec.sources:
+            last = self._last_rx[src.id]
+            health[src.id] = {
+                "rate_hz": samples[src.id] / elapsed,
+                "expected_hz": float(src.expected_hz),
+                # Never received: the honest finite answer is "nothing since we
+                # started", not infinity, which JSON cannot carry.
+                "age_s": now - (last if last is not None else self._started),
+                "samples_this_tick": samples[src.id],
+                "refreshed": src.id in refreshed,
+                "dropped": 0,
+            }
+        self._health = health
+
+    def data_health(self) -> dict:
+        return {sid: dict(entry) for sid, entry in self._health.items()}
 
     def get_sensor_eval(self) -> dict:
         return self.validate_sensor_eval(self.state.sensor_eval())

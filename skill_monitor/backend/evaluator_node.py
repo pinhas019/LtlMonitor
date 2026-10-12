@@ -143,7 +143,19 @@ class GenericClientNode(Node):
         # Everything environment-specific lives behind this one call.
         self.adapter.register_subscriptions(self)
 
-        self.timer = self.create_timer(1.0, self.evaluate_and_publish)
+        # Ingestion is event-driven; emission is tick-driven (docs/packages/P3). Each
+        # clock pulse folds the adapter's window and, when a skill is armed, publishes
+        # one observation stamped with the pulse's own `seq` -- the monitor's TickLedger
+        # refuses an envelope whose seq is not the clock's.
+        self.obs_pub = self.create_publisher(String, api.OBSERVATION, 10)
+        self.create_subscription(String, api.TICK, self.tick_callback, 10)
+        self._last_pulse_at: float | None = None
+        self._pulse_period = 1.0
+
+        # The fallback, not the driver: it does nothing while pulses arrive. With no
+        # clock running it keeps today's behaviour -- fold, evaluate, legacy wire only.
+        # No envelope then, because there is no clock `seq` to stamp it with.
+        self.timer = self.create_timer(1.0, self._on_timer)
 
         self.get_logger().info(
             f"Generic client started (adapter={type(adapter).__name__}, "
@@ -306,7 +318,41 @@ class GenericClientNode(Node):
                     pass
             return {}
 
+    # ------------------------------------------------------------------ the tick
+
+    #: Pulses may be this many periods late before the fallback timer takes over.
+    _PULSE_GRACE = 3.0
+
+    def tick_callback(self, msg: String):
+        """One clock pulse: fold the window and evaluate, stamped with the pulse."""
+        try:
+            pulse = json.loads(msg.data)
+        except Exception as e:
+            self.get_logger().error(f"Failed to parse clock pulse: {e}")
+            return
+        problems = api.validate_tick(pulse)
+        if problems:
+            self.get_logger().error(f"Ignoring clock pulse: {'; '.join(problems)}")
+            return
+        self._last_pulse_at = time.monotonic()
+        self._pulse_period = 1.0 / pulse["tick_hz"]
+        self._evaluate(seq=pulse["seq"], t=pulse["t"])
+
+    def _clock_alive(self) -> bool:
+        return (self._last_pulse_at is not None
+                and time.monotonic() - self._last_pulse_at
+                <= self._PULSE_GRACE * self._pulse_period)
+
+    def _on_timer(self):
+        if self._clock_alive():
+            return
+        self.evaluate_and_publish()
+
     def evaluate_and_publish(self):
+        """The no-clock path: fold and evaluate with no `seq`, so legacy wire only."""
+        self._evaluate(seq=None, t=None)
+
+    def _evaluate(self, *, seq: int | None, t: float | None):
         # Before the idle check: the echo is an operator looking at a sensor, which is
         # not conditional on a spec being armed.
         #
@@ -317,6 +363,17 @@ class GenericClientNode(Node):
             self._publish_raw_echo()
         except Exception as e:                                   # noqa: BLE001
             self.get_logger().error(f"Raw echo failed for this tick: {e!r}")
+
+        # Also above the idle return (P3): the window closes on every pulse, armed or
+        # not, or an idle stretch piles every message since boot into the first armed
+        # tick. A fold that raises has already dropped its window; publishing this tick
+        # would present the previous tick's values as this one's, so nothing goes out.
+        try:
+            self.adapter.tick()
+        except Exception as e:                                   # noqa: BLE001
+            self.get_logger().error(
+                f"Sensor fold failed for tick {seq}; nothing published for it: {e!r}")
+            return
 
         if self.idle or not self.required_aps:
             return
@@ -331,6 +388,9 @@ class GenericClientNode(Node):
             # rather than at observation time.
             "confidence": self.adapter.confidence(),
             "stale": list(self.adapter.stale_sources()),
+            "data_health": self.adapter.data_health(),
+            "seq": seq,
+            "t": t,
         }
         self.query_queue.put(snapshot)
         phase = self.state_desc.get("phase") or "—"
@@ -504,6 +564,29 @@ Reply with ONLY a JSON object. No markdown, no explanation.
         msg = String()
         msg.data = json.dumps(payload)
         self.eval_pub.publish(msg)
+
+        if task.get("seq") is not None:
+            self._publish_observation(task, final_evals, payload["__sensors__"])
+
+    def _publish_observation(self, task: dict, final_evals: dict, sensors: dict) -> None:
+        """The envelope beside the legacy payload. The monitor steps on whichever arrives
+        first for a tick and ignores the other, so publishing both cannot double-count
+        (`monitor_node._on_observation`)."""
+        payload = api.build_observation(
+            seq=task["seq"], t=task["t"],
+            step=None,                       # the evaluator tracks no episode
+            sensors=sensors,
+            ap_values={ap: bool(final_evals[ap]) for ap in task["required_aps"]},
+            unknown_aps=[],                  # P3: empty until three-valued APs land
+            confidence=float(task.get("confidence", 1.0)),
+            data_health=task.get("data_health") or {},
+        )
+        problems = api.validate_observation(payload)
+        if problems:
+            self.get_logger().error(
+                f"Not publishing observation for tick {task['seq']}: {'; '.join(problems)}")
+            return
+        self.obs_pub.publish(String(data=json.dumps(payload)))
 
 
 def main():
