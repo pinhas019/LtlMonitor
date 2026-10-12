@@ -2,8 +2,7 @@
   "name": "isaac_lab",
   "doc": "Isaac Lab G1 sim behind Nav2. Identical to mujoco except the range topic: /g1/lidar/points is assumed Z-up body-planar (no optical remap) -- verify against real Isaac Lab data, and set \"frame\": \"optical\" here if it turns out to need one. Run sim/odom_from_tf.py alongside so odom->pelvis is republished as /odom. /goal_pose is the commanded goal, published by sim/send_goal.py beside the NavigateToPose action -- the target handed to the planner, not the planner's report on it.",
   "schema": ["pose_schema.json", "nav_schema.json"],
-  "describe": ["min_range", "nav_state", "dist_to_goal", "image_similarity_to_goal"],
-  "defaults": {"num_waypoints": 1},
+  "describe": ["min_range", "dist_to_goal", "no_progress", "image_similarity_to_goal"],
   "sources": [
     {
       "id": "odom",
@@ -35,8 +34,12 @@
         {"key": "goal_x", "field": "pose.position.x", "round": 3},
         {"key": "goal_y", "field": "pose.position.y", "round": 3},
         {"key": "goal_active", "fn": "const", "args": {"value": true}},
+        {"key": "next_x", "field": "pose.position.x", "round": 3},
+        {"key": "next_y", "field": "pose.position.y", "round": 3},
         {"key": "dist_to_goal", "fn": "planar_distance", "on": "tick",
          "inputs": ["pos_x", "pos_y", "goal_x", "goal_y"], "round": 3},
+        {"key": "dist_to_next", "fn": "planar_distance", "on": "tick",
+         "inputs": ["pos_x", "pos_y", "next_x", "next_y"], "round": 3},
         {"key": "closing_speed", "fn": "rate_of_decrease", "on": "tick",
          "inputs": ["dist_to_goal"], "round": 3},
         {"key": "no_progress", "fn": "no_progress", "on": "tick",
@@ -53,22 +56,6 @@
       "steps": [
         {"key": "min_range", "fn": "min_range_points", "round": 2,
          "args": {"z_lo": 0.1, "z_hi": 1.5, "default": 10.0}}
-      ]
-    },
-    {
-      "id": "nav2",
-      "topic": "/navigate_to_pose/_action/status",
-      "type": "action_msgs/msg/GoalStatusArray",
-      "decode": "goal_status",
-      "qos": "action_status",
-      "tracked": false,
-      "steps": [
-        {"key": "nav_state", "fn": "nav2_status"},
-        {"key": "nav_mode", "fn": "const", "args": {"value": "AUTOMATIC"}},
-        {"key": "mission_finished", "fn": "eq", "inputs": ["nav_state"],
-         "args": {"to": "finished"}},
-        {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
-         "args": {"threshold": 10}}
       ]
     },
     {

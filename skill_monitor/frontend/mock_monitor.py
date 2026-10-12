@@ -598,17 +598,17 @@ def echo_message(source: dict, step: int, sensors: dict):
 def mock_kind(source: dict, summary: dict) -> dict:
     """A `kind` the console has no renderer for, on one source, on purpose.
 
-    `/path_manager/status` is a `std_msgs/String` carrying a JSON document, and a
-    summary of it as that document is a shape the page has never seen. It renders as a
-    pretty-printed dump, which is the extension point working: `kind` is open so that a
-    depth or lidar summary written next month shows an operator every field it carries
-    with no edit to the page. `--mock` exercises that path rather than leaving it to be
-    discovered by whoever adds the next sensor type.
+    The vision score is a bare `std_msgs` payload, and a summary of it as a JSON
+    document is a shape the page has never seen. It renders as a pretty-printed dump,
+    which is the extension point working: `kind` is open so that a depth or lidar
+    summary written next month shows an operator every field it carries with no edit to
+    the page. `--mock` exercises that path rather than leaving it to be discovered by
+    whoever adds the next sensor type.
 
     Deliberately the mock's invention and not the producer's -- it is what a *future*
     adapter does, which is the thing the page has to survive.
     """
-    if not str(source.get("type", "")).endswith("/String"):
+    if not str(source.get("type", "")).startswith("std_msgs/"):
         return summary
     document = summary.get("values") or {}
     return {key: value for key, value in summary.items()
@@ -1022,8 +1022,14 @@ class MockBus(MonitorBus):
         return len(phases) - 1, left
 
     def _sensors(self, step):
-        phase = min((self._phase_at(step)[0] or 0), 2)
         min_range = max(0.18, 3.0 - 0.02 * (step % 150))
+        # Walking along +X at 0.05 m per step toward a goal placed so the robot arrives
+        # ten steps before the episode ends -- so the spec's chain of eventualities is
+        # discharged by the same fabricated odometry the panes show. The intermediate
+        # point stays 1 m ahead of the robot, as a path follower's lookahead does.
+        pos_x = round(0.05 * step, 3)
+        goal_x = round(0.05 * (self._episode_steps() - 10), 3)
+        next_x = min(goal_x, pos_x + 1.0)
         return {
             "min_range": round(min_range, 3),
             "base_roll": round(0.02 * math.sin(step / 6.0), 4),
@@ -1032,12 +1038,12 @@ class MockBus(MonitorBus):
             "upright_flag": 1.0,
             "linear_vel": round(max(0.0, 0.45 + 0.08 * math.sin(step / 5.0)), 3),
             "angular_vel": round(0.15 * math.sin(step / 11.0), 3),
-            "nav_mode": "AUTOMATIC",
-            "nav_state": ("planning", "following", "following")[phase],
-            "num_waypoints": 4,
-            "current_target_idx": min(3, step // 20),
-            "mission_finished": step % 150 > 140,
-            "nav_stuck": False,
+            "pos_x": pos_x, "pos_y": 0.0, "pos_z": 0.78, "yaw": 0.0,
+            "goal_x": goal_x, "goal_y": 0.0, "goal_active": True,
+            "dist_to_goal": round(goal_x - pos_x, 3),
+            "next_x": next_x, "next_y": 0.0, "dist_to_next": round(next_x - pos_x, 3),
+            "closing_speed": 0.1 if goal_x - pos_x > 0.5 else 0.0,
+            "no_progress": False,
             "image_similarity_to_goal": round(min(0.95, 0.2 + 0.006 * (step % 150)), 3),
         }
 

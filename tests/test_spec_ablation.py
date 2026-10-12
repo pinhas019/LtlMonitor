@@ -121,7 +121,7 @@ def test_the_flattened_g1_spec_passes_the_monitors_load_gate():
     from skill_monitor.backend import monitor_node
     parsed = monitor_node.spec_from_dict(flat)
     assert [p["phase"] for p in parsed.execution_phases] == [FLAT_PHASE]
-    assert parsed.formulas == ["F(mission_finished && visually_at_goal)"]
+    assert parsed.formulas == ["F(at_goal && visually_at_goal)"]
 
 
 def test_the_cli_writes_a_valid_spec_and_refuses_a_broken_one(tmp_path, capsys):

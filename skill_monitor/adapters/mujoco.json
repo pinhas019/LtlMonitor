@@ -2,8 +2,7 @@
   "name": "mujoco",
   "doc": "MuJoCo sim harness (sim/mujoco_ros_bridge.py) behind Nav2. LaserScan gives range directly -- no PointCloud2 decode or axis remap. /goal_pose carries the commanded goal: sim/send_goal.py publishes it alongside the NavigateToPose action, and sim/mujoco_ros_bridge.py subscribes to it, so it is the target given to the planner rather than anything the planner says back.",
   "schema": ["pose_schema.json", "nav_schema.json"],
-  "describe": ["min_range", "nav_state", "dist_to_goal", "image_similarity_to_goal"],
-  "defaults": {"num_waypoints": 1},
+  "describe": ["min_range", "dist_to_goal", "no_progress", "image_similarity_to_goal"],
   "sources": [
     {
       "id": "odom",
@@ -35,8 +34,12 @@
         {"key": "goal_x", "field": "pose.position.x", "round": 3},
         {"key": "goal_y", "field": "pose.position.y", "round": 3},
         {"key": "goal_active", "fn": "const", "args": {"value": true}},
+        {"key": "next_x", "field": "pose.position.x", "round": 3},
+        {"key": "next_y", "field": "pose.position.y", "round": 3},
         {"key": "dist_to_goal", "fn": "planar_distance", "on": "tick",
          "inputs": ["pos_x", "pos_y", "goal_x", "goal_y"], "round": 3},
+        {"key": "dist_to_next", "fn": "planar_distance", "on": "tick",
+         "inputs": ["pos_x", "pos_y", "next_x", "next_y"], "round": 3},
         {"key": "closing_speed", "fn": "rate_of_decrease", "on": "tick",
          "inputs": ["dist_to_goal"], "round": 3},
         {"key": "no_progress", "fn": "no_progress", "on": "tick",
@@ -52,22 +55,6 @@
       "tracked": true,
       "steps": [
         {"key": "min_range", "fn": "min_range_scan", "round": 2, "args": {"default": 10.0}}
-      ]
-    },
-    {
-      "id": "nav2",
-      "topic": "/navigate_to_pose/_action/status",
-      "type": "action_msgs/msg/GoalStatusArray",
-      "decode": "goal_status",
-      "qos": "action_status",
-      "tracked": false,
-      "steps": [
-        {"key": "nav_state", "fn": "nav2_status"},
-        {"key": "nav_mode", "fn": "const", "args": {"value": "AUTOMATIC"}},
-        {"key": "mission_finished", "fn": "eq", "inputs": ["nav_state"],
-         "args": {"to": "finished"}},
-        {"key": "nav_stuck", "fn": "stuck_streak", "inputs": ["nav_state"],
-         "args": {"threshold": 10}}
       ]
     },
     {

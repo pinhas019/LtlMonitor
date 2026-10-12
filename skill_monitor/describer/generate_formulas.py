@@ -36,11 +36,13 @@ def schema_prompt(schema) -> str:
     return (
         "Available sensor fields (the evaluator reads exactly these, nothing else):\n"
         + "\n".join(lines)
-        + "\n\nEvaluation rule examples (the evaluator applies these literally):\n"
-        '  "True when linear_vel > 0.05"\n'
-        "  \"True when nav_state == 'following'\"\n"
-        "  \"True when nav_state in ['aborted', 'canceled']\"\n"
-        '  "True when min_range < 0.25"\n'
+        + "\n\nEvaluation rule syntax (the evaluator applies these literally; replace "
+        "each <field> with one of the fields above -- no other names exist):\n"
+        '  "True when <numeric_field> > 0.05"\n'
+        '  "True when <bool_field> == True"\n'
+        "  \"True when <string_field> == 'value'\"\n"
+        "  \"True when <string_field> in ['a', 'b']\"\n"
+        '  "True when <bool_field> == True and <numeric_field> < 0.5"\n'
     )
 
 

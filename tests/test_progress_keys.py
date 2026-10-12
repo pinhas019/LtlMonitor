@@ -107,3 +107,35 @@ def test_a_descriptor_cannot_restate_the_tick_rate_by_hand():
     with pytest.raises(ValueError, match="tick_hz"):
         adapter_spec.Step({"key": "closing_speed", "fn": "rate_of_decrease", "on": "tick",
                            "inputs": ["dist_to_goal"], "args": {"tick_hz": 5}}, "goal")
+
+
+def test_circling_at_a_constant_distance_is_not_progress(state):
+    """Moving is not progressing. A robot orbiting its goal at 2 m covers ground every
+    tick and closes on nothing, so it must read as stalled -- a speed-based signal
+    would call it healthy."""
+    import math
+    state.update("goal", _goal(5.0))
+    stalled = []
+    for i in range(12):
+        angle = i * 0.4
+        state.update("odom", _odom(5.0 + 2.0 * math.cos(angle), 2.0 * math.sin(angle)))
+        stalled.append(state.tick()["no_progress"])
+    assert stalled[-1] is True and stalled.index(True) <= 10
+
+
+def test_on_the_robot_progress_is_measured_against_the_goal_not_the_lookahead():
+    """The bug P12's goal split closes. The intermediate point on /next_waypoint moves
+    ahead with the robot, so the distance to it stays about constant while the robot
+    walks perfectly well -- read as the goal, that is a stall every ten seconds. The
+    goal is /waypoint, and against it the same walk is progress."""
+    st = adapter_spec.SensorState(adapter_spec.load("real_g1"))
+    st.update("goal", _ns(point=_ns(x=20.0, y=0.0, z=0.0)))
+    values = []
+    for i in range(15):
+        x = 0.5 * i
+        st.update("odom", _odom(x))
+        st.update("next_goal", _ns(point=_ns(x=x + 1.0, y=0.0, z=0.0)))
+        values.append(st.tick())
+    assert all(v["dist_to_next"] == pytest.approx(1.0) for v in values)
+    assert not any(v["no_progress"] for v in values)
+    assert values[-1]["closing_speed"] == pytest.approx(0.5)

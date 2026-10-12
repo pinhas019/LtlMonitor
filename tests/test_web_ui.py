@@ -476,13 +476,13 @@ def test_a_chained_eventuality_compiles_to_the_chain_the_formula_spells(bus):
     graph = _graphs(bus)["full_navigation_sequence"]
     advances = [e["label"] for e in graph["edges"]
                 if e["from"] != e["to"]]
-    assert advances == ["mission_started", "path_active",
-                        "moving_towards_target", "mission_finished"]
-    assert [s["id"] for s in graph["states"]] == [0, 1, 2, 3, 4]
-    assert [s["accepting"] for s in graph["states"]] == [False] * 4 + [True]
-    assert [s["sink"] for s in graph["states"]] == [False] * 4 + [True]
+    assert advances == ["goal_set", "moving_towards_goal", "at_goal"]
+    n = len(advances)
+    assert [s["id"] for s in graph["states"]] == list(range(n + 1))
+    assert [s["accepting"] for s in graph["states"]] == [False] * n + [True]
+    assert [s["sink"] for s in graph["states"]] == [False] * n + [True]
     # Every non-final state waits where it is while its own eventuality has not held.
-    for i in range(4):
+    for i in range(n):
         assert {"from": i, "to": i, "label": f"!{advances[i]}"} in graph["edges"]
 
 
@@ -563,8 +563,9 @@ def test_the_state_advances_with_the_aps_the_mock_is_already_fabricating(bus):
             assert (nxt != state) == bool(values[outstanding[0]["label"]])
         state = nxt
         reached.append(state)
-    assert reached[-1] == 4 and 4 in ids
-    assert [s for s in graph["states"] if s["id"] == 4][0]["accepting"] is True
+    final = max(ids)
+    assert reached[-1] == final
+    assert [s for s in graph["states"] if s["id"] == final][0]["accepting"] is True
 
 
 def test_a_guard_this_tick_cannot_answer_reports_no_state_rather_than_a_stale_one(bus):
@@ -621,7 +622,8 @@ def test_a_status_follows_the_automaton_that_produced_it(bus):
     an unknown state claims nothing."""
     chain = _graphs(bus)["full_navigation_sequence"]
     safety = _graphs(bus)["collision_imminent"]
-    assert mock_monitor.status_of(chain, 4) == "ACCEPTED"
+    assert mock_monitor.status_of(chain, max(s["id"] for s in chain["states"])) \
+        == "ACCEPTED"
     assert mock_monitor.status_of(chain, 0) == "INCONCLUSIVE"
     assert mock_monitor.status_of(safety, 0) == "ACCEPTED"
     assert mock_monitor.status_of(safety, 1) == "VIOLATED"
@@ -3001,11 +3003,11 @@ def test_the_wire_carries_every_field_these_panes_now_read(bus):
             assert step["on"] in ("message", "tick")
             assert step.get("threshold") is None or \
                 isinstance(step["threshold"], (int, float))
-    # The two facts pane 2 exists to make visible: a `last` fold, and a threshold whose
-    # units are messages rather than ticks.
+    # The two facts pane 2 exists to make visible: a `last` fold, and a threshold with
+    # the units it is counted in -- ticks, for the shipped no_progress debounce.
     steps = [s for src in adapter["sources"] for s in src["steps"]]
     assert any(s["aggregate"] == "last" for s in steps)
-    assert any(s["threshold"] is not None and s["on"] == "message" for s in steps)
+    assert any(s["threshold"] is not None and s["on"] == "tick" for s in steps)
 
     risk = verdict["risk"]
     assert set(risk) == {"steps_to_timeout", "seconds_to_timeout",

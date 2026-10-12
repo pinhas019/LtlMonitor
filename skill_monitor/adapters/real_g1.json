@@ -1,15 +1,14 @@
 {
   "name": "real_g1",
-  "doc": "The real TRAV-metric-map G1 -- no Nav2, no lidar. Camera-derived range, a JSON path_manager status, T265 odometry for pose and twist, and /next_waypoint for the commanded goal.",
+  "doc": "The real TRAV-metric-map G1 -- no Nav2, no lidar. Camera-derived range, T265 odometry for pose and twist, /waypoint for the commanded goal and /next_waypoint for the intermediate point. Nothing the planner says about itself is read (docs/packages/P12-planner-independent-schema.md).",
   "schema": [
     "pose_schema.json",
     "nav_schema.json"
   ],
   "describe": [
     "min_range",
-    "nav_mode",
-    "nav_state",
     "dist_to_goal",
+    "no_progress",
     "image_similarity_to_goal"
   ],
   "sources": [
@@ -82,7 +81,7 @@
     },
     {
       "id": "goal",
-      "topic": "/next_waypoint",
+      "topic": "/waypoint",
       "type": "geometry_msgs/msg/PointStamped",
       "tracked": false,
       "steps": [
@@ -163,52 +162,34 @@
       "expected_hz": 10.0
     },
     {
-      "id": "status",
-      "topic": "/path_manager/status",
-      "type": "std_msgs/msg/String",
-      "decode": "json",
-      "tracked": true,
+      "id": "next_goal",
+      "topic": "/next_waypoint",
+      "type": "geometry_msgs/msg/PointStamped",
+      "tracked": false,
       "steps": [
         {
-          "key": "nav_mode",
-          "field": "mode",
-          "default": "MANUAL"
+          "key": "next_x",
+          "field": "point.x",
+          "round": 3
         },
         {
-          "key": "nav_state",
-          "field": "state",
-          "default": "waiting_inputs"
+          "key": "next_y",
+          "field": "point.y",
+          "round": 3
         },
         {
-          "key": "mission_finished",
-          "field": "finished",
-          "default": false,
-          "cast": "bool"
-        },
-        {
-          "key": "num_waypoints",
-          "field": "num_waypoints",
-          "default": 0,
-          "cast": "int"
-        },
-        {
-          "key": "current_target_idx",
-          "field": "current_target_idx",
-          "default": 0,
-          "cast": "int"
-        },
-        {
-          "key": "nav_stuck",
-          "fn": "stuck_streak",
+          "key": "dist_to_next",
+          "fn": "planar_distance",
+          "on": "tick",
           "inputs": [
-            "nav_state"
+            "pos_x",
+            "pos_y",
+            "next_x",
+            "next_y"
           ],
-          "args": {
-            "threshold": 10
-          }
+          "round": 3
         }
-      ],
-      "expected_hz": 5.0
+      ]
     },
     {
       "id": "vision",

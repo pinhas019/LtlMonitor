@@ -387,9 +387,9 @@ class MockSource(threading.Thread):
             "dist_to_goal": round(math.hypot(goal_x - pos_x, goal_y - pos_y), 3),
             # 0.1 m per step toward the goal, so closing at that rate per tick.
             "closing_speed": 0.1, "no_progress": False,
-            "nav_mode": "AUTOMATIC", "nav_state": "following",
-            "num_waypoints": 4, "current_target_idx": min(3, i // 15),
-            "mission_finished": False, "nav_stuck": False,
+            # A lookahead point 1 m ahead of the robot, as a path follower publishes.
+            "next_x": min(goal_x, pos_x + 1.0), "next_y": 0.0,
+            "dist_to_next": round(min(goal_x, pos_x + 1.0) - pos_x, 3),
             "image_similarity_to_goal": round(min(0.95, 0.2 + 0.01 * i), 2),
         }
         aps = {name: bool(i % 5) for name in spec["atomic_propositions"]}

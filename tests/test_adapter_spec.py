@@ -747,16 +747,15 @@ def test_the_declarative_adapter_tick_advances_the_observation(monkeypatch):
     from skill_monitor.backend.adapters import declarative
 
     adapter = declarative.DeclarativeAdapter("real_g1")
-    status = next(s for s in adapter.spec.sources if s.id == "status")
-    default = adapter.get_sensor_eval()["nav_state"]
-    adapter._on_message(status, ros_stub.Message(data=json.dumps(
-        {"mode": "AUTOMATIC", "state": "following", "finished": False,
-         "num_waypoints": 2, "current_target_idx": 0})))
-    assert adapter.get_sensor_eval()["nav_state"] == default, "folded before the tick"
+    goal = next(s for s in adapter.spec.sources if s.id == "goal")
+    default = adapter.get_sensor_eval()["goal_x"]
+    adapter._on_message(goal, _ns(point=_ns(x=4.0, y=1.0, z=0.0)))
+    assert adapter.get_sensor_eval()["goal_x"] == default, "folded before the tick"
 
     adapter.tick()
-    assert adapter.get_sensor_eval()["nav_state"] == "following"
-    assert adapter.data_health()["status"]["refreshed"] is True
+    assert adapter.get_sensor_eval()["goal_x"] == 4.0
+    assert adapter.get_sensor_eval()["goal_active"] is True
+    assert adapter.data_health()["goal"]["refreshed"] is True
     assert adapter.state.pending_samples() == 0
 
     # The adapter must not drive itself: the clock is the evaluator's, and an adapter
@@ -1351,10 +1350,10 @@ def test_manifest_publishes_debounce_ticks_only_for_a_tick_debounce():
 
 
 def test_no_shipped_descriptor_announces_a_tick_debounce_it_does_not_have():
-    """The regression as it exists on disk: real_g1/mujoco/isaac_lab all attach
-    stuck_streak to a message-step with a hand-written threshold of 10, which must not
-    be announced as a tick count. A key MAY announce `debounce_ticks` when its step
-    really runs on the tick with a declared duration -- `no_progress` does."""
+    """The regression as it once stood on disk: every descriptor attached stuck_streak
+    to a message-step with a hand-written threshold of 10, which must not be announced
+    as a tick count. A key MAY announce `debounce_ticks` when its step really runs on
+    the tick with a declared duration -- `no_progress` does, and must."""
     for name in adapter_spec.available():
         spec = adapter_spec.load(name)
         schema = spec.manifest()["schema"]
@@ -1366,8 +1365,8 @@ def test_no_shipped_descriptor_announces_a_tick_debounce_it_does_not_have():
                 continue
             assert "debounce_ticks" not in entry, (
                 f"{name}: {key} announces a tick debounce but is counted per message")
-        assert "debounce_ticks" not in schema["nav_stuck"], (
-            f"{name}: nav_stuck is still message-counted and must not claim ticks")
+        assert schema["no_progress"]["debounce_ticks"] == round(10.0 * spec.tick_hz), (
+            f"{name}: no_progress is debounced on the tick and should say so")
         for src in spec.manifest()["sources"]:
             for step in src["steps"]:
                 if step["threshold"] is not None:
@@ -1717,10 +1716,12 @@ def test_a_tick_concurrent_with_writers_does_not_tear_the_window():
 SHIPPED_SOURCES = {
     "real_g1": {
         "odom": ("/t265/odom/sample", "nav_msgs/msg/Odometry", None, 10, True),
-        "goal": ("/next_waypoint", "geometry_msgs/msg/PointStamped", None, 10, False),
+        # The terminal goal the robot was commanded, and the intermediate point it is
+        # being sent to on the way. Never the planner's account of itself (P12).
+        "goal": ("/waypoint", "geometry_msgs/msg/PointStamped", None, 10, False),
+        "next_goal": ("/next_waypoint", "geometry_msgs/msg/PointStamped", None, 10, False),
         "points": ("/depth_anything/points", "sensor_msgs/msg/PointCloud2",
                    "pointcloud_xyz", 10, True),
-        "status": ("/path_manager/status", "std_msgs/msg/String", "json", 10, True),
         "vision": ("/vision/goal_similarity", "std_msgs/msg/Float32", None, 10, False),
         # Feeds no schema key at all -- declared so an operator can watch the colour
         # stream on /monitor/raw_echo. Untracked and not required on purpose: a camera
@@ -1733,8 +1734,6 @@ SHIPPED_SOURCES = {
         "odom": ("/odom", "nav_msgs/msg/Odometry", None, 10, True),
         "goal": ("/goal_pose", "geometry_msgs/msg/PoseStamped", None, 10, False),
         "range": ("/scan", "sensor_msgs/msg/LaserScan", "laserscan_ranges", 10, True),
-        "nav2": ("/navigate_to_pose/_action/status", "action_msgs/msg/GoalStatusArray",
-                 "goal_status", "action_status", False),
         "vision": ("/vision/goal_similarity", "std_msgs/msg/Float32", None, 10, False),
     },
     "isaac_lab": {
@@ -1742,8 +1741,6 @@ SHIPPED_SOURCES = {
         "goal": ("/goal_pose", "geometry_msgs/msg/PoseStamped", None, 10, False),
         "range": ("/g1/lidar/points", "sensor_msgs/msg/PointCloud2",
                   "pointcloud_xyz", 10, True),
-        "nav2": ("/navigate_to_pose/_action/status", "action_msgs/msg/GoalStatusArray",
-                 "goal_status", "action_status", False),
         "vision": ("/vision/goal_similarity", "std_msgs/msg/Float32", None, 10, False),
     },
 }
@@ -1985,107 +1982,7 @@ def test_shipped_goal_keys_hold_their_defaults_when_no_goal_arrives():
             f"{name}: goal keys claim to have been observed")
 
 
-# --------------------------------------------------------- planner independence
-#
-# The hard project rule, which docs/packages/P7-frontend.md already states as though it
-# were enforced ("they may only come from odometry and the commanded goals, never from
-# the planner's self-report") and P12 lists as a test that does not exist yet: the
-# monitor reads the ROBOT's own data and the COMMANDED target, never the navigation
-# algorithm's account of how it is doing.
-#
-# The six keys already coming off /path_manager/status -- nav_state, nav_stuck,
-# mission_finished, num_waypoints, current_target_idx, nav_mode -- are pre-existing
-# debt that P12 removes wholesale. They are not licence to add a seventh, and position
-# and goal are precisely where it would be easiest: a planner status JSON usually
-# carries its current target already, and wiring goal_x to it would be one line, would
-# load cleanly, and would blind the monitor to exactly the errors the planner makes.
-
-
-def _is_planner_self_report(topic: str, type_: str) -> bool:
-    """Whether a topic is the navigation algorithm talking about ITSELF.
-
-    Structural rather than an allow-list of names, so a descriptor wired to a planner
-    nobody has heard of yet is caught too: anything whose last path segment is `status`
-    (TRAV's /path_manager/status and any other planner's equivalent), or an action
-    server's status -- Nav2's GoalStatusArray being the same self-report for the stack
-    TRAV replaced, matched by TYPE as well as by name so renaming the topic does not
-    launder it.
-    """
-    return (topic.rstrip("/").rsplit("/", 1)[-1] == "status"
-            or type_ == "action_msgs/msg/GoalStatusArray")
-
-
-def _planner_sourced_keys(spec) -> dict:
-    """key -> the planner-status source ids that write it, for one loaded spec."""
-    out: dict = {}
-    for src in spec.sources:
-        if not _is_planner_self_report(src.topic, src.type):
-            continue
-        for step in src.steps:
-            for key in step.keys:
-                out.setdefault(key, set()).add(f"{src.id} ({src.topic})")
-    return out
-
-
-def test_no_position_or_goal_key_is_sourced_from_a_planner_status_topic():
-    """The guard. Wire goal_x to /path_manager/status and this is what fails."""
-    protected = POSE_KEYS | GOAL_KEYS
-    for name in adapter_spec.available():
-        spec = adapter_spec.load(name)
-        assert protected <= set(spec.keys()), f"{name}: the guard protects nothing"
-        offending = {k: v for k, v in _planner_sourced_keys(spec).items()
-                     if k in protected}
-        assert not offending, (
-            f"{name}: {sorted(offending)} come from the planner's own status stream "
-            f"({offending}). Position comes from odometry and the goal from the "
-            f"COMMANDED target; the planner's account of how it is doing is not an "
-            f"observation of the robot")
-
-
-def test_the_planner_independence_guard_is_not_vacuous():
-    """Every shipped descriptor still HAS a planner-status source, so the guard above
-    is passing because the protected keys avoid it and not because the predicate never
-    matches anything. The day that stops being true, P12 has landed and this whole
-    section is rewritten -- but until then a silently-inert guard is worse than none."""
-    matched = {
-        name: sorted(s.id for s in adapter_spec.load(name).sources
-                     if _is_planner_self_report(s.topic, s.type))
-        for name in adapter_spec.available()
-    }
-    assert all(matched.values()), matched
-    # ...and it matches the two families separately: TRAV's status JSON on the robot,
-    # Nav2's action status in both sims.
-    assert matched["real_g1"] == ["status"]
-    assert matched["mujoco"] == matched["isaac_lab"] == ["nav2"]
-
-
-def test_the_planner_independence_guard_catches_the_regression_it_exists_for():
-    """The guard is only worth having if it fails on the change it forbids. This is
-    that change: goal_x read straight out of the planner's status JSON."""
-    schema, _ = adapter_spec.compose_schema(
-        ["pose_schema.json", "nav_schema.json"], skill_monitor.adapters_dir())
-    sabotaged = adapter_spec.from_dict({
-        "name": "sabotaged", "schema": dict(schema),
-        "defaults": {k: v.get("default") for k, v in schema.items()},
-        "sources": [_source(
-            [{"key": "goal_x", "field": "target_x", "default": 0.0},
-             {"key": "pos_x", "field": "robot_x", "default": 0.0}],
-            sid="status", topic="/path_manager/status",
-            type_="std_msgs/msg/String", decode="json")],
-    })
-    offending = _planner_sourced_keys(sabotaged)
-    assert set(offending) & (POSE_KEYS | GOAL_KEYS) == {"goal_x", "pos_x"}
-
-    # ...and by TYPE, not only by the topic's name -- renaming the topic to something
-    # innocuous must not get it past the guard.
-    renamed = adapter_spec.from_dict({
-        "name": "renamed", "schema": dict(schema),
-        "defaults": {k: v.get("default") for k, v in schema.items()},
-        "sources": [_source([{"key": "goal_y", "fn": "const", "args": {"value": 1.0}}],
-                            sid="nav2", topic="/where_am_i_going",
-                            type_="action_msgs/msg/GoalStatusArray")],
-    })
-    assert set(_planner_sourced_keys(renamed)) == {"goal_y"}
+# Planner independence (P12) is guarded in tests/test_planner_independence.py.
 
 
 def test_shipped_upright_flag_falls_on_height_and_on_tilt():
@@ -2160,113 +2057,41 @@ def test_shipped_vision_source_reads_the_float32_data_field():
         assert st.refreshed_keys() == {"image_similarity_to_goal"}, name
 
 
-def test_real_g1_status_json_field_paths_and_casts_are_pinned():
-    """The planner's own status stream is what P12 redesigns -- but it SHIPS today and
-    it runs today, and until it is replaced a typo in one of these field names is a
-    monitor reporting the step default as if it were an observation. When P12 lands,
-    this test is rewritten with the schema; it is not deleted ahead of it.
-
-    The casts are pinned with values that need them. `path_manager` is JSON over a
-    `std_msgs/String`, so a number arriving as `"3"` is exactly what `cast: int` is
-    there for -- and with the cast dropped the key holds a string that every numeric
-    rule then compares wrongly.
-    """
+def test_real_g1_goal_and_intermediate_point_are_separate_sources():
+    """P12: `/waypoint` is the goal the robot was commanded and `/next_waypoint` the
+    intermediate point it is being sent to on the way. They are different numbers with
+    different jobs -- the intermediate point moves ahead with the robot, so measuring
+    progress against it would read a robot walking normally as stalled. Each must land
+    in its own keys, and swapping the two topics must fail here."""
     st = adapter_spec.SensorState(adapter_spec.load("real_g1"))
-    st.update("status", {"mode": "AUTOMATIC", "state": "following", "finished": 0,
-                         "num_waypoints": "3", "current_target_idx": "1"})
+    st.update("odom", _shipped_odom(px=1.0, py=0.0))
+    st.update("goal", _ns(point=_ns(x=7.0, y=0.0, z=0.0)))
+    st.update("next_goal", _ns(point=_ns(x=2.0, y=0.0, z=0.0)))
     st.tick()
     v = st.sensor_eval()
-    assert v["nav_mode"] == "AUTOMATIC", "not the 'mode' field"
-    assert v["nav_state"] == "following", "not the 'state' field"
-    assert v["mission_finished"] is False, "not the 'finished' field, or cast dropped"
-    assert v["num_waypoints"] == 3, "cast: int dropped on num_waypoints"
-    assert v["current_target_idx"] == 1, "cast: int dropped on current_target_idx"
+    assert (v["goal_x"], v["goal_y"], v["dist_to_goal"]) == (7.0, 0.0, 6.0)
+    assert (v["next_x"], v["next_y"], v["dist_to_next"]) == (2.0, 0.0, 1.0)
+    assert v["goal_active"] is True
 
-    st.update("status", {"finished": 1})
-    st.tick()
-    assert st.sensor_eval()["mission_finished"] is True, "cast: bool dropped"
-
-
-def test_real_g1_status_step_defaults_are_pinned():
-    """An absent field falls back to the step's declared default rather than blanking
-    the key -- and those defaults are the "nothing has happened yet" reading every
-    rule is written against."""
-    st = adapter_spec.SensorState(adapter_spec.load("real_g1"))
-    st.update("status", {})                               # every field absent
-    st.tick()
-    v = st.sensor_eval()
-    assert v["nav_mode"] == "MANUAL"
-    assert v["nav_state"] == "waiting_inputs"
-    assert v["mission_finished"] is False
-    assert v["num_waypoints"] == 0 and v["current_target_idx"] == 0
-
-
-def test_real_g1_nav_stuck_debounces_at_the_declared_threshold():
-    """real_g1 still counts MESSAGES, deliberately -- the migration to `on: "tick"`
-    plus `debounce_s` lands with the schema redesign. Until then the shipped number is
-    10 and the descriptor is the only place it is written down: dropping it to 3 makes
-    nav_stuck fire in under a third of the intended window, and nothing else notices.
-    """
-    st = adapter_spec.SensorState(adapter_spec.load("real_g1"))
-    for _ in range(9):
-        st.update("status", {"state": "no_path_found"})
-    st.tick()
-    assert st.sensor_eval()["nav_stuck"] is False, "fired before the 10th message"
-
-    st.update("status", {"state": "no_path_found"})
-    st.tick()
-    assert st.sensor_eval()["nav_stuck"] is True, "did not fire on the 10th"
-
-    st.update("status", {"state": "following"})           # recovery clears it at once
-    st.tick()
-    assert st.sensor_eval()["nav_stuck"] is False
+    # The intermediate point alone does not make a goal: goal_active is the terminal's.
+    fresh = adapter_spec.SensorState(adapter_spec.load("real_g1"))
+    fresh.update("next_goal", _ns(point=_ns(x=2.0, y=0.0, z=0.0)))
+    fresh.tick()
+    assert fresh.sensor_eval()["goal_active"] is False
 
 
 @pytest.mark.parametrize("name", ["mujoco", "isaac_lab"])
-def test_sim_nav2_source_mapping_is_pinned(name):
-    """The sim descriptors translate Nav2's status into the planner vocabulary with
-    three steps whose ARGUMENTS carry the meaning: `const` says the sim is always
-    under automatic control, and `eq.to` says which state counts as mission-complete.
-    Both are plain strings in JSON that nothing else checks.
-    """
+def test_sim_intermediate_point_is_the_goal(name):
+    """Nav2 publishes no lookahead point the monitor may read, so in the sims the
+    intermediate point is the commanded goal itself -- the vocabulary stays identical
+    and a rule over dist_to_next means the same thing as over dist_to_goal."""
     st = adapter_spec.SensorState(adapter_spec.load(name))
-    assert st.sensor_eval()["nav_mode"] == "MANUAL", "the schema default, pre-message"
-
-    st.update("nav2", None)                               # empty status_list
-    st.tick()
-    assert st.sensor_eval()["nav_state"] == "waiting_inputs", (
-        "an empty status_list overwrote the state instead of leaving it alone")
-
-    st.update("nav2", 2)                                  # executing
+    st.update("odom", _shipped_odom(px=1.0, py=1.0))
+    st.update("goal", _goal_msg(name, 4.0, 5.0))
     st.tick()
     v = st.sensor_eval()
-    assert v["nav_state"] == "following"
-    assert v["nav_mode"] == "AUTOMATIC", "const value is not AUTOMATIC"
-    assert v["mission_finished"] is False
-
-    st.update("nav2", 4)                                  # succeeded
-    st.tick()
-    v = st.sensor_eval()
-    assert v["nav_state"] == "finished"
-    assert v["mission_finished"] is True, "eq.to is not 'finished'"
-
-    st.update("nav2", 6)                                  # aborted
-    st.tick()
-    v = st.sensor_eval()
-    assert v["nav_state"] == "no_path_found"
-    assert v["mission_finished"] is False
-
-
-@pytest.mark.parametrize("name", ["mujoco", "isaac_lab"])
-def test_sim_nav_stuck_debounces_at_the_declared_threshold(name):
-    st = adapter_spec.SensorState(adapter_spec.load(name))
-    for _ in range(9):
-        st.update("nav2", 6)                              # aborted -> no_path_found
-    st.tick()
-    assert st.sensor_eval()["nav_stuck"] is False, "fired before the 10th message"
-    st.update("nav2", 6)
-    st.tick()
-    assert st.sensor_eval()["nav_stuck"] is True
+    assert (v["next_x"], v["next_y"]) == (v["goal_x"], v["goal_y"]) == (4.0, 5.0)
+    assert v["dist_to_next"] == v["dist_to_goal"] == 5.0
 
 
 def test_real_g1_points_height_band_is_pinned():
@@ -2313,34 +2138,28 @@ def test_isaac_lab_range_height_band_is_pinned():
     assert st.sensor_eval()["min_range"] == 10.0, "the band widened"
 
 
-#: Adapter-level `defaults` overrides, per descriptor. Nav2 reports no waypoint count,
-#: so the sim descriptors declare the single implicit goal `send_goal.py` sends; a rule
-#: like `current_target_idx < num_waypoints` reads differently at any other number, and
-#: real_g1 gets the real count off its status topic and must NOT override.
-SHIPPED_DEFAULT_OVERRIDES = {
-    "real_g1": {},
-    "mujoco": {"num_waypoints": 1},
-    "isaac_lab": {"num_waypoints": 1},
-}
+#: Adapter-level `defaults` overrides, per descriptor. The sims used to declare
+#: `num_waypoints: 1` because Nav2 reports no waypoint count; with the planner's
+#: vocabulary gone (P12) no descriptor overrides a schema default, and one that starts
+#: to has changed what "nothing has happened yet" reads as on that robot only.
+SHIPPED_DEFAULT_OVERRIDES = {"real_g1": {}, "mujoco": {}, "isaac_lab": {}}
 
 
 def test_shipped_adapter_level_defaults_are_pinned():
     assert set(adapter_spec.available()) == set(SHIPPED_DEFAULT_OVERRIDES)
     for name, overrides in SHIPPED_DEFAULT_OVERRIDES.items():
-        held = adapter_spec.SensorState(adapter_spec.load(name)).sensor_eval()
-        assert held["num_waypoints"] == overrides.get("num_waypoints", 0), name
-        for key, value in overrides.items():
-            assert held[key] == value, f"{name}: {key}"
+        raw = json.loads((skill_monitor.adapters_dir() / f"{name}.json")
+                         .read_text(encoding="utf-8"))
+        assert raw.get("defaults", {}) == overrides, name
 
 
 #: What the evaluator's console block shows for each robot. Emptying it, or dropping a
 #: key from it, leaves an operator staring at a monitor that reports nothing -- and no
 #: other test looks at this list.
 SHIPPED_DESCRIBE_KEYS = {
-    "real_g1": ["min_range", "nav_mode", "nav_state", "dist_to_goal",
-                "image_similarity_to_goal"],
-    "mujoco": ["min_range", "nav_state", "dist_to_goal", "image_similarity_to_goal"],
-    "isaac_lab": ["min_range", "nav_state", "dist_to_goal", "image_similarity_to_goal"],
+    "real_g1": ["min_range", "dist_to_goal", "no_progress", "image_similarity_to_goal"],
+    "mujoco": ["min_range", "dist_to_goal", "no_progress", "image_similarity_to_goal"],
+    "isaac_lab": ["min_range", "dist_to_goal", "no_progress", "image_similarity_to_goal"],
 }
 
 
@@ -2389,11 +2208,6 @@ G1_RATES = {
     # does not read as a fault.
     "points": 10.0,
     "camera": 10.0,
-    # path_manager publishes status per planning cycle. control_step runs at
-    # `control_hz` (20.0) but only publishes in manual mode; in automatic it publishes
-    # per replan, and `replan_hz` defaults to 5.0. The lower of the two is what a
-    # mission actually sustains.
-    "status": 5.0,
     # run_visual_goal_matcher.py: `--publish-hz`, default 1.0.
     "vision": 1.0,
 }
@@ -2408,17 +2222,19 @@ def test_the_g1_declares_the_rate_each_source_really_publishes_at():
 
 
 def test_the_commanded_waypoint_declares_no_rate_because_it_has_none():
-    """`/next_waypoint` is a setpoint, published when the planner produces one. A robot
-    holding its current waypoint publishes nothing, and that is not a fault -- so
-    declaring a rate here would report a perfectly healthy run as a slow topic. `last`
-    is also exactly the right fold for a setpoint: there is no transient to miss.
+    """`/waypoint` and `/next_waypoint` are setpoints, published when a goal is set or
+    the intermediate point moves. A robot holding its current goal publishes nothing,
+    and that is not a fault -- so declaring a rate here would report a perfectly
+    healthy run as a slow topic. `last` is also exactly the right fold for a setpoint:
+    there is no transient to miss.
 
     Read off the descriptor rather than the parsed `Source`, which defaults an unset
     rate to the tick rate -- so "declared 1.0" and "declared nothing" are the same
     object afterwards, and only the JSON can tell them apart."""
     raw = json.loads((skill_monitor.adapters_dir() / "real_g1.json").read_text(encoding="utf-8"))
-    goal = {s["id"]: s for s in raw["sources"]}["goal"]
-    assert "expected_hz" not in goal
+    by_id = {s["id"]: s for s in raw["sources"]}
+    for source_id in ("goal", "next_goal"):
+        assert "expected_hz" not in by_id[source_id], source_id
 
 
 def test_declaring_the_rates_is_what_makes_the_fold_check_run_at_all():

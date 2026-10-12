@@ -69,12 +69,12 @@ def test_hallucinated_field_is_caught():
     problems = spec_contract.validate(bad, NAV_KEYS)
     assert any("distance_to_target" in p for p in problems)
     # The message must list the legal alternatives -- it is fed back to the LLM.
-    assert any("nav_state" in p for p in problems)
+    assert any("dist_to_goal" in p for p in problems)
 
 
 def test_valid_spec_passes():
     good = _spec({
-        "moving": "True when nav_state == 'following'. Robot is driving.",
+        "moving": "True when closing_speed > 0.05. Robot is closing on its goal.",
         "close": "True when min_range < 0.25. Obstacle ahead.",
     })
     assert spec_contract.unknown_keys(good, NAV_KEYS) == {}

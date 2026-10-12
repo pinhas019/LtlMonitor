@@ -5,13 +5,14 @@ Before this, `SensorState.tick()` had no caller, so every sensor value stayed at
 schema default however many messages arrived, and no producer published the envelope
 the recorder already records -- so a recording carried ticks and verdicts but no
 sensors. Driven through `tests/ros_stub.py`; the G1 spec is rule-based, so no LLM call
-is ever queued.
+is ever queued. The messages are the robot's own: odometry and the commanded goal.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace as NS
 
 import pytest
 
@@ -31,9 +32,16 @@ from skill_monitor.core import api                                         # noq
 SPEC = json.loads(
     (Path(__file__).resolve().parents[1] / "skill_monitor/specs/formulas_g1.json")
     .read_text(encoding="utf-8"))
-ARMED_APS = ["mission_started", "path_active", "moving_towards_target"]
-FOLLOWING = {"mode": "AUTOMATIC", "state": "following", "finished": False,
-             "num_waypoints": 3, "current_target_idx": 1}
+ARMED_APS = ["goal_set", "moving_towards_goal", "at_goal"]
+#: A commanded goal 4 m out, as /waypoint carries it.
+GOAL = NS(point=NS(x=4.0, y=1.0, z=0.0))
+
+
+def odom(x=0.0, y=0.0):
+    return NS(pose=NS(pose=NS(position=NS(x=x, y=y, z=0.78),
+                              orientation=NS(x=0.0, y=0.0, z=0.0, w=1.0))),
+              twist=NS(twist=NS(linear=NS(x=0.0, y=0.0, z=0.0),
+                                angular=NS(x=0.0, y=0.0, z=0.0))))
 
 
 class FakeClock:
@@ -61,10 +69,10 @@ def _source(node, source_id):
     return next(s for s in node.adapter.spec.sources if s.id == source_id)
 
 
-def deliver(node, source_id, payload):
+def deliver(node, source_id, msg=GOAL):
     """A message on one of the adapter's own topics, as the executor would hand it."""
     for callback in node.subscriptions[_source(node, source_id).topic]:
-        callback(ros_stub.Message(data=json.dumps(payload)))
+        callback(msg)
 
 
 def pulse(node, seq, t=None, tick_hz=1.0):
@@ -100,10 +108,9 @@ def test_without_a_pulse_the_values_stay_at_their_defaults():
     """The bug, stated as a test of the old behaviour's cause: messages land in the
     open window and nothing reads them until the window is closed."""
     adapter = DeclarativeAdapter(descriptor="real_g1", clock=FakeClock())
-    default = adapter.get_sensor_eval()["nav_state"]
-    adapter._on_message(_source_by_id(adapter, "status"),
-                        ros_stub.Message(data=json.dumps(FOLLOWING)))
-    assert adapter.get_sensor_eval()["nav_state"] == default
+    default = adapter.get_sensor_eval()["goal_x"]
+    adapter._on_message(_source_by_id(adapter, "goal"), GOAL)
+    assert adapter.get_sensor_eval()["goal_x"] == default
 
 
 def _source_by_id(adapter, source_id):
@@ -111,21 +118,21 @@ def _source_by_id(adapter, source_id):
 
 
 def test_a_pulse_folds_the_window_into_the_values(node):
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "goal")
     pulse(node, 1)
     values = node.adapter.get_sensor_eval()
-    assert values["nav_state"] == "following"
-    assert values["nav_mode"] == "AUTOMATIC"
+    assert (values["goal_x"], values["goal_y"]) == (4.0, 1.0)
+    assert values["goal_active"] is True
 
 
 def test_an_idle_pulse_still_folds_but_publishes_nothing(node):
     """P3: the window closes on every pulse, armed or not, or an idle stretch piles
     every message since boot into the first armed tick."""
     assert node.idle
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "goal")
     pulse(node, 1)
     assert node.adapter.state.pending_samples() == 0
-    assert node.adapter.get_sensor_eval()["nav_state"] == "following"
+    assert node.adapter.get_sensor_eval()["goal_x"] == 4.0
     assert sent(node, api.OBSERVATION) == [] and legacy(node) == []
 
 
@@ -135,16 +142,16 @@ def test_an_idle_pulse_still_folds_but_publishes_nothing(node):
 
 def test_an_armed_pulse_publishes_an_observation_stamped_with_the_pulse_seq(node):
     arm(node)
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "goal")
     pulse(node, 7)
 
     (obs,) = sent(node, api.OBSERVATION)
     assert api.validate_observation(obs) == []
     assert obs["seq"] == 7 and obs["t"] == 7.0
     assert obs["step"] is None                 # the monitor owns the episode step
-    assert obs["sensors"]["nav_state"] == "following"
+    assert obs["sensors"]["goal_x"] == 4.0
     assert set(obs["ap_values"]) == set(ARMED_APS)
-    assert obs["ap_values"]["path_active"] is True
+    assert obs["ap_values"]["goal_set"] is True
     assert obs["unknown_aps"] == []
 
 
@@ -152,16 +159,16 @@ def test_the_legacy_payload_still_goes_out_beside_it(node):
     """P4/P5/P7 still read the legacy wire; the monitor steps once per tick whichever
     arrives first, so both are safe to publish."""
     arm(node)
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "goal")
     pulse(node, 1)
     (flat,) = legacy(node)
-    assert flat["path_active"] is True
-    assert flat["__sensors__"]["nav_state"] == "following"
+    assert flat["goal_set"] is True
+    assert flat["__sensors__"]["goal_x"] == 4.0
 
 
 def test_the_observation_and_the_legacy_payload_agree(node):
     arm(node)
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "goal")
     pulse(node, 1)
     (obs,), (flat,) = sent(node, api.OBSERVATION), legacy(node)
     assert obs["sensors"] == flat["__sensors__"]
@@ -171,7 +178,7 @@ def test_the_observation_and_the_legacy_payload_agree(node):
 def test_consecutive_pulses_carry_their_own_seq_in_order(node):
     arm(node)
     for seq in (3, 4, 5):
-        deliver(node, "status", FOLLOWING)
+        deliver(node, "goal")
         pulse(node, seq)
     assert [o["seq"] for o in sent(node, api.OBSERVATION)] == [3, 4, 5]
 
@@ -184,29 +191,29 @@ def test_data_health_describes_every_source_for_the_tick_just_closed(node, clock
     arm(node)
     pulse(node, 1)                              # opens a 1 s window from here
     clock.now += 1.0
-    deliver(node, "status", FOLLOWING)
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "odom", odom())
+    deliver(node, "odom", odom())
     pulse(node, 2)
 
     obs = sent(node, api.OBSERVATION)[-1]
     health = obs["data_health"]
     assert set(health) == {s.id for s in node.adapter.spec.sources}
-    status = health["status"]
-    assert status["samples_this_tick"] == 2
-    assert status["rate_hz"] == pytest.approx(2.0)
-    assert status["expected_hz"] == pytest.approx(5.0)
-    assert status["refreshed"] is True
-    assert status["age_s"] == pytest.approx(0.0)
+    source = health["odom"]
+    assert source["samples_this_tick"] == 2
+    assert source["rate_hz"] == pytest.approx(2.0)
+    assert source["expected_hz"] == pytest.approx(10.0)
+    assert source["refreshed"] is True
+    assert source["age_s"] == pytest.approx(0.0)
 
 
 def test_a_source_that_never_arrived_is_unrefreshed_with_a_finite_age(node, clock):
     arm(node)
     clock.now += 4.0
     pulse(node, 1)
-    odom = sent(node, api.OBSERVATION)[-1]["data_health"]["odom"]
-    assert odom["refreshed"] is False
-    assert odom["samples_this_tick"] == 0
-    assert odom["age_s"] == pytest.approx(4.0)  # since the adapter started
+    health = sent(node, api.OBSERVATION)[-1]["data_health"]["odom"]
+    assert health["refreshed"] is False
+    assert health["samples_this_tick"] == 0
+    assert health["age_s"] == pytest.approx(4.0)  # since the adapter started
 
 
 def test_a_stale_source_reaches_the_monitor_through_data_health(node):
@@ -214,10 +221,10 @@ def test_a_stale_source_reaches_the_monitor_through_data_health(node):
     source is exactly what the monitor will treat as stale for this tick."""
     from skill_monitor.core.manifest import normalize_observation
     arm(node)
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "goal")
     pulse(node, 1)
     observation = normalize_observation(sent(node, api.OBSERVATION)[-1])
-    assert "status" not in observation.stale_sources
+    assert "goal" not in observation.stale_sources
     assert "odom" in observation.stale_sources
 
 
@@ -237,7 +244,7 @@ def test_a_fold_that_raises_is_logged_and_publishes_nothing_for_that_tick(node):
     assert any("tick 1" in line for line in node.get_logger().at("error"))
 
     del node.adapter.tick                       # back to the class method
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "goal")
     pulse(node, 2)
     assert [o["seq"] for o in sent(node, api.OBSERVATION)] == [2]
 
@@ -268,11 +275,11 @@ def test_without_a_clock_the_timer_still_evaluates_on_the_legacy_wire_only(node)
     """No clock, no `seq` to stamp an envelope with -- so today's behaviour, now with
     real values instead of schema defaults."""
     arm(node)
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "goal")
     node._on_timer()
     node.query_queue.join()
     (flat,) = legacy(node)
-    assert flat["__sensors__"]["nav_state"] == "following"
+    assert flat["__sensors__"]["goal_x"] == 4.0
     assert sent(node, api.OBSERVATION) == []
 
 
@@ -307,12 +314,12 @@ def command(node, name):
 @pytest.mark.parametrize("name", ["arm", "reset"])
 def test_an_episode_boundary_resets_the_adapters_episode_state(node, name):
     """A stall streak banked in one episode must not count toward the next."""
-    deliver(node, "status", FOLLOWING)
+    deliver(node, "goal")
     pulse(node, 1)
-    assert node.adapter.get_sensor_eval()["nav_state"] == "following"
+    assert node.adapter.get_sensor_eval()["goal_active"] is True
     command(node, name)
     assert node.adapter.state.ticks == -1
-    assert node.adapter.get_sensor_eval()["nav_state"] == "waiting_inputs"
+    assert node.adapter.get_sensor_eval()["goal_active"] is False
     assert node.adapter.data_health() == {}
 
 

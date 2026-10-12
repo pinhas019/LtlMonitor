@@ -36,6 +36,11 @@ def test_prompt_offers_only_this_robots_fields():
     # over them is rejected by the contract, so they must not be suggested.
     for ghost in ("distance_to_target", "nav_status", "close_objects", "mean_range"):
         assert ghost not in text
+    # ...and neither may the syntax examples: they named navigation fields
+    # (`nav_state`, `linear_vel`, `min_range`) in every robot's prompt, so a gripper
+    # spec was shown fields its robot does not have, one of them no robot has any more.
+    for ghost in ("nav_state", "linear_vel", "min_range"):
+        assert ghost not in text
 
 
 def test_a_spec_over_real_fields_is_accepted_first_try():

@@ -612,10 +612,10 @@ def test_a_phase_invariant_breach_reaches_the_intervention_token():
     contracted to obey the token and nothing else -- would not have stopped the robot."""
     node = a_node(_g1_spec(), monitors=[FakeMonitor("nav", "F(path_active)")])
     tick(node, 1)
-    observe(node, 1, aps={"mission_started": True, "upright": True,
+    observe(node, 1, aps={"goal_set": True, "upright": True,
                           "collision_risk": False})
     tick(node, 2)
-    observe(node, 2, aps={"mission_started": True, "upright": False,
+    observe(node, 2, aps={"goal_set": True, "upright": False,
                           "collision_risk": False})
 
     v = verdicts(node)[-1]

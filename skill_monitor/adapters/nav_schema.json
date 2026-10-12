@@ -29,30 +29,6 @@
       "doc": "float, rad/s. Yaw rate of the base.",
       "default": 0.0
     },
-    "nav_mode": {
-      "doc": "string, one of 'MANUAL' or 'AUTOMATIC'. AUTOMATIC means the planner, not a human operator, is driving.",
-      "default": "MANUAL"
-    },
-    "nav_state": {
-      "doc": "string, the planner's current state: 'manual', 'waiting_inputs', 'following', 'positioning', 'unblocking', 'no_traversable', 'unreachable', 'no_path_found', 'finished'.",
-      "default": "waiting_inputs"
-    },
-    "num_waypoints": {
-      "doc": "int, how many waypoints the current mission has. 0 means no goal has been set.",
-      "default": 0
-    },
-    "current_target_idx": {
-      "doc": "int, index of the waypoint currently being driven to. Increases as waypoints are passed.",
-      "default": 0
-    },
-    "mission_finished": {
-      "doc": "bool, True once every waypoint has been reached.",
-      "default": false
-    },
-    "nav_stuck": {
-      "doc": "bool, True when the planner has reported a blocked state continuously for a debounce window (not a single bad tick).",
-      "default": false
-    },
     "image_similarity_to_goal": {
       "doc": "float, 0.0-1.0. Visual similarity between the current camera view and a reference photo of the goal.",
       "default": 0.0
@@ -67,6 +43,18 @@
     },
     "dist_to_goal": {
       "doc": "float, metres. Straight-line distance in the ground plane from (pos_x, pos_y) to (goal_x, goal_y), recomputed once per tick from those four keys. Height is ignored deliberately: the z of a commanded waypoint is whatever the publisher stamped it at, not ground the robot has to cover. Until a goal has been commanded this reads as the distance back to the odometry origin, so a rule that treats a small value as 'arrived' must also establish that a goal exists.",
+      "default": 0.0
+    },
+    "next_x": {
+      "doc": "float, metres. X of the intermediate point the robot is currently being sent to on its way to the goal, in the same odometry frame as pos_x. It is where the robot is being sent next, never a report of whether the navigation algorithm thinks it is succeeding. Where no intermediate point exists it equals goal_x.",
+      "default": 0.0
+    },
+    "next_y": {
+      "doc": "float, metres. Y of the intermediate point, in the same odometry frame as pos_y. Same source and same caveat as next_x.",
+      "default": 0.0
+    },
+    "dist_to_next": {
+      "doc": "float, metres. Straight-line distance in the ground plane from (pos_x, pos_y) to (next_x, next_y), recomputed once per tick. The intermediate point usually moves ahead as the robot advances, so this distance staying constant is normal and is NOT a sign of a stall -- progress is measured against the goal (closing_speed, no_progress).",
       "default": 0.0
     },
     "goal_active": {
