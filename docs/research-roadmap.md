@@ -9,6 +9,43 @@ Companion documents: `docs/report/progress_report.tex` (what the supervisor has 
 
 ---
 
+## Direction: a hybrid, with structure symbolic and grounding learned
+
+The question of whether to pursue the learned method or the symbolic one has a clear answer,
+and it comes from the results already in hand rather than from preference. **Neither alone. The
+structure should be symbolic and the grounding should be learned**, because each is strong
+exactly where the other failed.
+
+| | symbolic LTL | pure learned | hybrid |
+|---|---|---|---|
+| knows *where* in the skill the robot is | yes, explicitly | only if it learns memory | yes, from LTL |
+| catches failures nobody specified | no | yes | yes |
+| robust propositions | no: hand thresholds (`min_range < 0.25`, `similarity > 0.75`) | yes | yes, learned |
+| explains the failure | yes, by named phase and guard | no, a score | yes |
+| training data needed | none | a lot, labelled | little: the structure is free |
+
+Two measured results put the line in that place:
+
+- **The unstructured LLM judge scored +0.00 even with recovery; the LTL monitors scored
+  +1.00.** Learned judgement without structure said something was wrong but could not locate
+  it in the skill's progress. Structure is what made recovery possible.
+- **The one LTL failure was the alignment predicate.** The structure was right and the
+  *grounding* was brittle: a hand-written condition demanded something the real skill never
+  does. Grounding is where learning belongs.
+
+A pure-learned monitor is also the wrong fight to pick. At 1 Hz an episode yields about 100
+samples, there are no honest labels yet, a model trained on one task must be retrained for the
+next, and it gives up context and explainability, which are the two properties the claim rests
+on. The vision–language failure detectors in `papers/` already occupy that space, and
+competing with them on accuracy is not a fight worth picking.
+
+**The thesis this gives:** progress states are the structure (E1–E3 show it matters), and
+learning supplies what the structure cannot — better grounding for the propositions it is
+written in (D1), and detection of deviations no proposition covers (D2). One contribution per
+stream. Everything below is ordered to build that case.
+
+---
+
 ## The problem to fix first
 
 **The claim is about progress states. Nothing measured so far isolates them.**
@@ -145,9 +182,12 @@ is the paper's main result.
 
 `docs/packages/P12-planner-independent-schema.md` records the decision that the monitor reads
 the robot's own sensors and the waypoints it was commanded to reach, never the planner's
-self-report. **Six of the fourteen current schema keys still come from
-`/path_manager/status`, which is the planner's self-report.** The decision is recorded and
-nothing enforces it.
+self-report. **Six of the twenty-one current schema keys still come from
+`/path_manager/status`, which is the planner's self-report** — `nav_mode`, `nav_state`,
+`mission_finished`, `num_waypoints`, `current_target_idx` and `nav_stuck`
+(`skill_monitor/adapters/real_g1.json`). P12's "six of fourteen" predates the four pose keys.
+Worse, five of the eight propositions in `formulas_g1.json` read those keys. The decision is
+recorded and nothing enforces it.
 
 This is not a tidiness issue, it is the embodiment- and planner-agnosticism claim. The report
 states the mechanism is embodiment-independent; the schema currently contradicts it. TRAV
@@ -191,35 +231,133 @@ one that matters for research throughput: without it you cannot run seeds in vol
 volume is the difference between evaluating the claim and demonstrating it. `sim/` already has
 the MuJoCo bridge, arena and Nav2 configuration.
 
-Treat this as infrastructure in service of re-running E1/E2 at scale with continuous dynamics
-and noisy perception — not as a milestone in itself.
+The protocol is already written on one side: `backend/ablation_runner.py` publishes the
+scenario on `/g1/reset` and waits for `/g1/reset_done`. **Nothing subscribes.** Adding that
+subscriber to `sim/mujoco_ros_bridge.py` is the whole job, and it also gates D2, which needs
+episodes in volume, so it moves earlier in the order than it used to sit.
+
+Two limits to keep in view. The bridge is **kinematic, not dynamic** — it integrates
+`qpos[0] += v_x_world*dt` and pins `qpos[2] = 0.78` — so there is no contact and no fall, and
+the `fell_over` failure mode cannot fire there at all. And Isaac is an adapter descriptor with
+no simulator behind it. Anything that depends on contact physics waits for a dynamic
+simulator.
+
+Treat this as infrastructure in service of re-running E1/E2 at scale and feeding D2 — not as
+a milestone in itself.
 
 ---
 
-## Then: the two gaps the claim names explicitly
+## Then: the hybrid — learned grounding under a symbolic structure
 
-### L1 — A learned policy
+Three directions, in order. The first two are the contributions; the third serves them.
 
-The claim requires a measurable gain for *learned* policies as well as hand-written skills.
-Every skill monitored so far is hand-written or scripted. This is the gap most likely to draw
-a direct challenge, because a hand-written skill's progress states can always be accused of
-being written to match the implementation.
+### Prerequisite — make the training data exist
 
-A learned policy breaks that circularity: the progress description is written from the task,
-not from the code. Pick the smallest learned policy that fails in interesting ways rather than
-the most impressive one.
+None of the learned work can start until per-tick features are recorded and joinable to the
+phase the monitor was in. Three defects stand in the way, all verified in the code:
 
-### L2 — The VLM proposition layer
+1. **`SensorState.tick()` is never called.** The only references in the tree are docstrings.
+   Sensor values stay frozen at schema defaults (`core/adapter_spec.py:947` says so). This is
+   package P3's fix, and it is now also the gate on D1 and D2.
+2. **`/monitor/observation` has no producer.** `api.build_observation` is called only by
+   `frontend/mock_monitor.py`. But `api.OBSERVATION` is *already* in the recorder's
+   `RECORDED` set (`core/recording.py:56`), so **one producer in the evaluator turns the
+   existing recorder into the dataset generator**, with sensors, `ap_values`, confidence and
+   data health joinable to `verdict.phase` on `seq`. This is the highest-leverage change in the
+   whole learned programme.
+3. **The legacy `/ltl/evaluations` wire hard-sets `seq=None`** (`core/manifest.py:428`), so
+   features published there today cannot be joined to a phase at all.
 
-Good assessment on hardware needs a vision–language model supplying propositions. Note the
-architectural point that makes this tractable: propositions are a flat `{name: bool}`
-interface, so a VLM-backed proposition is a drop-in for a rule-backed one and the progress
-structure above it does not change. That is worth stating explicitly in the paper — it is the
-same substitution `ltl_hybrid` already demonstrates with an LLM.
+Read the schema through `AdapterSpec.keys()`. `backend/adapters/base.py:103` holds a drifted
+nav-only copy that silently drops the four pose keys.
+
+**And the labels must be honest.** There is no fault injection in this repository and no
+ground truth; the scenario names from past experiments live in the gridworld repository. The
+only labels available here are the monitor's own outputs — `verdict.terminal`,
+`failure_modes[]`, `intervention.action` — and scoring a learned detector against those is
+circular. Inject faults with a recorded injection tick, and store the ground truth outside the
+monitor's output path, so per-tick F1 is possible rather than only per-episode.
+
+### D1 — Learned propositions (first contribution)
+
+A learned model computes calibrated, soft truth values for propositions from the robot's
+features; the LTL structure above them is unchanged. This is the direct fix for the one
+failure measured so far — the alignment predicate was a brittle hand threshold — and it is the
+same substitution `ltl_hybrid` already makes with an LLM. The flat `{name: bool}` interface
+means a learned proposition is a drop-in for a rule-backed one, and that is worth stating
+explicitly in the paper.
+
+It also converges with H1. Five of the eight current propositions read the planner's
+self-report; a proposition learned from the robot's own sensors is planner-independent by
+construction. Done this way, D1 is the P12 fix as well as a contribution.
+
+**The experiment:** learned propositions against hand thresholds, same specification, same
+episodes — false-alarm rate and F1 on injected faults. Soft truth values need a semantics
+decision before they meet the automaton: threshold with debounce (simplest, keeps the current
+semantics) or a quantitative robustness semantics (more expressive, a larger change). Start
+with the first.
 
 Keep E1's lesson in view: the hybrid's false alarms were fixed by relaxing the formula, not by
-a stronger model. Expect the same with a VLM, and budget specification iteration rather than
-model shopping.
+a stronger model. Expect the same here, and budget specification iteration alongside model
+work.
+
+### D2 — Phase-conditioned anomaly detection (second contribution)
+
+Learn an embedding of the robot's features and model what *nominal* execution looks like
+**per progress phase**; flag deviation from the nominal manifold of the phase the symbolic
+monitor says the robot is in. This catches what no proposition covers — the long tail nobody
+wrote a predicate for. The conditioning variable is already published every tick as
+`verdict.phase` and `phase_index`.
+
+**Why conditioning is the contribution:** a whole skill's nominal behaviour is multi-modal —
+approach looks nothing like push — so an unconditioned detector models a wide, lumpy
+distribution and pays for it in false positives. Within one phase it is close to unimodal. So
+the experiment is **per-phase model against one global model, same encoder, same data**, F1 on
+held-out injected faults. It is E1's logic in learned form.
+
+Design constraints that follow from the codebase:
+
+- **Train on nominal episodes only** and hold faults out for test, so the detector is never fit
+  to the few fault types available.
+- **The tick rate is 1 Hz** (`DEFAULT_TICK_HZ`, and P1 says it stays there until P11). That
+  gives ~1000 ms per inference, so latency on the AGX is not the problem: a small recurrent
+  encoder over the 21-key schema costs microseconds, and a ResNet-18-class vision encoder about
+  10 ms on an Orin. TensorRT is not worth its complexity at this rate. The real AGX blocker is
+  `RESUME.md:640`, the unbuilt arm64 image. The same 1 Hz cuts the other way for modelling:
+  short windows (8–16 ticks) and a low-capacity nominal model.
+- **Start with a baseline the deep model has to beat:** per-phase Mahalanobis distance on
+  standardised features, no encoder. If the encoder cannot beat it, publish the simple one.
+- **Encode the schema carefully:** `yaw` as `(sin, cos)`; one-hot `nav_state`; explicit
+  sentinel bits for `min_range = 10.0` and for a missing goal; relative goal coordinates. Append
+  the freshness mask from `SensorState.refreshed_keys()` — without it the model learns
+  zero-order-held values as if they were measurements.
+- **Add a phase-prediction head.** Disagreement with the symbolic phase ("still looks like it
+  is approaching; the monitor says pushing") is an anomaly that names itself, which keeps the
+  explainability the claim rests on. A bare scalar score would give it up.
+- **Keep it out of the test contract.** `deploy/Dockerfile.test` forbids anything beyond
+  pytest, and the suite is the merge gate. Training code and torch go behind an optional extra
+  with their own compose service; on the robot, a model this small runs as a numpy forward pass
+  with no torch at all.
+- **Vision is staged.** It has no simulator home yet: MuJoCo renders but is kinematic, Isaac is
+  absent, and the gridworld has volume but no images. Validate the plumbing — a visual
+  embedding at a lower rate than the symbolic monitor, entering through the existing
+  `image_similarity_to_goal` key and `visually_at_goal` proposition — on MuJoCo renders now.
+  Visual anomaly science waits for a simulator with contact physics.
+
+### D3 — LTL as a reward machine, for the learned policy
+
+The claim requires a gain for *learned* policies as well as hand-written skills, and every
+skill monitored so far is hand-written or scripted. That is the gap most likely to draw a
+direct challenge, because a hand-written skill's progress states can always be accused of
+being written to match the implementation. A learned policy breaks that circularity: the
+progress description is written from the task, not the code.
+
+The automaton is a ready-made reward machine — reward on phase advancement, penalty on safety
+violation — which makes Deep RL the natural way to get that policy. But treat it as **a test
+subject for D1 and D2, not a contribution of its own**: LTL-shaped reinforcement learning is
+an established literature. Pick the smallest learned policy that fails in interesting ways
+rather than the most impressive one, and train it in the gridworld, where volume already
+exists.
 
 ---
 
@@ -249,22 +387,45 @@ Places where a result should change the plan rather than be absorbed into it.
 | E2 shows the observation-based judge rarely misses failures | the "harder to mislead" half is weaker than assumed. Shift weight onto cost and interpretability, which E3 and the trace support. |
 | the live planner raises the false-alarm rate | specification engineering is a first-class contribution, not a footnote. The alignment-predicate fault becomes a finding rather than an anecdote. |
 | TRAV has no available recovery action | H2 measures detection latency, not success rate. Decide this before spending robot time. |
+| D1's learned propositions do not beat hand thresholds | the brittleness was specification, not grounding. Fold the result into the specification-engineering finding and move weight to D2. |
+| D2's per-phase F1 ≈ global F1 | conditioning is not buying anything. The likeliest cause is that three phases is too coarse: try raw automaton states or sub-phases before abandoning it. If it still holds, report it. |
+| D2's per-phase Mahalanobis baseline ≈ the deep encoder | publish the simple model. Do not add deep learning for its own sake. |
+| D2 only re-finds what the symbolic guards already catch, and no earlier | the learned layer adds nothing; its value has to be the failures nobody specified. If there are none to find, say so. |
+| labels can only be derived from the monitor's own output | stop. A circular benchmark is worse than none. |
 
 ---
 
 ## Order of work
 
+**Prove the structure matters**
+
 1. **E1** — flattened-specification control. The claim has no direct evidence until this exists.
 2. **E3** — cost measurement. Cheapest item here; do it while E1 runs.
-3. **E2** — missed-failure scenarios. Needs new scenarios, so it is slower than E1, but it
-   carries the strongest half of the argument.
-4. **H1** — P12 enforcement and calibration, off a recording. Gates every hardware claim.
-5. **S1 + S2** — live planner, continuous mode. Re-run E1; this becomes the main result.
-6. **H2** — G1 + TRAV ablation, recovery action agreed in advance.
-7. **H3** — simulator reset, for volume.
-8. **L1** — a learned policy.
-9. **L2** — VLM propositions.
+3. **E2** — missed-failure scenarios. Slower than E1, but it carries the strongest half of the
+   argument.
 
-E1 through E3 are a paper on their own: progress states beat the same monitor without them,
-catch failures an observation-based judge misses, and cost less per tick. Everything after
-step 4 widens that to hardware and to skills the monitor did not shape.
+**Make the data exist**
+
+4. **Prerequisite** — call `SensorState.tick()`, publish `/monitor/observation`, honest fault
+   injection with recorded injection ticks.
+5. **H3** — the `/g1/reset` subscriber. Promoted: D2 needs volume.
+
+**Add learning where the structure is weak**
+
+6. **D1** — learned propositions against hand thresholds. Doubles as the P12 fix.
+7. **H1** — P12 enforcement and calibration, off a recording. Much of it lands with D1.
+8. **S1 + S2** — live planner, continuous mode. Re-run E1 and D1; this becomes the main result.
+9. **D2** — phase-conditioned anomaly detection, schema-only, with the conditioning ablation.
+
+**Widen it**
+
+10. **H2** — G1 + TRAV ablation, recovery action agreed in advance; arm64 image built.
+11. **D3** — a learned policy trained with the automaton as reward machine, as a test subject
+    for D1 and D2.
+12. **Vision** — added to D1 and D2 once a simulator with contact physics exists.
+
+Steps 1–3 are a paper on their own: progress states beat the same monitor without them, catch
+failures an observation-based judge misses, and cost less per tick. Steps 6 and 9 are the
+second: learning makes the structure's propositions robust and covers the failures nobody
+specified — without giving up the context and explainability that made the structure worth
+having.
