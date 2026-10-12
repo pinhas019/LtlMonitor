@@ -166,7 +166,14 @@ bridge's fault and ground-truth paths were run against stub ROS.
   time-to-detection, and the paper tables generated straight from episode records.
 - **Tests:** in the main suite, pure Python.
 
-### 0.5 Planner independence (P12)
+### 0.5 Planner independence (P12) — done
+
+See the Status section of `docs/packages/P12-planner-independent-schema.md`. What remains
+needs the robot:
+- the generated robot spec, which replaces the interim `formulas_g1.json`;
+- threshold calibration;
+- confirming the depth topic.
+
 - Ship `test_no_forbidden_topic_in_any_descriptor`.
 - Move propositions off `/path_manager/status`: today six of the twenty-one keys come from it, and
   five of the eight propositions read them.

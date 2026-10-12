@@ -2,9 +2,38 @@
 
 **Newest session first.** Sessions 1–4 below are kept for the decisions they record,
 not for their status lines — every "unpushed", test count, `/ltl/*` topic name and git
-rule in them is out of date. **Session 7 is the current state.** The one part of
+rule in them is out of date. **Session 7b is the current state.** The one part of
 session 4 that is not superseded is its closing section on the G1 run; that is still
 the plan.
+
+---
+
+# Session 7b — P12: the monitor reads no planner self-report (2026-10-12)
+
+- **What changed.** The six planner keys are gone from every descriptor, and so are the
+  sources that fed them: `/path_manager/status` and Nav2's action status.
+  - `tests/test_planner_independence.py` forbids planner sources from coming back.
+  - The hand-written `*_py` adapters are deleted. `--adapter real_g1` is the descriptor.
+- **The robot needs `/waypoint` published** (PointStamped, the mission's terminal goal).
+  - The goal now comes from `/waypoint`; `/next_waypoint` only feeds the new
+    `next_x`, `next_y` and `dist_to_next` keys.
+  - On the first robot run, check that `/waypoint` arrives and with what QoS. If it is
+    latched (transient-local), the descriptor's default depth-10 QoS will miss a goal
+    published before the evaluator started.
+- **`skill_monitor/specs/formulas_g1.json` is INTERIM and hand-written.** Replace it on a
+  machine with the LLM endpoint:
+  ```
+  python -m skill_monitor.describer.generate_spec --adapter real_g1 \
+      --description skill_monitor/specs/descriptions/g1_navigation.md \
+      --out skill_monitor/specs/formulas_g1.json
+  ```
+  - The vocabulary is identical on all three descriptors, so the same generated spec
+    runs on the robot and in sim.
+  - `g1_navigation.md` does not mention the camera. If visual goal confirmation is
+    wanted on the robot, add it to the description, not to the spec.
+- **The old spec** is at `specs/reference/formulas_g1_planner.json`, kept as the
+  evaluation reference.
+- **Tests.** Main suite 1418 passed, 0 skipped. `sim/tests` 115 passed.
 
 ---
 
