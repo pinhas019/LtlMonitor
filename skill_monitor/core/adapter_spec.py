@@ -310,6 +310,27 @@ def _fn_no_progress(threshold=10, epsilon=0.05, arrival_radius=0.5):
     return f
 
 
+def _fn_object_held(reach=0.5, lift_min=0.3):
+    """Whether the robot is carrying an object, INFERRED from where perception sees it.
+
+    Inputs `(pos_x, pos_y, object_x, object_y, object_z)`: the robot base from odometry,
+    the object from a detector, both in the odometry frame. Held means lifted off the
+    floor (`object_z >= lift_min`) and within `reach` of the base in the ground plane --
+    an object on the floor next to the robot is not held, and neither is one lifted by
+    somebody else across the room. No gripper flag is read: on a robot whose gripper
+    reports nothing, or reports a grasp that slipped, this is what can be observed.
+
+    None (the key keeps its previous value) while any input is missing, so a detection
+    the perception stack missed this tick does not flip the answer.
+    """
+    def f(pos_x, pos_y, object_x, object_y, object_z):
+        if any(v is None for v in (pos_x, pos_y, object_x, object_y, object_z)):
+            return None
+        return (object_z >= lift_min
+                and math.hypot(object_x - pos_x, object_y - pos_y) <= reach)
+    return f
+
+
 def _fn_nav2_status():
     return lambda status: None if status is None else nav2_status_to_state(status)
 
@@ -333,6 +354,7 @@ EXTRACTORS = {
     "nav2_status": _fn_nav2_status,
     "rate_of_decrease": _fn_rate_of_decrease,
     "no_progress": _fn_no_progress,
+    "object_held": _fn_object_held,
     "const": _fn_const,
     "eq": _fn_eq,
 }

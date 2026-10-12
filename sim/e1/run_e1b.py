@@ -7,7 +7,9 @@ Differences from E1:
   * the skill is task.CarryExecutor (walk to the object, grasp, carry, place) on top of the
     navigator, open-loop as a plain behaviour tree is;
   * the evaluator uses sim/e1/carry/mujoco_carry.json: the navigation sources plus the
-    task (/task), perception of the object (/object/pose) and the gripper (/gripper/holding);
+    task (/task) and perception of the object (/object/pose: task.perceive_object, the
+    object's position with noise and missed detections). Nothing comes from the gripper
+    or the executor; the evaluator infers "held" from where the object is;
   * success is ground truth: the executor finished AND the object rests within 0.5 m of the
     drop-off AND it is not held AND the robot never fell. An executor that reports success
     with the object elsewhere is a `false_arrival`;
@@ -28,6 +30,7 @@ import io
 import json
 import math
 import multiprocessing as mp
+import random
 import sys
 import time
 from pathlib import Path
@@ -59,12 +62,15 @@ def run_episode(item: dict) -> dict:
     from skill_monitor.core import api, episode_record
     from skill_monitor.core.automata import MultiMonitor
     from skill_monitor.core.episode_outcome import decide_step, intervention_from_verdict
-    from task import CarryExecutor
+    from task import PERCEPTION_MISS, PERCEPTION_NOISE_M, CarryExecutor, perceive_object
 
     ros_stub = run_e1._W["ros_stub"]
     sim = run_e1._W["sim"]
     task, arm, policy = item["task"], item["arm"], item["policy"]
     max_recoveries = item.get("max_recoveries", 2)
+    noise_m = item.get("noise_m", PERCEPTION_NOISE_M)
+    miss = item.get("miss", PERCEPTION_MISS)
+    perception_rng = random.Random(f"perception:{task['name']}:{arm}:{policy}")
     scenario = from_dict(task["scenario"])
     wall0 = time.monotonic()
 
@@ -127,9 +133,10 @@ def run_episode(item: dict) -> dict:
                     deliver(evaluator, "/goal_pose", NS(pose=NS(position=NS(x=gx, y=gy, z=0.0))))
                     ex.goal_changed = False
                 deliver(evaluator, "/odom", _odom(sim))
-                ox, oy, oz = sim.object_position()
-                deliver(evaluator, "/object/pose", NS(point=NS(x=ox, y=oy, z=oz)))
-                deliver(evaluator, "/gripper/holding", NS(data=bool(sim.holding)))
+                seen = perceive_object(sim, perception_rng, noise_m=noise_m, miss=miss)
+                if seen is not None:
+                    ox, oy, oz = seen
+                    deliver(evaluator, "/object/pose", NS(point=NS(x=ox, y=oy, z=oz)))
                 x, y, _, yaw = sim.reported_pose()
                 pts = None
                 if sim.scan_available():
@@ -224,8 +231,11 @@ def main(argv=None) -> int:
     parser.add_argument("--arms", nargs="+", default=list(ARMS), choices=list(ARMS))
     parser.add_argument("--policies", nargs="+", default=list(POLICIES), choices=POLICIES)
     parser.add_argument("--workers", type=int, default=max(1, mp.cpu_count()))
+    parser.add_argument("--perfect-perception", action="store_true",
+                        help="no perception noise or missed detections (parity checks)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
+    perception = {"noise_m": 0.0, "miss": 0.0} if args.perfect_perception else {}
 
     out = Path(args.out)
     done = set()
@@ -239,7 +249,8 @@ def main(argv=None) -> int:
             for arm in args.arms:
                 for policy in args.policies:
                     if f"{arm}-{policy}-{task['name']}" not in done:
-                        items.append({"task": task, "arm": arm, "policy": policy})
+                        items.append({"task": task, "arm": arm, "policy": policy,
+                                      **perception})
     print(f"{len(items)} episodes to run ({len(done)} already in {out})", flush=True)
     t0 = time.monotonic()
     with mp.get_context("fork").Pool(args.workers, initializer=run_e1._init_worker,

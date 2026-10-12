@@ -6,7 +6,7 @@
       "default": false
     },
     "holding": {
-      "doc": "bool, true while the gripper's force sensing reports an object held. Measured at the gripper, not reported by the task executor.",
+      "doc": "bool, true while the robot is carrying the object, INFERRED from perception: the object is lifted off the floor (object_z >= 0.3 m) and within 0.5 m of the robot base. Not read from the gripper or the task executor.",
       "default": false
     },
     "object_x": {
@@ -15,6 +15,10 @@
     },
     "object_y": {
       "doc": "float, metres. Y of the object as perception sees it, in the odometry frame.",
+      "default": 0.0
+    },
+    "object_z": {
+      "doc": "float, metres. Height of the object above the floor as perception sees it: about 0.08 resting on the floor, about 0.7 while carried.",
       "default": 0.0
     },
     "dropoff_x": {

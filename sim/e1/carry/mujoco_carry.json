@@ -1,6 +1,6 @@
 {
   "name": "mujoco_carry",
-  "doc": "E1b: the MuJoCo G1 doing pick and place. The mujoco descriptor's sources, plus the task (/task, JSON: the drop-off station), perception of the object (/object/pose) and the gripper's force sensing (/gripper/holding). The legs-only G1 has no arm: in simulation a grasp attaches the object when the robot stands within reach.",
+  "doc": "E1b: the MuJoCo G1 doing pick and place. The mujoco descriptor's sources, plus the task (/task, JSON: the drop-off station) and perception of the object (/object/pose, x y z in the odometry frame, as a detector reports it). Nothing is read from the gripper or the task executor: whether the object is held is inferred from where perception sees it relative to odometry (object_held). The legs-only G1 has no arm: in simulation a grasp attaches the object when the robot stands within reach.",
   "schema": [
     "../../../skill_monitor/adapters/pose_schema.json",
     "../../../skill_monitor/adapters/nav_schema.json",
@@ -249,6 +249,11 @@
           "round": 3
         },
         {
+          "key": "object_z",
+          "field": "point.z",
+          "round": 3
+        },
+        {
           "key": "object_dist",
           "fn": "planar_distance",
           "on": "tick",
@@ -271,20 +276,22 @@
             "dropoff_y"
           ],
           "round": 3
-        }
-      ]
-    },
-    {
-      "id": "gripper",
-      "topic": "/gripper/holding",
-      "type": "std_msgs/msg/Bool",
-      "tracked": true,
-      "expected_hz": 10.0,
-      "steps": [
+        },
         {
           "key": "holding",
-          "field": "data",
-          "cast": "bool"
+          "fn": "object_held",
+          "on": "tick",
+          "inputs": [
+            "pos_x",
+            "pos_y",
+            "object_x",
+            "object_y",
+            "object_z"
+          ],
+          "args": {
+            "reach": 0.5,
+            "lift_min": 0.3
+          }
         }
       ]
     }

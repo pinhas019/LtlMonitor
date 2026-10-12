@@ -21,7 +21,8 @@ Task faults (the monitor's propositions must catch them; the executor will not):
 plus the simulator's `stall` and `push`, at a random moment of the task.
 
 The legs-only G1 has no arm: a grasp attaches the object if the pelvis is within
-`GRASP_REACH_M` of it (sim.G1Sim.grasp).
+`GRASP_REACH_M` of it (sim.G1Sim.grasp). The monitor never sees that attachment: it sees
+the object only through `perceive_object`, and infers "held" from where the object is.
 """
 
 from __future__ import annotations
@@ -34,6 +35,23 @@ FAMILIES = ("clear", "cluttered", "grasp_fail", "drop", "skip_pickup", "object_m
 ARENA = 3.4
 DURATION_S = 150.0
 DWELL_S = 2.0                   # standing still for a grasp or a release
+
+#: The perception stand-in: what an object detector would report. Not a camera -- the
+#: simulator's object position with per-axis noise and missed detections -- but the
+#: monitor gets nothing else about the object: no gripper flag, no executor state.
+PERCEPTION_NOISE_M = 0.02
+PERCEPTION_MISS = 0.05
+
+
+def perceive_object(sim, rng, *, noise_m: float = PERCEPTION_NOISE_M,
+                    miss: float = PERCEPTION_MISS):
+    """(x, y, z) of the object as a detector would see it, or None for a missed frame."""
+    if miss and rng.random() < miss:
+        return None
+    x, y, z = sim.object_position()
+    if noise_m:
+        x, y, z = (v + rng.gauss(0.0, noise_m) for v in (x, y, z))
+    return x, y, z
 
 
 def _point(rng, near=None, lo=0.0, hi=0.0):
