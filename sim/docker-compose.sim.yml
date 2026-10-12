@@ -38,13 +38,16 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
+      # Which sim/scenarios/<name>.json to start in. /g1/reset switches at run time.
+      - SCENARIO=${SCENARIO:-clear}
     volumes:
-      # The sim harness's own assets -- scene and bridge, not package source. Kept
-      # here rather than in the dev overlay: editing the arena IS what this stack is
-      # for, and none of these files exists in any deployed image.
-      - ./sim_config.json:/app/sim_config.json
+      # The sim harness's own code and scenarios, mounted so editing them needs no
+      # rebuild. None of these files exists in any deployed image.
       - ./mujoco_ros_bridge.py:/app/mujoco_ros_bridge.py
-      - ./arena.xml:/app/arena.xml
+      - ./g1sim:/app/g1sim
+      - ./scenarios:/app/scenarios
+      # The Nav2 map, written by the bridge on every reset and read by map_server.
+      - maps:/maps
 
   nav2:
     container_name: ltl-nav2
@@ -56,14 +59,19 @@ services:
     environment:
       - ROS_DOMAIN_ID=0
       - PYTHONUNBUFFERED=1
+      - SCENARIO=${SCENARIO:-clear}
+      # 1: send the scenario's first goal 15 s after start (interactive use).
+      # 0: leave goals to the episode runner (skill_monitor.backend.ablation_runner).
+      - AUTO_GOAL=${AUTO_GOAL:-1}
     depends_on:
       - mujoco-sim
     volumes:
-      - ./sim_config.json:/app/sim_config.json
       - ./send_goal.py:/app/send_goal.py
       - ./generate_map.py:/app/generate_map.py
-      - ./arena.xml:/app/arena.xml
+      - ./g1sim:/app/g1sim
+      - ./scenarios:/app/scenarios
       - ./nav2_params.yaml:/app/nav2_params.yaml
+      - maps:/maps
 
   # The tick the evaluator and the monitor advance on. Sim uses a wall clock like the
   # robot, so a sim trace and a real trace have the same length for the same episode --
@@ -160,3 +168,7 @@ services:
       # shared or network-reachable. The same caveat applies to the frontend in
       # deploy/docker-compose.server.yml, which mounts it for container controls.
       - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  # The Nav2 map, shared by the simulator (writer) and map_server (reader).
+  maps:

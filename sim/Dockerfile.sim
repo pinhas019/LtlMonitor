@@ -1,25 +1,33 @@
 FROM ros:humble
 
-# Install dependencies
+# The bridge needs nothing beyond rclpy, the message packages it publishes, and
+# nav2_msgs for map_server's load_map service.
 RUN apt-get update && apt-get install -y \
     python3-pip \
+    python3-yaml \
     git \
-    ros-humble-tf-transformations \
-    ros-humble-cv-bridge \
+    ros-humble-tf2-ros \
     ros-humble-visualization-msgs \
+    ros-humble-nav2-msgs \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install mujoco numpy transforms3d
+# numpy < 2: ROS Humble's generated message classes are built against Ubuntu's
+# numpy 1.x, and a pip numpy 2 would shadow it. MuJoCo 3.x runs on 1.26 (sim/tests).
+# No torch: the walking policy runs in numpy (sim/g1sim/policy.py).
+RUN pip3 install --no-cache-dir "numpy<2" mujoco
 
-# Clone MuJoCo Menagerie for G1 model
+# Unitree's 12-DoF G1 and its pretrained walking policy, at a pinned commit (sim/NOTICE).
+COPY fetch_assets.sh /app/fetch_assets.sh
+RUN /app/fetch_assets.sh /opt/unitree_rl_gym
+ENV G1SIM_ASSETS=/opt/unitree_rl_gym
+
 WORKDIR /app
-RUN git clone https://github.com/google-deepmind/mujoco_menagerie.git && \
-    cp -r mujoco_menagerie/unitree_g1/* /app/ && \
-    rm -rf mujoco_menagerie
+COPY g1sim /app/g1sim
+COPY scenarios /app/scenarios
+COPY tests /app/tests
+COPY mujoco_ros_bridge.py generate_map.py /app/
 
-COPY arena.xml /app/
-COPY mujoco_ros_bridge.py /app/
-COPY sim_config.json /app/
-
-# Source ROS 2 and run bridge
-CMD ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 mujoco_ros_bridge.py"]
+# The scenario to start in; /g1/reset switches at run time.
+ENV SCENARIO=clear
+CMD ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && \
+    python3 mujoco_ros_bridge.py --scenario scenarios/${SCENARIO}.json --map-dir /maps"]
