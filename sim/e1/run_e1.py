@@ -254,7 +254,7 @@ def main(argv=None) -> int:
     out = Path(args.out)
     done = set()
     if out.exists():
-        done = {json.loads(line)["episode_id"] for line in out.read_text().splitlines()
+        done = {json.loads(line)["episode_id"] for line in out.read_text(encoding="utf-8").splitlines()
                 if line.strip()}
     tasks = []
     for family in args.families:

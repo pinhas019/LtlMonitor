@@ -34,7 +34,7 @@ CLEAN = ("clear", "cluttered")
 
 
 def load(paths):
-    return [json.loads(line) for p in paths for line in Path(p).read_text().splitlines()
+    return [json.loads(line) for p in paths for line in Path(p).read_text(encoding="utf-8").splitlines()
             if line.strip()]
 
 
