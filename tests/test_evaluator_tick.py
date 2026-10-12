@@ -293,3 +293,39 @@ def test_a_hand_written_adapter_runs_under_a_clock_unchanged():
     adapter = Minimal()
     assert adapter.tick() is None
     assert adapter.data_health() == {}
+
+
+# =============================================================================
+# Episode boundaries
+# =============================================================================
+
+def command(node, name):
+    for callback in node.subscriptions[api.COMMAND]:
+        callback(ros_stub.Message(data=json.dumps(api.build_command(command=name))))
+
+
+@pytest.mark.parametrize("name", ["arm", "reset"])
+def test_an_episode_boundary_resets_the_adapters_episode_state(node, name):
+    """A stall streak banked in one episode must not count toward the next."""
+    deliver(node, "status", FOLLOWING)
+    pulse(node, 1)
+    assert node.adapter.get_sensor_eval()["nav_state"] == "following"
+    command(node, name)
+    assert node.adapter.state.ticks == -1
+    assert node.adapter.get_sensor_eval()["nav_state"] == "waiting_inputs"
+    assert node.adapter.data_health() == {}
+
+
+@pytest.mark.parametrize("name", ["pause", "resume"])
+def test_pause_and_resume_keep_the_episode(node, name):
+    pulse(node, 1)
+    command(node, name)
+    assert node.adapter.state.ticks == 0
+
+
+def test_a_malformed_command_changes_nothing(node):
+    pulse(node, 1)
+    for callback in node.subscriptions[api.COMMAND]:
+        callback(ros_stub.Message(data="not json"))
+        callback(ros_stub.Message(data=json.dumps({"command": "explode"})))
+    assert node.adapter.state.ticks == 0

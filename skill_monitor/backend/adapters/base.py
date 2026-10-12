@@ -195,6 +195,11 @@ class SensorAdapter(ABC):
         `api.validate_observation` requires. Default: no sources are declared."""
         return {}
 
+    def reset(self) -> None:
+        """Forget the episode: held values, windows, and every stateful extractor (a
+        stall streak, a rate's previous value). Called on `arm`/`reset`. Default: a
+        hand-written adapter keeps no episode state."""
+
     # -- raw echo ------------------------------------------------------------
     # The evaluator publishes the raw echo out of these two calls and knows nothing else
     # about them. Defaulted here rather than probed with `hasattr` at the call site, so

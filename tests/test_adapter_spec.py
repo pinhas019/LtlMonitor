@@ -1352,13 +1352,22 @@ def test_manifest_publishes_debounce_ticks_only_for_a_tick_debounce():
 
 def test_no_shipped_descriptor_announces_a_tick_debounce_it_does_not_have():
     """The regression as it exists on disk: real_g1/mujoco/isaac_lab all attach
-    stuck_streak to a message-step with a hand-written threshold of 10."""
+    stuck_streak to a message-step with a hand-written threshold of 10, which must not
+    be announced as a tick count. A key MAY announce `debounce_ticks` when its step
+    really runs on the tick with a declared duration -- `no_progress` does."""
     for name in adapter_spec.available():
         spec = adapter_spec.load(name)
         schema = spec.manifest()["schema"]
+        tick_debounced = {key for src in spec.sources for step in src.steps
+                          if step.on == "tick" and step.declares_debounce_s
+                          for key in step.keys}
         for key, entry in schema.items():
+            if key in tick_debounced:
+                continue
             assert "debounce_ticks" not in entry, (
                 f"{name}: {key} announces a tick debounce but is counted per message")
+        assert "debounce_ticks" not in schema["nav_stuck"], (
+            f"{name}: nav_stuck is still message-counted and must not claim ticks")
         for src in spec.manifest()["sources"]:
             for step in src["steps"]:
                 if step["threshold"] is not None:

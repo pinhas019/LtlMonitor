@@ -85,6 +85,7 @@ status stream, and the new schema is what will take them up.
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import threading
@@ -96,7 +97,8 @@ import skill_monitor
 import skill_monitor.core.g1_sensors as g1_sensors
 from skill_monitor.core.g1_real_frame import remap_optical_to_body
 from skill_monitor.core.nav2_status_map import nav2_status_to_state
-from skill_monitor.core.stuck_detector import StuckStreak, threshold_from_seconds
+from skill_monitor.core.stuck_detector import (
+    ConsecutiveStreak, StuckStreak, threshold_from_seconds)
 
 #: Retained module-level name -- anything importing `adapter_spec.ADAPTERS_DIR` keeps
 #: working. Every lookup below calls `skill_monitor.adapters_dir()` instead, so a
@@ -250,6 +252,64 @@ def _fn_stuck_streak(threshold=10):
     return f
 
 
+class _Previous:
+    """The last value a tick-step saw -- the state behind a rate of change, with the
+    snapshot/restore/reset every stateful extractor exposes (see Step._stateful)."""
+
+    def __init__(self):
+        self.value = None
+
+    def snapshot(self):
+        return self.value
+
+    def restore(self, snapshot):
+        self.value = snapshot
+
+    def reset(self):
+        self.value = None
+
+
+def _fn_rate_of_decrease(tick_hz=DEFAULT_TICK_HZ):
+    """Units per second by which a tick-folded value SHRANK since the previous tick.
+
+    Stateful across ticks, so the per-second rate comes from `tick_hz`, which `Step`
+    hands to any extractor that declares it. Positive while the value falls -- for
+    `dist_to_goal`, the speed at which the robot is closing on its goal -- and 0.0 on the
+    first tick of an episode, which has nothing to compare with. This is P12's
+    planner-independent progress signal: measured from odometry against the commanded
+    goal, so a planner that reports "following" while the robot is wedged cannot hide it.
+    """
+    previous = _Previous()
+
+    def f(value):
+        if value is None:
+            return None
+        last, previous.value = previous.value, value
+        return 0.0 if last is None else (last - value) * tick_hz
+    f.state = previous
+    return f
+
+
+def _fn_no_progress(threshold=10, epsilon=0.05, arrival_radius=0.5):
+    """True once the robot has failed to close on an active goal for `threshold` ticks.
+
+    Inputs `(goal_active, dist_to_goal, closing_speed)`. A tick counts against progress
+    only while a goal is active AND the robot is still farther than `arrival_radius` --
+    standing still at the goal is arrival, not a stall -- AND it closed by less than
+    `epsilon` m/s. Declared with `debounce_s`, which `Step` converts to `threshold` ticks.
+    """
+    streak = ConsecutiveStreak(threshold=threshold)
+
+    def f(goal_active, dist_to_goal, closing_speed):
+        held = (bool(goal_active) and dist_to_goal is not None and closing_speed is not None
+                and dist_to_goal > arrival_radius and closing_speed < epsilon)
+        streak.update(held)
+        return streak.is_stuck
+    f.state = streak
+    f.threshold = threshold
+    return f
+
+
 def _fn_nav2_status():
     return lambda status: None if status is None else nav2_status_to_state(status)
 
@@ -271,6 +331,8 @@ EXTRACTORS = {
     "min_range_scan": _fn_min_range_scan,
     "stuck_streak": _fn_stuck_streak,
     "nav2_status": _fn_nav2_status,
+    "rate_of_decrease": _fn_rate_of_decrease,
+    "no_progress": _fn_no_progress,
     "const": _fn_const,
     "eq": _fn_eq,
 }
@@ -451,6 +513,13 @@ class Step:
                 f"{source_id}: step {list(self.keys)} passes args {sorted(args)} but "
                 f"declares no 'fn' to receive them")
         self.fn_name = fn_name
+        if fn_name and "tick_hz" in inspect.signature(EXTRACTORS[fn_name]).parameters:
+            # A rate needs the tick period; it is not the descriptor's to restate.
+            if "tick_hz" in args:
+                raise ValueError(
+                    f"{source_id}: step {list(self.keys)} passes 'tick_hz' in args; "
+                    f"it is the descriptor's tick_hz and is supplied automatically")
+            args["tick_hz"] = tick_hz
         try:
             self.fn = EXTRACTORS[fn_name](**args) if fn_name else None
         except TypeError as exc:
@@ -498,10 +567,10 @@ class Step:
         return {k: self._coerce(v) for k, v in zip(self.keys, vals)}
 
     def _stateful(self):
-        """This step's mutable extractor state, or None. Only `stuck_streak` has any
-        today; an extractor grows state by exposing an object with
-        snapshot/restore/reset, and everything below keeps working."""
-        return getattr(self.fn, "streak", None)
+        """This step's mutable extractor state, or None. An extractor grows state by
+        exposing an object with snapshot/restore/reset as `state` (`stuck_streak` calls
+        its own `streak`, which describe() reads), and everything below keeps working."""
+        return getattr(self.fn, "state", None) or getattr(self.fn, "streak", None)
 
     def snapshot(self):                                   # noqa: D102 - see Step._stateful
         state = self._stateful()

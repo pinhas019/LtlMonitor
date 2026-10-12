@@ -383,8 +383,10 @@ class MockSource(threading.Thread):
             "base_height": 0.78, "upright_flag": 1.0,
             "linear_vel": round(0.4 + 0.05 * ((i % 7) - 3), 2), "angular_vel": 0.0,
             "pos_x": pos_x, "pos_y": pos_y, "pos_z": 0.78, "yaw": 0.0,
-            "goal_x": goal_x, "goal_y": goal_y,
+            "goal_x": goal_x, "goal_y": goal_y, "goal_active": True,
             "dist_to_goal": round(math.hypot(goal_x - pos_x, goal_y - pos_y), 3),
+            # 0.1 m per step toward the goal, so closing at that rate per tick.
+            "closing_speed": 0.1, "no_progress": False,
             "nav_mode": "AUTOMATIC", "nav_state": "following",
             "num_waypoints": 4, "current_target_idx": min(3, i // 15),
             "mission_finished": False, "nav_stuck": False,

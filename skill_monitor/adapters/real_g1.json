@@ -97,6 +97,13 @@
           "round": 3
         },
         {
+          "key": "goal_active",
+          "fn": "const",
+          "args": {
+            "value": true
+          }
+        },
+        {
           "key": "dist_to_goal",
           "fn": "planar_distance",
           "on": "tick",
@@ -107,6 +114,30 @@
             "goal_y"
           ],
           "round": 3
+        },
+        {
+          "key": "closing_speed",
+          "fn": "rate_of_decrease",
+          "on": "tick",
+          "inputs": [
+            "dist_to_goal"
+          ],
+          "round": 3
+        },
+        {
+          "key": "no_progress",
+          "fn": "no_progress",
+          "on": "tick",
+          "inputs": [
+            "goal_active",
+            "dist_to_goal",
+            "closing_speed"
+          ],
+          "args": {
+            "epsilon": 0.05,
+            "arrival_radius": 0.5,
+            "debounce_s": 10.0
+          }
         }
       ]
     },

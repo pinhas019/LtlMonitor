@@ -58,20 +58,21 @@ def threshold_from_seconds(debounce_s: float, tick_hz: float) -> int:
     return max(1, math.ceil(round(ticks, 9)))
 
 
-class StuckStreak:
-    """Counts consecutive blocked-state ticks; nav_stuck fires once >= threshold.
+class ConsecutiveStreak:
+    """Counts consecutive ticks on which a condition held; fires once >= threshold.
 
-    A single self-recovering bad tick does not trigger nav_stuck -- the underlying
-    state can flicker, and main.py evaluates conditions as instantaneous booleans
-    every tick with no built-in debounce, so the debounce has to live here.
+    A single self-recovering bad tick does not fire -- the underlying signal can
+    flicker, and main.py evaluates conditions as instantaneous booleans every tick with
+    no built-in debounce, so the debounce has to live here. `StuckStreak` (planner
+    states) and the `no_progress` extractor (closing speed) are the two conditions.
     """
 
     def __init__(self, threshold: int = 10):
         self.threshold = threshold
         self._count = 0
 
-    def update(self, state: str) -> None:
-        self._count = self._count + 1 if is_blocked_state(state) else 0
+    def update(self, held: bool) -> None:
+        self._count = self._count + 1 if held else 0
 
     def snapshot(self) -> int:
         """The whole of this counter's state, so an attempt that fails part-way can be
@@ -86,7 +87,7 @@ class StuckStreak:
     def reset(self) -> None:
         """Forget the streak. An episode boundary (`arm`/`reset`, docs/clocking.md)
         is not a recovery -- without this the previous episode's nine blocked ticks
-        carry over and nav_stuck fires on the first blocked observation of the next
+        carry over and the debounce fires on the first bad observation of the next
         run, which is exactly the false positive the debounce exists to prevent."""
         self._count = 0
 
@@ -97,3 +98,10 @@ class StuckStreak:
     @property
     def count(self) -> int:
         return self._count
+
+
+class StuckStreak(ConsecutiveStreak):
+    """Counts consecutive blocked-state ticks; nav_stuck fires once >= threshold."""
+
+    def update(self, state: str) -> None:            # noqa: D102 - a planner state
+        super().update(is_blocked_state(state))

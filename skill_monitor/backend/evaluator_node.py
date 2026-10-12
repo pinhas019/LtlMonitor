@@ -149,6 +149,9 @@ class GenericClientNode(Node):
         # refuses an envelope whose seq is not the clock's.
         self.obs_pub = self.create_publisher(String, api.OBSERVATION, 10)
         self.create_subscription(String, api.TICK, self.tick_callback, 10)
+        # An episode boundary resets the adapter's episode state, or a stall streak
+        # banked in one episode would count toward the next one's no_progress.
+        self.create_subscription(String, api.COMMAND, self.command_callback, 10)
         self._last_pulse_at: float | None = None
         self._pulse_period = 1.0
 
@@ -337,6 +340,19 @@ class GenericClientNode(Node):
         self._last_pulse_at = time.monotonic()
         self._pulse_period = 1.0 / pulse["tick_hz"]
         self._evaluate(seq=pulse["seq"], t=pulse["t"])
+
+    def command_callback(self, msg: String):
+        """`arm`/`reset` start a new episode for the monitor; they do for the adapter too."""
+        try:
+            payload = json.loads(msg.data)
+        except Exception as e:
+            self.get_logger().error(f"Failed to parse command: {e}")
+            return
+        if api.validate_command(payload):
+            return                              # the monitor reports malformed commands
+        if payload["command"] in ("arm", "reset"):
+            self.adapter.reset()
+            self.get_logger().info(f"Adapter state reset on '{payload['command']}'.")
 
     def _clock_alive(self) -> bool:
         return (self._last_pulse_at is not None

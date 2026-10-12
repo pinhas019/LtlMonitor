@@ -163,6 +163,15 @@ class DeclarativeAdapter(SensorAdapter):
     def data_health(self) -> dict:
         return {sid: dict(entry) for sid, entry in self._health.items()}
 
+    def reset(self) -> None:
+        """New episode: `SensorState.reset()` (values back to defaults, every extractor's
+        streak and previous value cleared) and the per-tick counters with it. Arrival
+        times are kept -- a source's age is a fact about the robot, not the episode."""
+        self.state.reset()
+        self._samples = {sid: 0 for sid in self._samples}
+        self._last_tick_at = None
+        self._health = {}
+
     def get_sensor_eval(self) -> dict:
         return self.validate_sensor_eval(self.state.sensor_eval())
 
