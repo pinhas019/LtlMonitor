@@ -59,6 +59,16 @@ class Publisher:
         self.sent.append(msg.data)
 
 
+class Clock:
+    """`node.get_clock().now().to_msg()` -- a stamp nobody here interprets."""
+
+    def now(self) -> "Clock":
+        return self
+
+    def to_msg(self) -> int:
+        return 0
+
+
 class Timer:
     def __init__(self, period, callback) -> None:
         self.period = period
@@ -117,6 +127,9 @@ class Node:
 
     def get_logger(self) -> Logger:
         return self._logger
+
+    def get_clock(self) -> "Clock":
+        return Clock()
 
     def get_topic_names_and_types(self):
         # ponytail: only the topics this node itself made. A real graph also lists

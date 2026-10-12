@@ -13,10 +13,45 @@ dominates (a fall is a failure even if Nav2 later reports success).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
 from skill_monitor.core.supervisor_logic import decide_intervention
 
 _NAV_FAIL = frozenset({"aborted", "canceled"})
+
+#: action_msgs/GoalStatus codes, by the names classify_outcome reads.
+NAV_STATUS_NAMES = {1: "accepted", 2: "executing", 3: "canceling",
+                    4: "succeeded", 5: "canceled", 6: "aborted"}
+
+
+class GoalStatusTracker:
+    """The status of *this* episode's Nav2 goal, ignoring every goal from before it.
+
+    Nav2's action status topic keeps finished goals in its list for a while, so reading
+    the last entry -- as the runner used to -- can report the previous episode's
+    `succeeded` the instant the next one starts, and end it before the robot moves.
+    Goals are told apart by id: every id seen before `begin()` is ignored afterwards.
+    """
+
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+        self._ignored: set[str] = set()
+        self.status = ""
+
+    def begin(self) -> None:
+        """Start a new episode: every goal seen so far belongs to an earlier one."""
+        self._ignored = set(self._seen)
+        self.status = ""
+
+    def observe(self, entries: Iterable[tuple[str, int]]) -> None:
+        """`entries`: (goal id, status code) pairs from one GoalStatusArray, in order."""
+        fresh = []
+        for goal_id, code in entries:
+            self._seen.add(goal_id)
+            if goal_id not in self._ignored:
+                fresh.append(code)
+        if fresh:
+            self.status = NAV_STATUS_NAMES.get(fresh[-1], "")
 
 
 @dataclass(frozen=True)
