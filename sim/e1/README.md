@@ -300,3 +300,37 @@ python sim/e1/summarize_e1.py e1b_ros.jsonl --out docs/e1b_ros --title "E1b over
 While it runs, `ROS_DOMAIN_ID=20 ros2 node list` shows `ltl_generic_client`,
 `ltl_monitor_node` and `e1b_driver`, and `ros2 topic echo /monitor/verdict` the verdicts.
 
+
+## Findings over ROS 2 (1440 episodes, 8 families × 20 seeds × 3 arms × 3 policies)
+
+Full tables: [`docs/e1b_ros/results.md`](../../docs/e1b_ros/results.md); raw records:
+`docs/e1b_ros/e1b_ros_episodes.jsonl.gz`. Transport health: 2 verdict timeouts and 14
+late duplicate verdicts (discarded) in about 100 000 ticks; 30 minutes on 4 cores.
+
+1. **The monitor infers the outcome from the messages, and never claims a false success.**
+   Policy `off`, its last verdict against ground truth:
+
+   | arm | succeeded → said success | failed → said success | failed → said failure | failed → undecided |
+   |---|---|---|---|---|
+   | full | 52/56 | **0/104** | **71/104** | 33/104 |
+   | flat | 52/56 | 0/104 | 22/104 | 82/104 |
+   | flat strict | 53/56 | 0/104 | 24/104 | 80/104 |
+
+   The 4 successes it called failures are the 3 close passes in clutter
+   (`collision_imminent`) and one slow stall that finished late, the same in every arm.
+   The full spec names a failure as a failure three times as often as the flat ones; a
+   flat spec mostly stays undecided (it waits for an eventual completion that never comes).
+2. **The headline replicates with inferred holding and noisy perception.** Caught during
+   the task: drop 20/20 vs 0/20 (1 s vs 14 s), failed grasp 20/20 vs 0/20 (4 s vs 19 s),
+   both 20/20 earlier (p = 1.9·10⁻⁶); object moved 7/20 vs 0/20. Under `recover`, time to
+   deliver 34.5 vs 63 s after a drop and 36.5 vs 72 s after a failed grasp (20/20 faster,
+   p = 1.9·10⁻⁶). Success: full 82%, flat 84%, flat strict 84%, from 35% under `off`.
+3. **What the transport changed.** Noise-free, 18/18 pilot episodes were identical to the
+   in-process run; with noisy perception 23/24. Over the sweep the flat arm caught 9 of 11
+   failed stalls instead of 11: topics are not ordered with respect to one another, so a
+   message published just before a tick is sometimes folded into the next window, and a
+   slow crawl's `no_progress` debounce can restart. That is the same asynchrony a robot
+   has.
+
+**Limits that remain.** The perception stand-in is the simulator's object position plus
+noise and misses, not a camera. The grasp is an attachment. One spec per skill.
