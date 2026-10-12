@@ -7,7 +7,7 @@ import urllib.request
 import argparse
 import sys
 
-from skill_monitor.core import spec_contract
+from skill_monitor.core import api, spec_contract
 
 DEFAULT_API_URL = "http://192.168.140.101/developer-api/v1"
 DEFAULT_MODEL = "Gemma4"
@@ -469,6 +469,12 @@ def generate_skill_description(_api_url: str, _model: str, spec: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: The categories the monitor grades. Anything else is reported at load and graded as
+#: the mildest rung, so a model that invents one ("NAVIGATION") writes a fault that
+#: never stops the robot -- the prompt must offer exactly these.
+_CATEGORIES = ", ".join(f'"{c}"' for c in api.FAULT_CATEGORIES)
+
+
 def formulas_prompt(skill_desc: str, schema) -> str:
     return f"""You are an expert in robotics, Linear Temporal Logic (LTL), formal verification, and runtime monitoring.
 
@@ -505,9 +511,9 @@ CRITICAL RULES:
 7. Each execution phase MUST have:
    - enter_condition: APs that must be True to transition into this phase
    - precondition: Python bool checked ONCE on phase entry; "" if none
-   - precondition_fault_category: fault category string if precondition fails (e.g. "PRECONDITION", "NAVIGATION")
+   - precondition_fault_category: one of {_CATEGORIES}, or "NONE" if there is no precondition
    - invariant: Python bool checked EVERY step; immediate halt if False; "" if none
-   - invariant_fault_category: fault category string if invariant violated (e.g. "SAFETY", "NAVIGATION")
+   - invariant_fault_category: one of {_CATEGORIES}, or "NONE" if there is no invariant
    - progress_condition: must remain True while in phase; counted violations
    - exit_condition: APs that must be True to leave this phase
    - progress_violation_limit: int (typically 3–5)
@@ -515,7 +521,11 @@ CRITICAL RULES:
 
 8. named_failure_modes: one entry per global failure mode that should trigger a named halt
    anywhere during execution (not just within a phase). Use G(!) formulas for safety properties.
-   Each entry: name, formula (LTL), fault_category (e.g. "SAFETY", "NAVIGATION"), description.
+   Each entry: name, formula (LTL), fault_category (one of {_CATEGORIES}), description.
+
+   Fault categories mean: "SAFETY" -- harm to the robot or its surroundings, stop now;
+   "INVARIANT" -- a condition the skill depends on no longer holds; "TIMEOUT" -- a phase
+   took longer than its budget; "PROGRESS" -- the skill is not advancing.
 
 Respond with a single valid JSON object:
 {{
@@ -544,7 +554,7 @@ Respond with a single valid JSON object:
       "description": "What the robot is doing in this phase.",
       "enter_condition": "ap1 and ap2",
       "precondition": "ap3",
-      "precondition_fault_category": "PRECONDITION",
+      "precondition_fault_category": "INVARIANT",
       "invariant": "not ap4",
       "invariant_fault_category": "SAFETY",
       "progress_condition": "ap3 and not ap4",
@@ -580,12 +590,19 @@ exactly as it was. Respond ONLY with the JSON object."""
 
 
 def generate(skill_desc: str, schema=None, api_url: str = DEFAULT_API_URL,
-             model: str = DEFAULT_MODEL, llm=None, attempts: int = 2):
+             model: str = DEFAULT_MODEL, llm=None, attempts: int = 2,
+             checks=None, history: list | None = None):
     """Free-language description -> (spec, remaining problems).
 
     Generate, check the result against the robot's schema, and hand the failures back
     to the model to repair. `llm` is injected (signature llm(api_url, model, prompt)
     -> dict) so this whole loop is testable against a scripted model with no live run.
+
+    `checks(spec) -> list[str]` adds problems to the schema check, and they are repaired
+    in the same loop -- so a gate the monitor applies at load (fault categories,
+    condition syntax) is fixed by the model, not discovered after it. `history`, if
+    given, receives one `{attempt, problems, fixes}` entry per model reply: what was
+    wrong with each, which is what a generation's provenance has to report.
 
     Returns the best spec produced and the problems that survived; a caller decides
     whether to push it. Never raises on a bad model reply -- an empty spec with the
@@ -612,6 +629,11 @@ def generate(skill_desc: str, schema=None, api_url: str = DEFAULT_API_URL,
 
         candidate, warnings = _validate_and_fix(candidate)
         problems = spec_contract.validate(candidate, keys)
+        if checks is not None:
+            problems = problems + list(checks(candidate))
+        if history is not None:
+            history.append({"attempt": attempt + 1, "problems": list(problems),
+                            "fixes": list(warnings)})
         spec = candidate
         if not problems:
             return spec, []

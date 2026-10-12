@@ -1,0 +1,53 @@
+{
+  "skill_name": "G1GoalNavigationFixture",
+  "description": "TEST FIXTURE ONLY -- hand-written, NOT generated and NOT the spec any experiment runs. It exists so validation, flattening and the runner can be tested without an LLM; the experiment's spec is produced by skill_monitor/describer/generate_spec.py from specs/descriptions/g1_navigation.md.",
+  "atomic_propositions": {
+    "goal_set": "True when goal_active == True. A navigation goal has been commanded.",
+    "moving": "True when closing_speed > 0.05. The robot is getting closer to the goal.",
+    "stalled": "True when no_progress == True. The robot has not closed on the goal for a sustained period while still away from it.",
+    "arrived": "True when dist_to_goal < 0.5. The robot is within arrival distance of the goal.",
+    "upright": "True when upright_flag > 0.5. The base is level and standing.",
+    "too_close": "True when min_range < 0.25. An obstacle is dangerously close."
+  },
+  "ltl_formulas": [
+    {"name": "goal_reached_in_order", "formula": "F(goal_set && F(moving && F(arrived)))"}
+  ],
+  "named_failure_modes": [
+    {"name": "fell_over", "formula": "G(upright)", "fault_category": "SAFETY",
+     "description": "The robot must never fall."},
+    {"name": "collision_imminent", "formula": "G(!too_close)", "fault_category": "SAFETY",
+     "description": "The robot must never come dangerously close to an obstacle."}
+  ],
+  "execution_phases": [
+    {
+      "phase": "Initiation",
+      "description": "Goal commanded; the robot starts closing on it.",
+      "enter_condition": "goal_set",
+      "precondition": "True",
+      "precondition_fault_category": "NONE",
+      "invariant": "upright and not too_close",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "True",
+      "exit_condition": "moving",
+      "progress_violation_limit": 5,
+      "timing_bounds": {"max_steps": 15}
+    },
+    {
+      "phase": "Approach",
+      "description": "The robot walks towards the goal, closing the distance.",
+      "enter_condition": "moving",
+      "precondition": "True",
+      "precondition_fault_category": "NONE",
+      "invariant": "upright and not too_close",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "not stalled",
+      "exit_condition": "arrived",
+      "progress_violation_limit": 3,
+      "timing_bounds": {"max_steps": 60}
+    }
+  ],
+  "terminal_success": {"condition": "arrived and upright",
+                       "description": "Within arrival distance of the goal, standing."},
+  "terminal_failure": {"condition": "stalled",
+                       "description": "No progress towards the goal for a sustained period."}
+}
