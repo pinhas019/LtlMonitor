@@ -259,9 +259,12 @@ Three directions, in order. The first two are the contributions; the third serve
 ### Prerequisite — make the training data exist
 
 None of the learned work can start until per-tick features are recorded and joinable to the
-phase the monitor was in. Three defects stand in the way, all verified in the code:
+phase the monitor was in. Three defects stood in the way. **All three are fixed** (milestone 1:
+the evaluator now folds the window on each clock pulse and publishes `/monitor/observation`
+stamped with the pulse's `seq`); they are kept here as the record of why recordings made
+before that change carry no sensor values.
 
-1. **`SensorState.tick()` is never called.** The only references in the tree are docstrings.
+1. **`SensorState.tick()` was never called.** The only references in the tree are docstrings.
    Sensor values stay frozen at schema defaults (`core/adapter_spec.py:947` says so). This is
    package P3's fix, and it is now also the gate on D1 and D2.
 2. **`/monitor/observation` has no producer.** `api.build_observation` is called only by

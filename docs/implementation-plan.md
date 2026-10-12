@@ -9,7 +9,30 @@ contract does not change: `docker compose -f deploy/docker-compose.test.yml run 
 green with zero skipped, and `deploy/Dockerfile.test` stays pure Python — machine-learning code
 gets its own image.
 
-## Where things stand
+## Milestone 1 — done
+
+SIM.1, SIM.2, WP0.1 and the episode-record half of WP0.4 are in. What that means, and how to
+run it, is in `sim/README.md`.
+
+- **SIM.1 reset:** the bridge answers `/g1/reset` → `/g1/reset_done`, scenarios live in
+  `sim/scenarios/`, and `ablation_runner` runs N episodes back to back with a CLI. It fails
+  fast on a rejected or unanswered reset and ignores Nav2 statuses and verdicts left over
+  from the previous episode.
+- **SIM.2 real dynamics:** Unitree's 12-DoF G1 walks under their released policy at the
+  pinned commit in `sim/NOTICE`. The policy is an LSTM evaluated in numpy, pinned to
+  TorchScript within 1e-5, so torch is not needed. A push makes it fall. A massless torso
+  capsule stops a fall sinking through the floor. The scan plane is at 0.3 m.
+- **WP0.1:** the evaluator folds sensors on every clock pulse and publishes
+  `/monitor/observation` with per-source data health. Recordings now carry sensor values.
+- **WP0.4 (records):** `core/episode_record.py`. `tools/analysis/` is not written yet.
+
+Verified here as pure and headless tests: the main suite (1288 passed, 0 skipped) and
+`sim/tests` (36 passed). **Not verified here:** the ROS stack end to end. This environment
+has no Docker daemon and no ROS, so the bridge was exercised against stub ROS modules only.
+The first `docker compose -f sim/docker-compose.sim.yml up --build` on a real machine is
+the remaining check.
+
+## Where things stood before milestone 1
 
 | piece | state today |
 |---|---|
@@ -38,8 +61,8 @@ gets its own image.
 ### SIM.2 Real dynamics
 - Replace the kinematic integration with physics stepping, driven by the G1 walking policy that
   Unitree releases in `unitree_rl_gym` (`deploy/deploy_mujoco/deploy_mujoco.py g1.yaml`, pretrained
-  weights at `deploy/pre_train/g1/motion.pt` — **verify** both paths and where `g1.yaml` sets the
-  velocity command).
+  weights at `deploy/pre_train/g1/motion.pt` — verified; `g1.yaml` fixes the command in
+  `cmd_init`, which the simulator replaces with `/cmd_vel`).
 - The policy's velocity command comes from `/cmd_vel`, so Nav2 drives a walking robot.
 - `upright_flag`, `base_roll`, `base_pitch` and `base_height` are computed from the physics state,
   not pinned.

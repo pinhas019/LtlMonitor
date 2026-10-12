@@ -125,6 +125,22 @@ call the tick path directly.
 - `test_raw_echo_is_off_by_default_and_one_source_at_a_time`
 - `test_unknown_adapter_name_lists_available_descriptors`
 
+## Status (milestone 1)
+
+**Landed:** the `api.TICK` subscription. `adapter.tick()` now runs on every pulse, above the
+idle return. `/monitor/observation` is published stamped with the pulse's `seq`, carrying
+`data_health` with every field `api.validate_observation` requires. `SensorAdapter.tick()`
+and `data_health()` are no-op defaults. Tests: `tests/test_evaluator_tick.py`.
+
+**One deliberate deviation.** With no clock pulsing, the fallback timer evaluates on the
+legacy wire only. It does not publish an envelope marked `clock: internal`, because the
+monitor's TickLedger refuses an envelope whose `seq` is ahead of its clock, and with no
+clock there is no `seq` to stamp. Revisit this once the monitor can take internal-clock
+envelopes.
+
+**Still open:** a bounded LLM queue that reports `dropped` (it is always 0 today). Per-source
+freshness from `max_age_s`. Deleting the four hand-written adapters.
+
 ## Done when
 
 `adapter.tick()` runs on every pulse regardless of idle state; the observation carries

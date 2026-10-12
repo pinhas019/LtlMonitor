@@ -218,10 +218,11 @@ If an AP's description is descriptive and cannot be evaluated directly by numeri
 
 ### 3.3 MuJoCo Simulation Bridge (`sim/mujoco_ros_bridge.py`)
 
-This node connects the physics engine to ROS 2:
-1. **World Configuration:** Reads `sim_config.json` at startup to determine map dimensions and the agent's start position. It configures the MuJoCo `arena.xml` model dynamically.
-2. **Kinematic Updates:** Subscribes to `/cmd_vel` to read linear and angular velocity commands. It integrates these velocities using the simulation time step $dt$ to update the humanoid base coordinate ($q_{pos}$ and $q_{vel}$).
-3. **Synthetic LiDAR (`LaserScan`):** Simulates a 2D LiDAR by casting 360 radial rays in a planar sweep using the `mujoco.mj_ray` API. It measures distance hits against external obstacles in the world body (filtering out the robot's own body geoms) and publishes the ranges to `/scan`.
+A thin ROS 2 shell around `sim/g1sim/` (see `sim/README.md`):
+1. **World from a scenario:** `sim/scenarios/*.json` defines the map size, walls, obstacles, start pose and goals. The MuJoCo world and Nav2's map are both built from it, so the planner and the scan always agree.
+2. **Physics, not kinematics:** Unitree's 12-DoF G1 walks under its released locomotion policy (evaluated in numpy), driven by `/cmd_vel`. `/odom` reports the true pose and the *measured* twist, so falls, slips and pushes are real and `upright` can go false.
+3. **Reset:** `/g1/reset` (a scenario as JSON) restarts the episode and answers `/g1/reset_done`, which is how `ablation_runner` runs episodes back to back.
+4. **Planar scan (`LaserScan`):** 360 rays at 0.3 m above the floor via `mujoco.mj_multiRay`, restricted to walls and obstacles by geom group, so the robot's own body and the floor are never hit.
 
 ---
 

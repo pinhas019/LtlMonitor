@@ -2,9 +2,34 @@
 
 **Newest session first.** Sessions 1–4 below are kept for the decisions they record,
 not for their status lines — every "unpushed", test count, `/ltl/*` topic name and git
-rule in them is out of date. **Session 5 is the current state.** The one part of
+rule in them is out of date. **Session 6 is the current state.** The one part of
 session 4 that is not superseded is its closing section on the G1 run; that is still
 the plan.
+
+---
+
+# Session 6 — the simulator walks, and recordings carry what the monitor saw (2026-10-12)
+
+Branch `claude/monitoring-paper-submission-1ryynf`, pushed. Plan:
+`docs/implementation-plan.md` (milestone 1 is done, see its top section). Papers:
+`docs/ral-papers.md`.
+
+- **Simulator.** `sim/g1sim/` holds Unitree's 12-DoF G1 under real MuJoCo physics, walking
+  with their released policy. The policy runs in numpy, no torch. The robot falls when
+  pushed and resets on `/g1/reset`. `sim/mujoco_ros_bridge.py` is now a thin shell around
+  it. Run instructions are in `sim/README.md`; assets come from `sim/fetch_assets.sh`.
+- **Monitor.** The evaluator folds sensors on every clock pulse and publishes
+  `/monitor/observation`. Before this, every AP had been evaluated against schema defaults.
+- **Episodes.** `python -m skill_monitor.backend.ablation_runner --scenario ... --episodes N`
+  writes one `core/episode_record` line per run.
+- **Tests.** Main suite 1288 passed, 0 skipped (host venv, same count as the container
+  contract plus the new tests). `sim/tests` 36 passed.
+- **First thing to do:** run `docker compose -f sim/docker-compose.sim.yml up --build` on a
+  machine with Docker. The bridge was only ever exercised against stub ROS modules: the
+  session's container had no Docker daemon and no ROS. If `map_server`'s runtime reload
+  misbehaves, use one layout per stack start (`SCENARIO=...`).
+- **Gone:** `sim/arena.xml`, `sim/sim_config.json` and `sim/nav2_config/` are superseded by
+  `sim/scenarios/`.
 
 ---
 

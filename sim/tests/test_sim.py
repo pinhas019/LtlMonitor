@@ -127,8 +127,11 @@ def test_the_walls_are_where_the_map_says(sim):
 def test_upright_uses_the_monitors_thresholds():
     """The sim's notion of a fall and the monitor's must not drift apart."""
     from g1sim.sim import UPRIGHT_HEIGHT_MIN, UPRIGHT_TILT_MAX
-    descriptor = json.loads((REPO / "skill_monitor/adapters/mujoco.json")
-                            .read_text(encoding="utf-8"))
+    path = REPO / "skill_monitor/adapters/mujoco.json"
+    if not path.is_file():
+        pytest.skip("needs the repository checkout (the simulator image has no "
+                    "skill_monitor/); runs from the repo root")
+    descriptor = json.loads(path.read_text(encoding="utf-8"))
     steps = [step for src in descriptor["sources"] for step in src.get("steps", [])
              if step.get("fn") == "upright"]
     assert len(steps) == 1
