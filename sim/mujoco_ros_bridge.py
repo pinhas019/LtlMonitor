@@ -8,13 +8,23 @@ Subscribes
     /goal_pose      geometry_msgs/PoseStamped  moves the goal marker
     /g1/reset       std_msgs/String         a scenario as JSON (sim/g1sim/scenario.py)
 Publishes
-    /odom           nav_msgs/Odometry       true pose, MEASURED twist (base frame)
-    /scan           sensor_msgs/LaserScan   planar scan of walls and obstacles
+    /odom           nav_msgs/Odometry       pose as odometry reports it (true unless an
+                                            odom_drift fault is active), MEASURED twist
+    /scan           sensor_msgs/LaserScan   planar scan of walls and obstacles; silent
+                                            while a scan_dropout fault lasts
     /target_pose    geometry_msgs/PoseStamped
     /visualization_marker  visualization_msgs/Marker
     /g1/reset_done  std_msgs/Bool           true once the scenario is running; false if
                                             it was rejected
-    TF odom -> base_link
+    /g1/fault_injected  std_msgs/String     once per fault, as it takes effect:
+                                            {reset, type, onset_s, t, params}
+    /g1/ground_truth    std_msgs/String     {reset, t, fell, upright, dist_to_goal} --
+                                            what the episode is scored on, never shown
+                                            to the monitor
+    TF odom -> base_link                    from the same reported pose as /odom
+
+`reset` on the two /g1 topics counts the simulator's resets, so a reader can drop a
+message still in flight from the previous episode. `t` is simulated episode time.
 
 On reset the bridge rewrites the Nav2 map from the same scenario into --map-dir and
 asks map_server to reload it, so the planner and the scan always agree.
@@ -48,6 +58,8 @@ SCAN_RAYS = 360
 SCAN_HEIGHT_M = 0.3
 SCAN_MAX_M = 10.0
 MAP_RESOLUTION_M = 0.05
+FAULT_TOPIC = "/g1/fault_injected"
+TRUTH_TOPIC = "/g1/ground_truth"
 
 
 class MujocoRosBridge(Node):
@@ -75,6 +87,8 @@ class MujocoRosBridge(Node):
         self.target_pub = self.create_publisher(PoseStamped, "/target_pose", 10)
         self.marker_pub = self.create_publisher(Marker, "/visualization_marker", 10)
         self.reset_done_pub = self.create_publisher(Bool, "/g1/reset_done", 10)
+        self.fault_pub = self.create_publisher(String, FAULT_TOPIC, 10)
+        self.truth_pub = self.create_publisher(String, TRUTH_TOPIC, 10)
         self.tf = TransformBroadcaster(self)
         self._load_map_client = self._make_load_map_client()
 
@@ -112,6 +126,10 @@ class MujocoRosBridge(Node):
             with self.lock:
                 self.sim.set_command(*(self._cmd if fresh else (0.0, 0.0, 0.0)))
                 self.sim.step(control_steps=1)
+                events, resets = self.sim.pop_fault_events(), self.sim.resets
+            for event in events:
+                self.get_logger().info(f"Fault {event['type']} injected at t={event['t']}")
+                self.fault_pub.publish(String(data=json.dumps({"reset": resets, **event})))
             next_at += period
             delay = next_at - time.monotonic()
             if delay > 0:
@@ -162,14 +180,18 @@ class MujocoRosBridge(Node):
 
     def _publish(self) -> None:
         with self.lock:
-            x, y, z, _yaw = self.sim.base_pose()
-            qw, qx, qy, qz = self.sim.base_quat()
-            linear = self.sim.linear_velocity_body()
-            angular = self.sim.angular_velocity_body()
-            ranges = self.sim.ranges(count=SCAN_RAYS, scan_height=SCAN_HEIGHT_M,
-                                     max_range=SCAN_MAX_M)
-            goal = self.sim.data.mocap_pos[0].copy()
+            sim = self.sim
+            x, y, z, _yaw = sim.reported_pose()
+            qw, qx, qy, qz = sim.base_quat()
+            linear = sim.linear_velocity_body()
+            angular = sim.angular_velocity_body()
+            ranges = sim.ranges(count=SCAN_RAYS, scan_height=SCAN_HEIGHT_M,
+                                max_range=SCAN_MAX_M) if sim.scan_available() else None
+            goal = sim.goal()
+            truth = {"reset": sim.resets, "t": round(sim.time, 3), "fell": sim.fell,
+                     "upright": sim.upright(), "dist_to_goal": round(sim.dist_to_goal(), 3)}
         now = self.get_clock().now().to_msg()
+        self.truth_pub.publish(String(data=json.dumps(truth)))
 
         transform = TransformStamped()
         transform.header.stamp = now
@@ -200,16 +222,17 @@ class MujocoRosBridge(Node):
         odom.twist.twist.angular.z = float(angular[2])
         self.odom_pub.publish(odom)
 
-        scan = LaserScan()
-        scan.header.stamp = now
-        scan.header.frame_id = "base_link"
-        scan.angle_min = -math.pi
-        scan.angle_max = math.pi - 2.0 * math.pi / SCAN_RAYS
-        scan.angle_increment = 2.0 * math.pi / SCAN_RAYS
-        scan.range_min = 0.05
-        scan.range_max = SCAN_MAX_M
-        scan.ranges = [float(r) for r in ranges]
-        self.scan_pub.publish(scan)
+        if ranges is not None:
+            scan = LaserScan()
+            scan.header.stamp = now
+            scan.header.frame_id = "base_link"
+            scan.angle_min = -math.pi
+            scan.angle_max = math.pi - 2.0 * math.pi / SCAN_RAYS
+            scan.angle_increment = 2.0 * math.pi / SCAN_RAYS
+            scan.range_min = 0.05
+            scan.range_max = SCAN_MAX_M
+            scan.ranges = [float(r) for r in ranges]
+            self.scan_pub.publish(scan)
 
         target = PoseStamped()
         target.header.stamp = now

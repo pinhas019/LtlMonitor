@@ -24,6 +24,7 @@ FIELDS = (
     "schema_version",
     "episode_id",
     "arm",
+    "policy",
     "seed",
     "scenario",
     "scenario_params",
@@ -34,8 +35,12 @@ FIELDS = (
     "elapsed_s",
     "steps",
     "detected_tick",
+    "recoveries",
     "timing",
 )
+
+#: What the episode runner did with the monitor's interventions (core/episode_outcome).
+POLICIES = ("off", "detect", "recover")
 
 _FAULT_FIELDS = ("type", "onset_s", "injected_tick", "injected_t", "params")
 
@@ -62,6 +67,7 @@ def build_record(
     *,
     episode_id: str,
     arm: str,
+    policy: str = "detect",
     seed: int,
     scenario: str,
     scenario_params: dict | None = None,
@@ -72,6 +78,7 @@ def build_record(
     elapsed_s: float,
     steps: int | None = None,
     detected_tick: int | None = None,
+    recoveries: int = 0,
     timing: dict | None = None,
 ) -> dict:
     """Assemble a record. Validation is separate so a runner can log a bad one, not crash."""
@@ -79,6 +86,7 @@ def build_record(
         "schema_version": SCHEMA_VERSION,
         "episode_id": episode_id,
         "arm": arm,
+        "policy": policy,
         "seed": seed,
         "scenario": scenario,
         "scenario_params": dict(scenario_params or {}),
@@ -89,6 +97,7 @@ def build_record(
         "elapsed_s": elapsed_s,
         "steps": steps,
         "detected_tick": detected_tick,
+        "recoveries": recoveries,
         "timing": dict(timing or {}),
     }
 
@@ -131,6 +140,11 @@ def validate_record(record: Any) -> list[str]:
         value = record.get(key)
         if value is not None and not (_is_int(value) and value >= 0):
             problems.append(f"{key} must be a non-negative integer or null")
+    if "policy" in record and record["policy"] not in POLICIES:
+        problems.append(f"policy must be one of {list(POLICIES)}")
+    if "recoveries" in record and not (_is_int(record["recoveries"])
+                                       and record["recoveries"] >= 0):
+        problems.append("recoveries must be a non-negative integer")
     for key in ("scenario_params", "timing"):
         if key in record and not isinstance(record[key], dict):
             problems.append(f"{key} must be an object")

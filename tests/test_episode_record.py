@@ -38,6 +38,7 @@ def test_a_missing_field_is_a_problem():
 @pytest.mark.parametrize("field,value", [
     ("seed", 1.5), ("seed", True), ("terminal", "yes"), ("elapsed_s", -1.0),
     ("elapsed_s", float("nan")), ("steps", -2), ("detected_tick", 2.0),
+    ("policy", "panic"), ("recoveries", -1), ("recoveries", None),
     ("arm", 7), ("timing", []),
 ])
 def test_wrongly_typed_fields_are_rejected(field, value):

@@ -212,13 +212,25 @@ def test_a_fault_at_onset_zero_fires_at_the_start_not_while_settling(sim):
     assert [e["t"] for e in outcome["events"]] == [0.0]
 
 
-@pytest.mark.parametrize("kind", ["push", "weaken"])
-def test_push_and_weaken_bring_the_robot_down(sim, kind):
+@pytest.mark.parametrize("kind", ["push", "weaken", "slip"])
+def test_push_weaken_and_slip_bring_the_robot_down_and_the_fall_is_latched(sim, kind):
     assert run(sim, [{"type": kind, "onset_s": 1.0}])["upright"] is False
+    assert sim.fell is True
 
 
-def test_slip_brings_the_robot_down(sim):
-    assert run(sim, [{"type": "slip", "onset_s": 1.0}])["upright"] is False
+def test_a_healthy_walk_never_counts_as_a_fall_and_a_reset_clears_one(sim, healthy):
+    run(sim, [{"type": "push", "onset_s": 0.5}], seconds=3.0)
+    assert sim.fell
+    run(sim, seconds=0.5)
+    assert sim.fell is False
+
+
+def test_the_true_distance_to_goal_ignores_odometry_drift(sim):
+    run(sim, [{"type": "odom_drift", "onset_s": 0.0, "params": {"rate_m_s": 0.2}}],
+        seconds=2.0)
+    x, y, _, _ = sim.base_pose()
+    assert sim.goal() == (3.0, 0.0)
+    assert sim.dist_to_goal() == pytest.approx(math.hypot(3.0 - x, y))
 
 
 def test_stall_stops_the_robot_while_the_command_stands(sim, healthy):

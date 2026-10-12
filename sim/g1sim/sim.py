@@ -75,6 +75,10 @@ class G1Sim:
         self._episode_start = 0.0
         self._push_until = 0.0
         self.resets = 0
+        #: Whether the robot has been down at any point this episode. Latched, so a
+        #: robot that falls and is lifted by a push still counts -- the outcome of an
+        #: episode is judged on this, never on the monitor's opinion of it.
+        self.fell = False
         self._clear_faults()
         self.injector = FaultInjector(self)
         self._fault_events: list[dict] = []
@@ -119,6 +123,7 @@ class G1Sim:
         self.injector = FaultInjector(self)          # nothing fires while settling
         self.step(settle_s)
         self._episode_start = data.time
+        self.fell = False
         self.injector = FaultInjector(self, scenario.faults)
         self._fault_events = []
         self.resets += 1
@@ -166,6 +171,7 @@ class G1Sim:
                 self.data.xfrc_applied[self._pelvis, :] = 0.0
                 self._push_until = 0.0
             self.locomotion.control_step(self.model, self.data, self.executed_command)
+            self.fell = self.fell or not self.upright()
 
     def pop_fault_events(self) -> list[dict]:
         """Faults fired since the last call, each `{type, onset_s, t, params}`."""
@@ -179,6 +185,16 @@ class G1Sim:
 
     def set_goal(self, x: float, y: float) -> None:
         self.data.mocap_pos[self._target_mocap] = (x, y, 0.05)
+
+    def goal(self) -> tuple[float, float]:
+        x, y, _ = self.data.mocap_pos[self._target_mocap]
+        return float(x), float(y)
+
+    def dist_to_goal(self) -> float:
+        """True planar distance from the pelvis to the goal -- ground truth, drift-free."""
+        x, y, _, _ = self.base_pose()
+        gx, gy = self.goal()
+        return math.hypot(gx - x, gy - y)
 
     # ------------------------------------------------------------------ faults
 
