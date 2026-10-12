@@ -33,6 +33,21 @@ ARM_LABEL = {"full": "full spec", "flat": "flat (keeps terminal failure)",
 CLEAN = ("clear", "cluttered")
 
 
+def is_clean(family: str) -> bool:
+    """Fault-free families, in E1 (`clear`) and E1b (`carry_clear`) alike."""
+    return family.endswith(CLEAN)
+
+
+#: An intervention the E1b runner raises when the executor reports the task done and the
+#: monitor does not confirm it: a detection made only at the end, not during the task.
+AT_COMPLETION = "completion_unverified"
+
+
+def _first_intervention(record):
+    log = (record.get("timing") or {}).get("interventions") or []
+    return log[0][1] if log else None
+
+
 def load(paths):
     return [json.loads(line) for p in paths for line in Path(p).read_text(encoding="utf-8").splitlines()
             if line.strip()]
@@ -40,7 +55,7 @@ def load(paths):
 
 def detection_table(records):
     off = [r for r in records if r["policy"] == "off"]
-    fams = sorted({analysis.family(r) for r in off}, key=lambda f: (f not in CLEAN, f))
+    fams = sorted({analysis.family(r) for r in off}, key=lambda f: (not is_clean(f), f))
     rows, cells = [], {}
     for fam in fams:
         row = {"family": fam}
@@ -53,7 +68,7 @@ def detection_table(records):
             ttd = [s["ttd"] for s in scored if s["ttd"] is not None]
             cells[(fam, arm)] = {"n": len(group), "faulty": len(faulty), "tp": tp, "fp": fp,
                                  "ttd_median": statistics.median(ttd) if ttd else None}
-            if fam in CLEAN:
+            if is_clean(fam):
                 row[arm] = f"{fp}/{len(group)} false alarms"
             else:
                 med = cells[(fam, arm)]["ttd_median"]
@@ -66,14 +81,14 @@ def detection_table(records):
 def consequence_rows(records):
     off = {(r["arm"], r["scenario"]): r for r in records if r["policy"] == "off"}
     fams = sorted({analysis.family(r) for r in off.values()},
-                  key=lambda f: (f not in CLEAN, f))
+                  key=lambda f: (not is_clean(f), f))
     rows = []
     for fam in fams:
         eps = [s for (a, s) in off if a == "full" and analysis.family(off[(a, s)]) == fam]
         failed = [s for s in eps if not off[("full", s)]["success"]]
-        detected = {}
+        detected, early = {}, {}
         for arm in ARMS:
-            detected[arm] = 0
+            detected[arm] = early[arm] = 0
             for s in failed:
                 r = off.get((arm, s))
                 if r is None:
@@ -81,9 +96,11 @@ def consequence_rows(records):
                 inj = [f["injected_tick"] for f in r["faults"] if f["injected_tick"] is not None]
                 if r["detected_tick"] is not None and (not inj or r["detected_tick"] >= min(inj)):
                     detected[arm] += 1
+                    if _first_intervention(r) != AT_COMPLETION:
+                        early[arm] += 1
         wasted = sum(1 for s in eps if off[("full", s)]["success"]
                      and off[("full", s)]["detected_tick"] is not None)
-        rows.append((fam, len(failed), len(eps), detected, wasted))
+        rows.append((fam, len(failed), len(eps), detected, wasted, early))
     return rows
 
 
@@ -119,12 +136,20 @@ def figure(records, out: Path):
     import matplotlib.pyplot as plt
     colors = {"full": "#2a78d6", "flat": "#eb6834", "flat_strict": "#1baf7a"}
     rows = [r for r in consequence_rows(records) if r[1] > 0]
+    stacked = any(r[5] != r[3] for r in rows)
     fig, ax = plt.subplots(figsize=(12, 4.6))
     width = 0.26
     for i, arm in enumerate(ARMS):
         vals = [r[3][arm] / r[1] for r in rows]
         xs = [j + (i - 1) * width for j in range(len(rows))]
-        ax.bar(xs, vals, width=width - 0.03, color=colors[arm], label=ARM_LABEL[arm])
+        if stacked:
+            during = [r[5][arm] / r[1] for r in rows]
+            ax.bar(xs, during, width=width - 0.03, color=colors[arm], label=ARM_LABEL[arm])
+            ax.bar(xs, [v - d for v, d in zip(vals, during)], bottom=during,
+                   width=width - 0.03, color=colors[arm], alpha=0.3,
+                   label=None if i else "caught only at completion (lighter)")
+        else:
+            ax.bar(xs, vals, width=width - 0.03, color=colors[arm], label=ARM_LABEL[arm])
     ax.set_xticks(range(len(rows)),
                   [f"{r[0].replace('_', ' ')}\n({r[1]} failed)" for r in rows])
     ax.set_ylim(0, 1.05)
@@ -132,7 +157,8 @@ def figure(records, out: Path):
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e3df")
     ax.set_axisbelow(True)
-    ax.legend(frameon=False, ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.13))
+    ax.legend(frameon=False, ncol=4 if stacked else 3, loc="upper center",
+              bbox_to_anchor=(0.5, 1.13), fontsize=9 if stacked else 10)
     fig.tight_layout()
     fig.savefig(out / "detection.svg")
     fig.savefig(out / "detection.png", dpi=160)
@@ -166,9 +192,21 @@ def main(argv=None) -> int:
                   f"detected · {ARM_LABEL[a]}" for a in ARMS) +
               " | alarms on episodes that succeeded anyway (full) |",
               "|---|---|" + "---|" * len(ARMS) + "---|"]
-    for fam, failed, n, detected, wasted in consequence_rows(records):
+    rows = consequence_rows(records)
+    for fam, failed, n, detected, wasted, early in rows:
         lines.append(f"| {fam} | {failed}/{n} | " + " | ".join(
             f"{detected[a]}/{failed}" for a in ARMS) + f" | {wasted} |")
+    if any(r[5] != r[3] for r in rows):
+        lines += ["", "### …of which caught during the task, before the executor claimed "
+                  "success", "",
+                  "The rest were caught only by the completion check "
+                  "(`completion_unverified`), when it is too late to save the attempt.", "",
+                  "| family | failed | " + " | ".join(ARM_LABEL[a] for a in ARMS) + " |",
+                  "|---|---|" + "---|" * len(ARMS)]
+        for fam, failed, n, detected, wasted, early in rows:
+            if failed:
+                lines.append(f"| {fam} | {failed} | " + " | ".join(
+                    f"{early[a]}/{failed}" for a in ARMS) + " |")
     lines += ["", "## Outcomes (all families pooled; success judged from simulator "
               "ground truth)", "",
               "| arm | policy | n | success (95% CI) | Δ vs off | mean recoveries |",
