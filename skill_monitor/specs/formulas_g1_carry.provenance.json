@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-10-12T18:57:22+00:00",
+  "accepted": true,
+  "adapter": "sim/e1/carry/mujoco_carry.json",
+  "model": "Claude (session, acting as the describer LLM)",
+  "api_url": "none: answered in the Claude Code session",
+  "attempts_allowed": 3,
+  "llm_calls": 1,
+  "history": [
+    {
+      "attempt": 1,
+      "problems": [],
+      "fixes": []
+    }
+  ],
+  "surviving_problems": [],
+  "description_file": "skill_monitor/specs/descriptions/g1_fetch_and_deliver.md",
+  "description_sha256": "09717758c74aee96dace5537a3b851387d44da8f64e6ab00a13365672b69401a",
+  "spec_sha256": "63fbe69246ae80856beb6c29026a732937953e5e2733ad8578a7ae5bd6cf3fe6"
+}

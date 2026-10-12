@@ -28,7 +28,13 @@ from .faults import FaultInjector
 from .locomotion import Locomotion, LocomotionConfig
 from .policy import LstmPolicy
 from .scenario import Scenario
-from .world import ENV_GROUP, PELVIS, SPARE, TARGET, build_model, spare_park
+from .world import (DROPOFF, DROPOFF_PARK, ENV_GROUP, OBJECT, OBJECT_HALF, OBJECT_PARK,
+                    PELVIS, SPARE, TARGET, build_model, spare_park)
+
+#: How close the pelvis must be to the object for a grasp to take it, and where a held
+#: object rides relative to the pelvis (forward, up), in metres.
+GRASP_REACH_M = 0.6
+CARRY_OFFSET = (0.3, -0.05)
 
 #: The pelvis height the shipped model is authored at.
 STANDING_HEIGHT_M = 0.793
@@ -75,6 +81,7 @@ class G1Sim:
         self._episode_start = 0.0
         self._push_until = 0.0
         self.resets = 0
+        self.holding = False
         #: Whether the robot has been down at any point this episode. Latched, so a
         #: robot that falls and is lifted by a push still counts -- the outcome of an
         #: episode is judged on this, never on the monitor's opinion of it.
@@ -93,6 +100,8 @@ class G1Sim:
             self.data = mujoco.MjData(self.model)
             self._pelvis = self.model.body(PELVIS).id
             self._target_mocap = self.model.body(TARGET).mocapid[0]
+            self._object_mocap = self.model.body(OBJECT).mocapid[0]
+            self._dropoff_mocap = self.model.body(DROPOFF).mocapid[0]
             self._spares = [(self.model.body(SPARE.format(i)).mocapid[0],
                              self.model.geom(SPARE.format(i)).id)
                             for i in range(SPARE_BODIES)]
@@ -118,6 +127,9 @@ class G1Sim:
         for i in range(len(self._spares)):
             self._park_spare(i)
         self._clear_faults()
+        self.holding = False
+        self.data.mocap_pos[self._object_mocap] = OBJECT_PARK
+        self.data.mocap_pos[self._dropoff_mocap] = DROPOFF_PARK
         self._command = np.zeros(3)
         self._push_until = 0.0
         self.injector = FaultInjector(self)          # nothing fires while settling
@@ -172,6 +184,8 @@ class G1Sim:
                 self._push_until = 0.0
             self.locomotion.control_step(self.model, self.data, self.executed_command)
             self.fell = self.fell or not self.upright()
+            if self.holding:
+                self._carry()
 
     def pop_fault_events(self) -> list[dict]:
         """Faults fired since the last call, each `{type, onset_s, t, params}`."""
@@ -195,6 +209,53 @@ class G1Sim:
         x, y, _, _ = self.base_pose()
         gx, gy = self.goal()
         return math.hypot(gx - x, gy - y)
+
+    # ------------------------------------------------------------------ object
+
+    def place_object(self, x: float, y: float) -> None:
+        """Put the object on the floor at (x, y); it is no longer held."""
+        self.holding = False
+        self.data.mocap_pos[self._object_mocap] = (x, y, OBJECT_HALF)
+
+    def place_dropoff(self, x: float, y: float) -> None:
+        self.data.mocap_pos[self._dropoff_mocap] = (x, y, 0.01)
+
+    def object_position(self) -> tuple[float, float, float]:
+        x, y, z = self.data.mocap_pos[self._object_mocap]
+        return float(x), float(y), float(z)
+
+    def object_distance(self) -> float:
+        """Planar distance from the pelvis to the object -- ground truth."""
+        x, y, _, _ = self.base_pose()
+        ox, oy, _ = self.object_position()
+        return math.hypot(ox - x, oy - y)
+
+    def grasp(self) -> bool:
+        """Take the object if the pelvis is within reach of it. Legs-only G1: the grasp
+        is simulated by attaching the object, not by an arm."""
+        if not self.holding and self.object_distance() <= GRASP_REACH_M and not self.fell:
+            self.holding = True
+            self._carry()
+        return self.holding
+
+    def release(self) -> None:
+        """Set the object down on the floor in front of the robot."""
+        if self.holding:
+            x, y, _, yaw = self.base_pose()
+            fx, _ = CARRY_OFFSET
+            self.place_object(x + fx * math.cos(yaw), y + fx * math.sin(yaw))
+
+    def drop(self) -> None:
+        """The object falls from the robot's grip where it is."""
+        if self.holding:
+            ox, oy, _ = self.object_position()
+            self.place_object(ox, oy)
+
+    def _carry(self) -> None:
+        x, y, z, yaw = self.base_pose()
+        fx, dz = CARRY_OFFSET
+        self.data.mocap_pos[self._object_mocap] = (x + fx * math.cos(yaw),
+                                                   y + fx * math.sin(yaw), z + dz)
 
     # ------------------------------------------------------------------ faults
 

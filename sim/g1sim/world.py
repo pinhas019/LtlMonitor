@@ -37,6 +37,13 @@ WALL_THICKNESS_M = 0.1          # matches occupancy.WALL_THICKNESS_M
 PELVIS = "pelvis"
 TARGET = "target"
 SPARE = "spare_{}"
+#: A carryable object and a drop-off pad, for pick-and-place skills. Visual only: they
+#: neither collide nor appear in the scan, and wait out of the arena until placed.
+OBJECT = "object"
+DROPOFF = "dropoff"
+OBJECT_HALF = 0.08
+OBJECT_PARK = (100.0, 110.0, OBJECT_HALF)
+DROPOFF_PARK = (100.0, 115.0, 0.01)
 
 #: Where an unused spare waits: far outside any arena, clear of the floor (a mocap box
 #: resting on the plane would generate a contact every step for nothing), and beyond
@@ -89,6 +96,13 @@ def build_model(scenario: Scenario, model_xml: str | Path, *, timestep: float = 
     target = world.add_body(name=TARGET, pos=[goal_x, goal_y, 0.05], mocap=True)
     target.add_geom(type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.15, 0.02, 0],
                     contype=0, conaffinity=0, group=TARGET_GROUP, rgba=[0.1, 0.8, 0.2, 0.6])
+
+    obj = world.add_body(name=OBJECT, pos=list(OBJECT_PARK), mocap=True)
+    obj.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[OBJECT_HALF] * 3, contype=0,
+                 conaffinity=0, group=TARGET_GROUP, rgba=[0.95, 0.75, 0.1, 1])
+    pad = world.add_body(name=DROPOFF, pos=list(DROPOFF_PARK), mocap=True)
+    pad.add_geom(type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.3, 0.005, 0], contype=0,
+                 conaffinity=0, group=TARGET_GROUP, rgba=[0.2, 0.45, 0.9, 0.5])
 
     for i in range(SPARE_BODIES):
         spare = world.add_body(name=SPARE.format(i), pos=list(spare_park(i)), mocap=True)

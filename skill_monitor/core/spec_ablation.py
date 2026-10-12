@@ -15,6 +15,14 @@ places order lives:
 - **ordered LTL chains -> eventual completion.** `F(a && F(b && F(c)))` says *in this
   order*; the control says only `F(success)`.
 
+`invariants` decides what the one phase's invariant is. `"all"` (the default, used by E1)
+conjoins every phase's invariant -- right when they are the same global conditions in every
+phase. When a phase has an invariant of its own ("the object is held" during a carry),
+conjoining it makes the flat spec demand it from the first tick, which is not a control but
+a spec that is always violated. `"shared"` keeps only the conjuncts every phase states:
+what can be said without knowing the phase. A phase-specific condition cannot be stated
+flat, and that inexpressibility is part of what is being measured (E1b).
+
 `keep_terminal_failure` decides what happens to `terminal_failure`. A stall reaches the
 monitor through it on the first stalled tick, not through the phase machine -- so if the
 generated spec puts `no_progress` there, a flattened spec with it kept still catches
@@ -29,6 +37,7 @@ Pure: no ROS, no Spot. The result is checked by the same gate the monitor applie
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import json
 import re
@@ -60,12 +69,33 @@ def _conjunction(conditions) -> str:
     return parts[0] if len(parts) == 1 else " and ".join(f"({p})" for p in parts)
 
 
+def _conjuncts(condition) -> list[str]:
+    """The top-level `and` terms of a condition, each normalised by `ast.unparse`."""
+    condition = (condition or "").strip()
+    if not condition or condition == "True":
+        return []
+    node = ast.parse(condition, mode="eval").body
+    terms = node.values if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And) \
+        else [node]
+    return [ast.unparse(t) for t in terms]
+
+
+def _shared(conditions) -> str:
+    """The conjuncts every one of `conditions` states, in the first one's order."""
+    sets = [_conjuncts(c) for c in conditions]
+    if not sets or any(not s for s in sets):
+        return "True"
+    common = [t for t in sets[0] if all(t in s for s in sets[1:])]
+    return _conjunction(common)
+
+
 def _most_severe(categories) -> str:
     known = [c for c in categories if c in _SEVERITY]
     return min(known, key=_SEVERITY.__getitem__) if known else "NONE"
 
 
-def flatten(spec: dict, *, keep_terminal_failure: bool = True) -> dict:
+def flatten(spec: dict, *, keep_terminal_failure: bool = True,
+            invariants: str = "all") -> dict:
     """The flattened control of `spec`. The input is not modified."""
     phases = spec.get("execution_phases") or []
     if not phases:
@@ -75,8 +105,11 @@ def flatten(spec: dict, *, keep_terminal_failure: bool = True) -> dict:
     success = ((spec.get("terminal_success") or {}).get("condition")
                or last.get("exit_condition") or "False")
 
-    invariants = [p.get("invariant") for p in phases]
+    if invariants not in ("all", "shared"):
+        raise ValueError(f"invariants must be 'all' or 'shared', got {invariants!r}")
+    stated = [p.get("invariant") for p in phases]
     with_invariant = [p for p in phases if (p.get("invariant") or "True").strip() != "True"]
+    invariant = _conjunction(stated) if invariants == "all" else _shared(stated)
     phase = {
         "phase": FLAT_PHASE,
         "description": "Flattened control: every phase merged into one, so the monitor "
@@ -85,7 +118,7 @@ def flatten(spec: dict, *, keep_terminal_failure: bool = True) -> dict:
         "enter_condition": first.get("enter_condition", "True"),
         "precondition": first.get("precondition", "True"),
         "precondition_fault_category": first.get("precondition_fault_category", "NONE"),
-        "invariant": _conjunction(invariants),
+        "invariant": invariant,
         "invariant_fault_category": _most_severe(
             p.get("invariant_fault_category") for p in with_invariant),
         "progress_condition": "True",
@@ -119,10 +152,13 @@ def main(argv=None) -> int:
     parser.add_argument("--out", required=True, help="where to write the flattened spec")
     parser.add_argument("--drop-terminal-failure", action="store_true",
                         help="also remove terminal_failure (the stricter reading)")
+    parser.add_argument("--shared-invariants", action="store_true",
+                        help="keep only the invariant conjuncts every phase states")
     args = parser.parse_args(argv)
 
     spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
-    flat = flatten(spec, keep_terminal_failure=not args.drop_terminal_failure)
+    flat = flatten(spec, keep_terminal_failure=not args.drop_terminal_failure,
+                   invariants="shared" if args.shared_invariants else "all")
     found = problems(flat)
     if found:
         for problem in found:

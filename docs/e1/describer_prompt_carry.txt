@@ -1,0 +1,155 @@
+You are an expert in robotics, Linear Temporal Logic (LTL), formal verification, and runtime monitoring.
+
+Your task: convert the robot skill description below into a formal monitoring specification.
+
+Skill Description:
+"The humanoid robot fetches an object and delivers it to a drop-off station. A task
+executor tells it where to walk and when to grasp and release, and a navigation planner
+steers it around obstacles.
+
+The skill begins when the task is commanded. First the robot walks to the object: it
+should start getting closer to it within about 15 seconds and reach it within about 45
+seconds. Then it picks the object up while standing next to it; the grasp should succeed
+within about 10 seconds of arriving. Then it carries the object to the drop-off station,
+getting steadily closer, within about 60 seconds; the object must stay in the robot's
+gripper for the whole carry, and losing it is a failure of the task. Finally it puts the
+object down at the drop-off station, which should take no more than about 10 seconds
+after arriving.
+
+Throughout the whole task the robot must stay upright -- falling is a safety failure that
+must stop it at once -- and it must never come dangerously close to an obstacle, which is
+also a safety failure. A sustained failure to get any closer to where it is walking,
+while still away from it, means the task has failed.
+
+The task succeeds when the object rests at the drop-off station, within half a metre of
+it, and the robot is no longer holding it. The monitor checks the robot once per second."
+
+Available sensor fields (the evaluator reads exactly these, nothing else):
+  angular_vel                  - float, rad/s. Yaw rate of the base.
+  base_height                  - float, metres. Height of the robot base above the odometry origin plane. Drops sharply if the robot falls or collapses.
+  base_pitch                   - float, radians. Pitch of the robot base. 0.0 is level.
+  base_roll                    - float, radians. Roll of the robot base. 0.0 is level.
+  closing_speed                - float, m/s. How fast the robot is closing on its commanded goal: the drop in dist_to_goal per second since the previous tick. Positive while approaching, about 0 when stalled, negative when moving away. Measured from odometry against the commanded goal, not reported by the planner.
+  dist_to_dropoff              - float, metres. Planar distance from the robot base to the drop-off station, recomputed each tick.
+  dist_to_goal                 - float, metres. Straight-line distance in the ground plane from (pos_x, pos_y) to (goal_x, goal_y), recomputed once per tick from those four keys. Height is ignored deliberately: the z of a commanded waypoint is whatever the publisher stamped it at, not ground the robot has to cover. Until a goal has been commanded this reads as the distance back to the odometry origin, so a rule that treats a small value as 'arrived' must also establish that a goal exists.
+  dist_to_next                 - float, metres. Straight-line distance in the ground plane from (pos_x, pos_y) to (next_x, next_y), recomputed once per tick. The intermediate point usually moves ahead as the robot advances, so this distance staying constant is normal and is NOT a sign of a stall -- progress is measured against the goal (closing_speed, no_progress).
+  dropoff_x                    - float, metres. X of the drop-off station the object must be brought to, in the odometry frame. Part of the commanded task.
+  dropoff_y                    - float, metres. Y of the drop-off station, in the odometry frame.
+  goal_active                  - bool, true once a navigation goal has been received this episode. Until then goal_x/goal_y hold their defaults and dist_to_goal is the distance back to the odometry origin, not to a goal.
+  goal_x                       - float, metres. X of the point the robot has been COMMANDED to drive to, in the same odometry frame as pos_x. This is the target handed to the navigation algorithm, never the algorithm's own account of where it thinks it is going. 0.0 until a goal has been commanded, which is the odometry origin and not a way of saying 'no goal'.
+  goal_y                       - float, metres. Y of the commanded goal point, in the same odometry frame as pos_y. Same source and same caveat as goal_x.
+  holding                      - bool, true while the gripper's force sensing reports an object held. Measured at the gripper, not reported by the task executor.
+  image_similarity_to_goal     - float, 0.0-1.0. Visual similarity between the current camera view and a reference photo of the goal.
+  linear_vel                   - float, m/s. Forward velocity of the base.
+  min_range                    - float, metres. Distance to the nearest obstacle ahead within the 0.1-1.5 m height band. 10.0 means nothing was detected.
+  next_x                       - float, metres. X of the intermediate point the robot is currently being sent to on its way to the goal, in the same odometry frame as pos_x. It is where the robot is being sent next, never a report of whether the navigation algorithm thinks it is succeeding. Where no intermediate point exists it equals goal_x.
+  next_y                       - float, metres. Y of the intermediate point, in the same odometry frame as pos_y. Same source and same caveat as next_x.
+  no_progress                  - bool, true when a goal is active, the robot is still farther than the arrival radius, and it has not closed on the goal for a sustained period (debounced over seconds). Derived from odometry, so it fires even while the planner reports that it is following a path.
+  object_dist                  - float, metres. Planar distance from the robot base (pos_x, pos_y) to the object, recomputed each tick. Small while the object is held (it rides just in front of the robot).
+  object_to_dropoff            - float, metres. Planar distance from the object to the drop-off station, recomputed each tick. Below 0.5 means the object is at the station.
+  object_x                     - float, metres. X of the object as perception sees it, in the odometry frame. Follows the object wherever it is: on the floor, or in the gripper.
+  object_y                     - float, metres. Y of the object as perception sees it, in the odometry frame.
+  pos_x                        - float, metres. X of the robot base in the ODOMETRY frame (odom -> base_link), whose origin and axes are wherever the robot was when odometry started. It drifts with the odometry source and is not comparable across runs or to a map frame, so a rule may compare it to another quantity in the same frame (a commanded goal, an earlier position) but never to an absolute place in the world.
+  pos_y                        - float, metres. Y of the robot base in the odometry frame, positive to the robot's left at the moment odometry started (ROS REP-103 right-handed, X forward, Y left, Z up). Same frame and same caveats as pos_x.
+  pos_z                        - float, metres. Z of the robot base in the odometry frame, positive up. Height above the odometry origin plane, not above the ground the robot is currently standing on -- on a slope or a stair the two differ.
+  task_active                  - bool, true once a pick-and-place task (an object to fetch and a drop-off station to bring it to) has been commanded this episode.
+  upright_flag                 - float, 1.0 if the base is within tilt and height limits, else 0.0.
+  yaw                          - float, radians in [-pi, pi]. Heading of the robot base about the odometry frame's Z (up) axis, ZYX/aerospace convention. 0.0 means facing along the odometry frame's +X axis and positive is counter-clockwise seen from above. It WRAPS: -3.13 and 3.13 are four hundredths of a radian apart, so a rule that subtracts two yaws without wrapping the difference is wrong twice per revolution.
+
+Evaluation rule syntax (the evaluator applies these literally; replace each <field> with one of the fields above -- no other names exist):
+  "True when <numeric_field> > 0.05"
+  "True when <bool_field> == True"
+  "True when <string_field> == 'value'"
+  "True when <string_field> in ['a', 'b']"
+  "True when <bool_field> == True and <numeric_field> < 0.5"
+
+
+CRITICAL RULES:
+1. Every atomic proposition description MUST include a concrete, sensor-measurable evaluation rule
+   using the exact field names and thresholds listed above.
+   GOOD: "True when nav_status == 'succeeded'. The navigation goal was reached."
+   BAD:  "The robot has reached the target." (no sensor rule — evaluator cannot apply this)
+
+2. terminal_success.condition and terminal_failure.condition MUST be plain Python boolean
+   expressions using only: and, or, not, ==, !=, <, >, <=, >=, parentheses, and AP names.
+   DO NOT use LTL operators (G, F, X, U) or C-style operators (&&, ||, !) in these fields.
+
+3. All execution_phases conditions (enter_condition, precondition, invariant, progress_condition,
+   exit_condition) must use plain Python boolean syntax (and/or/not).
+
+4. ltl_formulas[].formula MUST use LTL syntax (G, F, X, U, ->, &&, ||, !) valid for the Spot library.
+   For skills with sequential phases, use nested F operators to produce a richer automaton:
+   GOOD: "F(phase1_ap && F(phase2_ap && F(phase3_ap)))"  — one state per milestone
+   BAD:  "F(final_ap)"  — generates only a 2-state automaton, loses phase tracking
+
+5. Only reference AP names that are defined in atomic_propositions.
+
+6. description must be 2-3 sentences covering the skill's purpose, what it monitors, and
+   its termination criteria.
+
+7. Each execution phase MUST have:
+   - enter_condition: APs that must be True to transition into this phase
+   - precondition: Python bool checked ONCE on phase entry; "" if none
+   - precondition_fault_category: one of "SAFETY", "INVARIANT", "TIMEOUT", "PROGRESS", or "NONE" if there is no precondition
+   - invariant: Python bool checked EVERY step; immediate halt if False; "" if none
+   - invariant_fault_category: one of "SAFETY", "INVARIANT", "TIMEOUT", "PROGRESS", or "NONE" if there is no invariant
+   - progress_condition: must remain True while in phase; counted violations
+   - exit_condition: APs that must be True to leave this phase
+   - progress_violation_limit: int (typically 3–5)
+   - timing_bounds: object with "max_steps" (required) and optionally "min_steps"
+
+8. named_failure_modes: one entry per global failure mode that should trigger a named halt
+   anywhere during execution (not just within a phase). Use G(!) formulas for safety properties.
+   Each entry: name, formula (LTL), fault_category (one of "SAFETY", "INVARIANT", "TIMEOUT", "PROGRESS"), description.
+
+   Fault categories mean: "SAFETY" -- harm to the robot or its surroundings, stop now;
+   "INVARIANT" -- a condition the skill depends on no longer holds; "TIMEOUT" -- a phase
+   took longer than its budget; "PROGRESS" -- the skill is not advancing.
+
+Respond with a single valid JSON object:
+{
+  "skill_name": "CamelCaseSkillName",
+  "description": "2-3 sentence description.",
+  "atomic_propositions": {
+    "ap_name": "True when <sensor rule>. <plain-English meaning>."
+  },
+  "ltl_formulas": [
+    {
+      "name": "formula_name",
+      "formula": "F(ap1 && F(ap2 && F(ap3)))"
+    }
+  ],
+  "named_failure_modes": [
+    {
+      "name": "collision_risk",
+      "formula": "G(!obstacle_detected)",
+      "fault_category": "SAFETY",
+      "description": "Robot must never come within collision range of an obstacle."
+    }
+  ],
+  "execution_phases": [
+    {
+      "phase": "PhaseName",
+      "description": "What the robot is doing in this phase.",
+      "enter_condition": "ap1 and ap2",
+      "precondition": "ap3",
+      "precondition_fault_category": "INVARIANT",
+      "invariant": "not ap4",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "ap3 and not ap4",
+      "exit_condition": "ap5",
+      "progress_violation_limit": 3,
+      "timing_bounds": {"max_steps": 60}
+    }
+  ],
+  "terminal_success": {
+    "condition": "ap1 and ap2",
+    "description": "What constitutes successful completion."
+  },
+  "terminal_failure": {
+    "condition": "ap3 or ap4",
+    "description": "What constitutes task failure."
+  }
+}
+
+Respond ONLY with the JSON object. No markdown, no code fences, no explanation.

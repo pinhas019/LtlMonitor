@@ -137,3 +137,29 @@ def test_the_cli_writes_a_valid_spec_and_refuses_a_broken_one(tmp_path, capsys):
     out.unlink()
     assert spec_ablation.main([str(src), "--out", str(out)]) == 1
     assert "ghost" in capsys.readouterr().out and not out.exists()
+
+
+def test_shared_invariants_keep_only_what_every_phase_states():
+    """A phase-specific invariant cannot be stated flat: conjoining it would demand it
+    from the first tick. `shared` keeps the conditions every phase has."""
+    spec = three_phases()
+    spec["execution_phases"][0]["invariant"] = "safe and not stuck"
+    spec["execution_phases"][1]["invariant"] = "safe and dry and not stuck"
+    spec["execution_phases"][2]["invariant"] = "not stuck and safe"
+    (phase,) = flatten(spec, invariants="shared")["execution_phases"]
+    assert phase["invariant"] == "(safe) and (not stuck)"
+    assert flatten(three_phases(), invariants="shared")["execution_phases"][0]["invariant"] \
+        == "True"                       # safe / dry / safe share nothing
+
+
+def test_shared_invariants_equal_all_when_every_phase_states_the_same():
+    spec = g1_spec()
+    assert spec_ablation.problems(flatten(spec, invariants="shared")) == []
+    shared = flatten(spec, invariants="shared")["execution_phases"][0]["invariant"]
+    assert set(shared.replace("(", "").replace(")", "").split(" and ")) == \
+        {"upright", "not collision_risk"}
+
+
+def test_an_unknown_invariants_rule_is_refused():
+    with pytest.raises(ValueError):
+        flatten(three_phases(), invariants="some")

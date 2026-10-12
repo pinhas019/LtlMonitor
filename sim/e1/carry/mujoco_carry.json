@@ -1,0 +1,292 @@
+{
+  "name": "mujoco_carry",
+  "doc": "E1b: the MuJoCo G1 doing pick and place. The mujoco descriptor's sources, plus the task (/task, JSON: the drop-off station), perception of the object (/object/pose) and the gripper's force sensing (/gripper/holding). The legs-only G1 has no arm: in simulation a grasp attaches the object when the robot stands within reach.",
+  "schema": [
+    "../../../skill_monitor/adapters/pose_schema.json",
+    "../../../skill_monitor/adapters/nav_schema.json",
+    "carry_schema.json"
+  ],
+  "describe": [
+    "min_range",
+    "holding",
+    "object_dist",
+    "object_to_dropoff",
+    "no_progress"
+  ],
+  "sources": [
+    {
+      "id": "odom",
+      "topic": "/odom",
+      "type": "nav_msgs/msg/Odometry",
+      "tracked": true,
+      "steps": [
+        {
+          "key": "linear_vel",
+          "field": "twist.twist.linear.x",
+          "round": 2
+        },
+        {
+          "key": "angular_vel",
+          "field": "twist.twist.angular.z",
+          "round": 2
+        },
+        {
+          "key": "pos_x",
+          "field": "pose.pose.position.x",
+          "round": 3
+        },
+        {
+          "key": "pos_y",
+          "field": "pose.pose.position.y",
+          "round": 3
+        },
+        {
+          "key": "pos_z",
+          "field": "pose.pose.position.z",
+          "round": 3
+        },
+        {
+          "key": "base_height",
+          "field": "pose.pose.position.z",
+          "round": 3
+        },
+        {
+          "keys": [
+            "base_roll",
+            "base_pitch"
+          ],
+          "fn": "quat_to_roll_pitch",
+          "field": "pose.pose.orientation",
+          "round": 3
+        },
+        {
+          "key": "yaw",
+          "fn": "quat_to_yaw",
+          "field": "pose.pose.orientation",
+          "round": 3
+        },
+        {
+          "key": "upright_flag",
+          "fn": "upright",
+          "inputs": [
+            "base_roll",
+            "base_pitch",
+            "base_height"
+          ],
+          "args": {
+            "tilt_max": 0.5,
+            "height_min": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "id": "goal",
+      "topic": "/goal_pose",
+      "type": "geometry_msgs/msg/PoseStamped",
+      "tracked": false,
+      "steps": [
+        {
+          "key": "goal_x",
+          "field": "pose.position.x",
+          "round": 3
+        },
+        {
+          "key": "goal_y",
+          "field": "pose.position.y",
+          "round": 3
+        },
+        {
+          "key": "goal_active",
+          "fn": "const",
+          "args": {
+            "value": true
+          }
+        },
+        {
+          "key": "next_x",
+          "field": "pose.position.x",
+          "round": 3
+        },
+        {
+          "key": "next_y",
+          "field": "pose.position.y",
+          "round": 3
+        },
+        {
+          "key": "dist_to_goal",
+          "fn": "planar_distance",
+          "on": "tick",
+          "inputs": [
+            "pos_x",
+            "pos_y",
+            "goal_x",
+            "goal_y"
+          ],
+          "round": 3
+        },
+        {
+          "key": "dist_to_next",
+          "fn": "planar_distance",
+          "on": "tick",
+          "inputs": [
+            "pos_x",
+            "pos_y",
+            "next_x",
+            "next_y"
+          ],
+          "round": 3
+        },
+        {
+          "key": "closing_speed",
+          "fn": "rate_of_decrease",
+          "on": "tick",
+          "inputs": [
+            "dist_to_goal"
+          ],
+          "round": 3
+        },
+        {
+          "key": "no_progress",
+          "fn": "no_progress",
+          "on": "tick",
+          "inputs": [
+            "goal_active",
+            "dist_to_goal",
+            "closing_speed"
+          ],
+          "args": {
+            "epsilon": 0.05,
+            "arrival_radius": 0.5,
+            "debounce_s": 10.0
+          }
+        }
+      ]
+    },
+    {
+      "id": "range",
+      "topic": "/scan",
+      "type": "sensor_msgs/msg/LaserScan",
+      "decode": "laserscan_ranges",
+      "tracked": true,
+      "steps": [
+        {
+          "key": "min_range",
+          "fn": "min_range_scan",
+          "round": 2,
+          "args": {
+            "default": 10.0
+          }
+        }
+      ]
+    },
+    {
+      "id": "vision",
+      "topic": "/vision/goal_similarity",
+      "type": "std_msgs/msg/Float32",
+      "tracked": false,
+      "steps": [
+        {
+          "key": "image_similarity_to_goal",
+          "field": "data",
+          "round": 3
+        }
+      ]
+    },
+    {
+      "id": "task",
+      "topic": "/task",
+      "type": "std_msgs/msg/String",
+      "decode": "json",
+      "tracked": false,
+      "steps": [
+        {
+          "key": "task_active",
+          "fn": "const",
+          "args": {
+            "value": true
+          }
+        },
+        {
+          "key": "dropoff_x",
+          "field": "dropoff_x",
+          "round": 3
+        },
+        {
+          "key": "dropoff_y",
+          "field": "dropoff_y",
+          "round": 3
+        },
+        {
+          "key": "dist_to_dropoff",
+          "fn": "planar_distance",
+          "on": "tick",
+          "inputs": [
+            "pos_x",
+            "pos_y",
+            "dropoff_x",
+            "dropoff_y"
+          ],
+          "round": 3
+        }
+      ]
+    },
+    {
+      "id": "object",
+      "topic": "/object/pose",
+      "type": "geometry_msgs/msg/PointStamped",
+      "tracked": true,
+      "expected_hz": 10.0,
+      "steps": [
+        {
+          "key": "object_x",
+          "field": "point.x",
+          "round": 3
+        },
+        {
+          "key": "object_y",
+          "field": "point.y",
+          "round": 3
+        },
+        {
+          "key": "object_dist",
+          "fn": "planar_distance",
+          "on": "tick",
+          "inputs": [
+            "pos_x",
+            "pos_y",
+            "object_x",
+            "object_y"
+          ],
+          "round": 3
+        },
+        {
+          "key": "object_to_dropoff",
+          "fn": "planar_distance",
+          "on": "tick",
+          "inputs": [
+            "object_x",
+            "object_y",
+            "dropoff_x",
+            "dropoff_y"
+          ],
+          "round": 3
+        }
+      ]
+    },
+    {
+      "id": "gripper",
+      "topic": "/gripper/holding",
+      "type": "std_msgs/msg/Bool",
+      "tracked": true,
+      "expected_hz": 10.0,
+      "steps": [
+        {
+          "key": "holding",
+          "field": "data",
+          "cast": "bool"
+        }
+      ]
+    }
+  ]
+}

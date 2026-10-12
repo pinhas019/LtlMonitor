@@ -1,0 +1,41 @@
+{
+  "name": "carry",
+  "keys": {
+    "task_active": {
+      "doc": "bool, true once a pick-and-place task (an object to fetch and a drop-off station to bring it to) has been commanded this episode.",
+      "default": false
+    },
+    "holding": {
+      "doc": "bool, true while the gripper's force sensing reports an object held. Measured at the gripper, not reported by the task executor.",
+      "default": false
+    },
+    "object_x": {
+      "doc": "float, metres. X of the object as perception sees it, in the odometry frame. Follows the object wherever it is: on the floor, or in the gripper.",
+      "default": 0.0
+    },
+    "object_y": {
+      "doc": "float, metres. Y of the object as perception sees it, in the odometry frame.",
+      "default": 0.0
+    },
+    "dropoff_x": {
+      "doc": "float, metres. X of the drop-off station the object must be brought to, in the odometry frame. Part of the commanded task.",
+      "default": 0.0
+    },
+    "dropoff_y": {
+      "doc": "float, metres. Y of the drop-off station, in the odometry frame.",
+      "default": 0.0
+    },
+    "object_dist": {
+      "doc": "float, metres. Planar distance from the robot base (pos_x, pos_y) to the object, recomputed each tick. Small while the object is held (it rides just in front of the robot).",
+      "default": 0.0
+    },
+    "dist_to_dropoff": {
+      "doc": "float, metres. Planar distance from the robot base to the drop-off station, recomputed each tick.",
+      "default": 0.0
+    },
+    "object_to_dropoff": {
+      "doc": "float, metres. Planar distance from the object to the drop-off station, recomputed each tick. Below 0.5 means the object is at the station.",
+      "default": 0.0
+    }
+  }
+}
