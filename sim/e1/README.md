@@ -79,3 +79,57 @@ sim/fetch_assets.sh /tmp/unitree && export G1SIM_ASSETS=/tmp/unitree
 
 `run_e1.py` skips episodes already in `--out`, so an interrupted sweep resumes where it
 stopped.
+
+## Findings (1800 episodes: 10 families × 20 seeds × 3 arms × 3 policies)
+
+Full tables are in [`docs/e1/results.md`](../../docs/e1/results.md). The raw records are in
+`docs/e1/e1_episodes.jsonl.gz`.
+
+1. **The phase structure added almost nothing over a flat spec with the same rules.**
+   - On nine of ten families, `full` and `flat` detect exactly the same episodes at the same
+     tick.
+   - The only difference is one stall in fifteen. There the legs crawled at 0.044 m/s, just
+     under the 0.05 m/s progress threshold. Only the Approaching phase's 60 s budget caught
+     it (TIMEOUT).
+   - Stalls that caused a failure: `full` caught 15/15, `flat` 14/15 (Fisher p = 1.0).
+2. **What carries stall detection is the progress proposition, wherever it sits.**
+   - Remove the rule that reads it (`flat_strict`) and stall detection falls to 1/15.
+     Against `full`: p = 2·10⁻⁷.
+   - The value is in grounding progress in odometry (`no_progress`), not in the ordering.
+3. **Falls are caught within 1–2 ticks** whatever the spec: push 19/20, weaken 19/20, slip
+   10/11 of the episodes that failed.
+   - The one miss in each family is an episode that ended on the fall in the same tick the
+     monitor saw it.
+4. **Acting on the monitor lowered success in this setup.**
+   - Success under `off` was 63%. Under `detect` it was 43% (−20 pp, p = 9·10⁻⁵); under
+     `recover` 52% (−11 pp, p = 0.03). This held for every arm.
+   - The cause is `collision_imminent` (`min_range < 0.3`). It fired on 35 of 40
+     surprise-obstacle episodes and on 3 of 20 cluttered ones, all of which the navigator
+     completed anyway.
+   - Re-planning cannot fix the faults that remain: a stall is permanent, and a fall ends
+     the episode.
+5. **Blind spots.**
+   - `scan_dropout`: 0/20 detected. No proposition reads data freshness.
+   - `odom_drift`: 1 of the 8 resulting false arrivals detected. Every distance is measured
+     in the frame that drifts.
+
+**Reading.** In this skill, the claim that progress *states* catch what flat rules miss is
+not supported beyond a single slow-crawl case. What the results support is narrower:
+**sensor-grounded progress** is what catches the failure the planner cannot see.
+
+Two things limit any structural effect here:
+- **The skill is short.** There are two phases, and stall detection fires in both.
+- **The safety threshold is set loosely against the navigator's clearance.**
+
+Three follow-ups:
+- longer, multi-phase skills, where an order violation is not also a progress violation;
+- a calibrated proximity threshold;
+- data-health and independent-position propositions (Paper 2's learned grounding).
+
+**Limits.**
+- One generated spec.
+- A navigator stand-in for Nav2.
+- 20 seeds per family.
+- Single-fault scenarios.
+- A monitor running at 1 Hz.
+- The `detect` policy, by construction, turns every intervention into a failed episode.

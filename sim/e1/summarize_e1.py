@@ -63,6 +63,30 @@ def detection_table(records):
     return rows, cells
 
 
+def consequence_rows(records):
+    off = {(r["arm"], r["scenario"]): r for r in records if r["policy"] == "off"}
+    fams = sorted({analysis.family(r) for r in off.values()},
+                  key=lambda f: (f not in CLEAN, f))
+    rows = []
+    for fam in fams:
+        eps = [s for (a, s) in off if a == "full" and analysis.family(off[(a, s)]) == fam]
+        failed = [s for s in eps if not off[("full", s)]["success"]]
+        detected = {}
+        for arm in ARMS:
+            detected[arm] = 0
+            for s in failed:
+                r = off.get((arm, s))
+                if r is None:
+                    continue
+                inj = [f["injected_tick"] for f in r["faults"] if f["injected_tick"] is not None]
+                if r["detected_tick"] is not None and (not inj or r["detected_tick"] >= min(inj)):
+                    detected[arm] += 1
+        wasted = sum(1 for s in eps if off[("full", s)]["success"]
+                     and off[("full", s)]["detected_tick"] is not None)
+        rows.append((fam, len(failed), len(eps), detected, wasted))
+    return rows
+
+
 def outcome_rows(records):
     rows = []
     by = defaultdict(list)
@@ -88,21 +112,23 @@ def outcome_rows(records):
     return rows
 
 
-def figure(cells, fams, out: Path):
+def figure(records, out: Path):
+    """Detection of the faults that mattered: episodes that failed under `off`."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     colors = {"full": "#2a78d6", "flat": "#eb6834", "flat_strict": "#1baf7a"}
-    faults = [f for f in fams if f not in CLEAN]
+    rows = [r for r in consequence_rows(records) if r[1] > 0]
     fig, ax = plt.subplots(figsize=(12, 4.6))
     width = 0.26
     for i, arm in enumerate(ARMS):
-        vals = [cells[(f, arm)]["tp"] / max(1, cells[(f, arm)]["faulty"]) for f in faults]
-        xs = [j + (i - 1) * width for j in range(len(faults))]
+        vals = [r[3][arm] / r[1] for r in rows]
+        xs = [j + (i - 1) * width for j in range(len(rows))]
         ax.bar(xs, vals, width=width - 0.03, color=colors[arm], label=ARM_LABEL[arm])
-    ax.set_xticks(range(len(faults)), [f.replace("_", " ") for f in faults])
+    ax.set_xticks(range(len(rows)),
+                  [f"{r[0].replace('_', ' ')}\n({r[1]} failed)" for r in rows])
     ax.set_ylim(0, 1.05)
-    ax.set_ylabel("detected / injected")
+    ax.set_ylabel("failures detected")
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e3df")
     ax.set_axisbelow(True)
@@ -132,6 +158,17 @@ def main(argv=None) -> int:
              "|---|" + "---|" * len(ARMS)]
     for row in rows:
         lines.append(f"| {row['family']} | " + " | ".join(row[a] for a in ARMS) + " |")
+    lines += ["", "## Detection of faults that mattered (policy off)", "",
+              "A fault *mattered* when the episode failed under `off` (judged from ground "
+              "truth). Alarms on episodes that succeeded anyway are interventions a "
+              "policy would have acted on for nothing.", "",
+              "| family | failed under off | " + " | ".join(
+                  f"detected · {ARM_LABEL[a]}" for a in ARMS) +
+              " | alarms on episodes that succeeded anyway (full) |",
+              "|---|---|" + "---|" * len(ARMS) + "---|"]
+    for fam, failed, n, detected, wasted in consequence_rows(records):
+        lines.append(f"| {fam} | {failed}/{n} | " + " | ".join(
+            f"{detected[a]}/{failed}" for a in ARMS) + f" | {wasted} |")
     lines += ["", "## Outcomes (all families pooled; success judged from simulator "
               "ground truth)", "",
               "| arm | policy | n | success (95% CI) | Δ vs off | mean recoveries |",
@@ -149,7 +186,7 @@ def main(argv=None) -> int:
     lines += ["", "## Full table (arm × policy × family)", "",
               analysis.to_markdown(analysis.summarize(records))]
     (out / "results.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    figure(cells, fams, out)
+    figure(records, out)
     print("\n".join(lines[:40]))
     return 0
 
