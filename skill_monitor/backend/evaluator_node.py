@@ -22,6 +22,7 @@ import urllib.request
 import argparse
 import queue
 import threading
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
@@ -59,8 +60,9 @@ def _jsonable(v):
 
 
 def _load_adapter(name: str, **kwargs) -> SensorAdapter:
-    """A JSON descriptor by preference, a Python class only where one exists."""
-    if name in adapter_spec.available():
+    """A JSON descriptor by preference, a Python class only where one exists. `name` is a
+    shipped descriptor's name or the path of a descriptor file (`*.json`)."""
+    if name in adapter_spec.available() or (name.endswith(".json") and Path(name).is_file()):
         from skill_monitor.backend.adapters.declarative import DeclarativeAdapter
         cls, kwargs = DeclarativeAdapter, {"descriptor": name, **kwargs}
     elif name in ADAPTERS:
@@ -609,8 +611,13 @@ def main():
     from rclpy.utilities import remove_ros_args
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--adapter", required=True, choices=adapter_choices(),
-                         help="Which environment's sensor topics to evaluate against.")
+    parser.add_argument("--adapter", required=True,
+                        help="Which environment's sensor topics to evaluate against: one "
+                             f"of {adapter_choices()}, or the path of a descriptor .json.")
+    parser.add_argument("--clock", choices=("wall", "ros"), default="wall",
+                        help="What source freshness is measured on. 'ros' is the node's "
+                             "ROS clock, i.e. /clock under use_sim_time:=true, for a "
+                             "simulator that runs faster or slower than real time.")
     parser.add_argument("--api-url", "--ollama-url", dest="api_url",
                         default="http://192.168.140.101/developer-api/v1")
     parser.add_argument("--model", default="Gemma4")
@@ -625,15 +632,23 @@ def main():
                              "against the real G1's standing pelvis height.")
     args = parser.parse_args(args=remove_ros_args(args=sys.argv)[1:])
 
+    node_ref = {}
+
+    def ros_clock() -> float:
+        node = node_ref.get("node")
+        return node.get_clock().now().nanoseconds * 1e-9 if node is not None else 0.0
+
     adapter = _load_adapter(
         args.adapter,
         stale_after=args.stale_after,
         upright_tilt_max=args.upright_tilt_max,
         upright_height_min=args.upright_height_min,
+        **({"clock": ros_clock} if args.clock == "ros" else {}),
     )
 
     rclpy.init(args=sys.argv)
     node = GenericClientNode(adapter, args.api_url, args.model)
+    node_ref["node"] = node
 
     try:
         rclpy.spin(node)

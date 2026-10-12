@@ -131,6 +131,38 @@ def outcome_rows(records):
     return rows
 
 
+def monitor_said(record) -> str | None:
+    """What the monitor concluded about the episode from its messages alone, by its last
+    verdict: "success", "failure" or "undecided". None for records that predate it."""
+    out = (record.get("timing") or {}).get("monitor_outcome")
+    if out is None:
+        return None
+    if out.get("terminal") == "SUCCESS" or out.get("verdict") == "SATISFIED":
+        return "success"
+    if out.get("terminal") == "FAILURE" or out.get("verdict") == "VIOLATED":
+        return "failure"
+    return "undecided"
+
+
+def inferred_outcome_rows(records):
+    """Per arm, policy `off`: the monitor's conclusion against the simulator's truth.
+    Each row: (arm, n, truly ok -> said success/undecided/failure, truly failed -> ...,
+    agreement = said success exactly when the task succeeded)."""
+    rows = []
+    for arm in ARMS:
+        group = [r for r in records if r["arm"] == arm and r["policy"] == "off"
+                 and monitor_said(r) is not None]
+        if not group:
+            continue
+        cells = {(ok, said): 0 for ok in (True, False)
+                 for said in ("success", "undecided", "failure")}
+        for r in group:
+            cells[(bool(r["success"]), monitor_said(r))] += 1
+        agree = sum(1 for r in group if (monitor_said(r) == "success") == bool(r["success"]))
+        rows.append((arm, len(group), cells, agree))
+    return rows
+
+
 def sign_test(wins: int, losses: int) -> float:
     """Two-sided exact sign test on the non-tied pairs."""
     from math import comb
@@ -304,6 +336,22 @@ def main(argv=None) -> int:
             if failed:
                 lines.append(f"| {fam} | {failed} | " + " | ".join(
                     f"{early[a]}/{failed}" for a in ARMS) + " |")
+    inferred = inferred_outcome_rows(records)
+    if inferred:
+        lines += ["", "## The monitor's own conclusion against ground truth (policy off)", "",
+                  "The monitor's last verdict, from the ROS messages alone: *success* "
+                  "(SATISFIED or terminal success), *failure* (VIOLATED or terminal "
+                  "failure) or *undecided*. Truth is the simulator's (object at the "
+                  "drop-off, not held, no fall). Agreement: the monitor said success "
+                  "exactly when the task succeeded.", "",
+                  "| arm | n | succeeded: said success / undecided / failure | failed: "
+                  "said success / undecided / failure | agreement |",
+                  "|---|---|---|---|---|"]
+        for arm, n, c, agree in inferred:
+            ok = " / ".join(str(c[(True, k)]) for k in ("success", "undecided", "failure"))
+            bad = " / ".join(str(c[(False, k)]) for k in ("success", "undecided", "failure"))
+            lines.append(f"| {arm} | {n} | {ok} | {bad} | {agree}/{n} "
+                         f"({100 * agree / n:.0f}%) |")
     paired = paired_rows(records)
     if paired:
         lines += ["", "## Paired: full spec against each flat arm, scenario by scenario", "",

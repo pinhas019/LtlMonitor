@@ -249,4 +249,54 @@ the fact (a fragile object, a deadline, a human waiting), the latency is the out
 - A deadline or an irreversible-failure variant, to turn latency into outcome.
 
 **Limits.** All of E1's, plus a simulated grasp (attachment, no arm), and perception of the
-object and gripper as ground truth.
+object and gripper as ground truth. The ROS 2 rerun below removes the last two of these
+from the monitor's side: it no longer reads the gripper, and it sees the object through
+noise and missed detections.
+
+---
+
+# E1b over ROS 2 — the outcome inferred from messages only
+
+The run above delivered Python objects to the node callbacks in one process, and the
+monitor learned "held" from `/gripper/holding`, which was the simulator's own flag. This
+rerun closes both gaps:
+
+- **Real transport.** The evaluator and the monitor run as their own processes
+  (`python -m skill_monitor.backend.evaluator_node` / `monitor_node`, exactly as
+  deployed), talking over DDS (ROS 2 Humble, FastDDS) to a driver node
+  (`sim/e1/ros_e1b.py`) that owns the simulator, the navigator and the executor.
+  Episode logic is `run_e1b.play_episode`, shared with the in-process run; only the
+  transport differs (`RosLink` vs `InProcess`).
+- **What the monitor reads.** `/odom` (nav_msgs/Odometry), `/scan`
+  (sensor_msgs/LaserScan), `/goal_pose`, `/task` (the drop-off) and `/object/pose`
+  (geometry_msgs/PointStamped from a perception stand-in: the object's position with
+  2 cm noise per axis and 5% missed detections). Nothing else: no gripper, no executor
+  status (`/task/status` is published but forbidden to the monitor by the
+  planner-independence guard), no simulator state.
+- **"Held" is inferred** by the evaluator's `object_held` extractor: the object is lifted
+  (z ≥ 0.3 m; it rests at 0.08 m) and within 0.5 m of the base from odometry. The spec's
+  proposition is unchanged (`holding == True`); the key's grounding changed after the
+  spec was generated.
+- **Success and failure are the monitor's own conclusion**: its last verdict
+  (SATISFIED / terminal success, VIOLATED / terminal failure, or undecided), scored
+  against the simulator's ground truth, which never leaves the driver.
+- **Lockstep on simulated time.** The driver publishes `/clock` (the evaluator runs with
+  `use_sim_time`), then each second's sensor messages, then the tick, and waits for that
+  tick's verdict before simulating on. Each worker has its own `ROS_DOMAIN_ID` and refuses
+  a domain where another monitor already answers.
+
+## Reproduce (ROS 2)
+
+```bash
+# ROS 2 Humble from RoboStack, Spot from conda-forge, MuJoCo from pip
+micromamba create -p .ros -c robostack-staging -c conda-forge python=3.11 \
+    ros-humble-ros-base spot pyyaml "numpy<2" matplotlib pytest
+.ros/bin/pip install mujoco
+sim/fetch_assets.sh /tmp/unitree && export G1SIM_ASSETS=/tmp/unitree
+.ros/bin/python sim/e1/ros_e1b.py --seeds 0-19 --workers 4 --out e1b_ros.jsonl
+python sim/e1/summarize_e1.py e1b_ros.jsonl --out docs/e1b_ros --title "E1b over ROS 2"
+```
+
+While it runs, `ROS_DOMAIN_ID=20 ros2 node list` shows `ltl_generic_client`,
+`ltl_monitor_node` and `e1b_driver`, and `ros2 topic echo /monitor/verdict` the verdicts.
+
