@@ -3,9 +3,17 @@
 A working guide for advancing the thesis, written after the September progress report.
 Ordered by what settles the claim, not by what is easiest to build.
 
-Companion documents: `docs/report/progress_report.tex` (what the supervisor has seen),
+Companion documents: `docs/report/progress_report.md` (what the supervisor has seen),
 `papers/README.md` (the reading queue), `RESUME.md` (engineering state), `docs/packages/`
 (per-package design).
+
+**Publication plan:** `docs/ral-papers.md` (two RA-L papers) and `docs/implementation-plan.md`
+(the work packages behind them).
+
+> **Simulator first.** New evidence comes from MuJoCo with real dynamics, then Isaac Sim, then
+> the robot. The MAAOS / continuous-MiniGrid work is **frozen** — no new experiments there; its
+> pilot numbers serve only as preliminary motivation. Experiments below that mention the
+> gridworld now run in MuJoCo; the simulator work is at the top of the order of work.
 
 ---
 
@@ -117,11 +125,10 @@ monitor concluding success when the skill has in fact failed. No current scenari
 produce that, so the strongest half of the argument has no evidence behind it.
 
 This is what the dropped-cup example in earlier drafts was describing, and it was always an
-experiment rather than an illustration. Construct the gridworld equivalent: a scenario where
-the terminal observation looks like success but the skill never passed through the required
-progress states. For box-push, candidates are a box that reaches the goal tile without the
-agents ever establishing the push formation, or an agent that reports arrival having never
-left its first phase.
+experiment rather than an illustration. Construct it in the simulator: a scenario where the
+terminal observation looks like success but the skill never passed through the required
+progress states. For the G1, candidates are a spoofed goal image that makes the robot look
+arrived, or an arrival reported without the path having been followed.
 
 Then measure recall, not success rate: on those episodes, does the observation-based judge
 return SUCCESS where the progress-state monitor returns FAILURE?
@@ -151,28 +158,26 @@ an API call per tick.
 
 ## Then: remove the two caveats that limit every number you have
 
-Both are currently stated honestly in the report, and both cap how much any result is worth.
+Both are stated honestly in the report, and both cap how much the pilot numbers are worth: the
+runs drove **scripted reference plans**, and they were **discrete-mode** episodes. Moving to the
+simulator removes both by construction rather than by re-running the gridworld.
 
-### S1 — Drive the live planner, not scripted reference plans
+### S1 — A live planner
 
-Everything measured so far drove scripted reference plans. So what is established is that
-*detection plus re-planning* helps a scripted executor. The interesting claim — that the
-monitor helps a real planner — is not yet tested, and a reviewer will go straight at it.
+In MuJoCo the robot is driven by Nav2, and on the hardware by TRAV — live planners, neither
+written for the monitor. Expect the clean-run false-alarm rate to be the thing that moves: a
+real planner produces behaviour the specification was never shown, which is exactly how the
+alignment-predicate fault was found.
 
-Re-run E1 under the live MAAOS planner once E1 exists in scripted form. Expect the clean-run
-false-alarm rate to be the thing that moves: a real planner produces behaviour the
-specification was never shown, which is exactly how the alignment-predicate fault was found.
+### S2 — Real dynamics
 
-### S2 — Run in continuous mode
+The MuJoCo bridge is currently kinematic; with the G1 walking policy from `unitree_rl_gym`
+driving real physics (implementation plan SIM.2), continuous dynamics, contact and falls are
+real. That is where predicate thresholds start mattering — a crisp condition becomes a tolerance
+band — and calibrating them in simulation is much cheaper than discovering them on the G1.
 
-The environment is a continuous version of MiniGrid but the figures come from discrete-mode
-episodes. Continuous dynamics are where predicate thresholds start mattering — an alignment
-or progress predicate that is crisp in discrete mode becomes a tolerance band — and
-calibrating those is work that will be needed again on the robot. Doing it in the gridworld
-first is much cheaper than discovering it on the G1.
-
-**Done when:** E1's table is reproduced in continuous mode under the live planner. That table
-is the paper's main result.
+**Done when:** E1's table is produced in MuJoCo with real dynamics under Nav2. That table is
+Paper 1's main result.
 
 ---
 
@@ -211,13 +216,13 @@ work, so calibration is an offline exercise against a recording rather than robo
 The first test of the claim on a skill the monitor did not shape. TRAV is being developed
 independently, which is exactly what makes it worth measuring.
 
-Same monitor-on / monitor-off ablation as the gridworld. The expectation stated in the report
+Same monitor-on / monitor-off ablation as in simulation. The expectation stated in the report
 is that the monitored arm completes more runs, and the reasoning is transferable: the failures
 that end a navigation episode — stalling, a stuck recovery loop, a safety-guard violation —
 are the classes detection already caught in simulation, where catching them early enough to
 re-plan converted a failed run into a completed one.
 
-Decide the recovery action with Elias before running. On the gridworld, recovery meant a
+Decide the recovery action with Elias before running. In the pilot, recovery meant a
 high-level re-plan; on the robot the equivalent has to be something TRAV can actually be asked
 to do. If no recovery action exists, the experiment measures detection only — and detection
 alone is already known to be worth +0.00 on success rate, so pick a different dependent
@@ -356,8 +361,9 @@ The automaton is a ready-made reward machine — reward on phase advancement, pe
 violation — which makes Deep RL the natural way to get that policy. But treat it as **a test
 subject for D1 and D2, not a contribution of its own**: LTL-shaped reinforcement learning is
 an established literature. Pick the smallest learned policy that fails in interesting ways
-rather than the most impressive one, and train it in the gridworld, where volume already
-exists.
+rather than the most impressive one. Note that the G1's walking controller in simulation is
+already a learned RL policy, so the monitored stack contains a learned skill before any policy
+is trained here; if a task-level policy is still needed, Isaac Lab is the place to train it.
 
 ---
 
@@ -397,35 +403,30 @@ Places where a result should change the plan rather than be absorbed into it.
 
 ## Order of work
 
-**Prove the structure matters**
+Superseded in detail by `docs/implementation-plan.md`; the shape is:
 
-1. **E1** — flattened-specification control. The claim has no direct evidence until this exists.
-2. **E3** — cost measurement. Cheapest item here; do it while E1 runs.
-3. **E2** — missed-failure scenarios. Slower than E1, but it carries the strongest half of the
-   argument.
+**Build the simulator**
 
-**Make the data exist**
+1. **SIM.1–SIM.2** — reset, then real dynamics with the G1 walking policy. Nothing else produces
+   new evidence until these exist.
+2. **Prerequisite** — `SensorState.tick()`, `/monitor/observation`, episode records — alongside.
+3. **SIM.3–SIM.5** — sensors, the fault library with injection ticks, lockstep sweeps; plus
+   **H1** planner independence, since simulation runs Nav2 and the robot runs TRAV.
 
-4. **Prerequisite** — call `SensorState.tick()`, publish `/monitor/observation`, honest fault
-   injection with recorded injection ticks.
-5. **H3** — the `/g1/reset` subscriber. Promoted: D2 needs volume.
+**Prove the structure matters — Paper 1**
 
-**Add learning where the structure is weak**
+4. **E1** flattened-specification control, **E3** cost, **E2** missed failures — all in MuJoCo.
+5. **H2** — hardware validation on the G1 with TRAV.
 
-6. **D1** — learned propositions against hand thresholds. Doubles as the P12 fix.
-7. **H1** — P12 enforcement and calibration, off a recording. Much of it lands with D1.
-8. **S1 + S2** — live planner, continuous mode. Re-run E1 and D1; this becomes the main result.
-9. **D2** — phase-conditioned anomaly detection, schema-only, with the conditioning ablation.
+**Add learning where the structure is weak — Paper 2**
 
-**Widen it**
+6. **D1** learned propositions, **D2** phase-conditioned anomaly detection, on recordings from
+   the sweeps.
+7. **Isaac Sim** — photoreal vision for D1 and D2, and the same specification on a third
+   embodiment.
 
-10. **H2** — G1 + TRAV ablation, recovery action agreed in advance; arm64 image built.
-11. **D3** — a learned policy trained with the automaton as reward machine, as a test subject
-    for D1 and D2.
-12. **Vision** — added to D1 and D2 once a simulator with contact physics exists.
-
-Steps 1–3 are a paper on their own: progress states beat the same monitor without them, catch
-failures an observation-based judge misses, and cost less per tick. Steps 6 and 9 are the
-second: learning makes the structure's propositions robust and covers the failures nobody
-specified — without giving up the context and explainability that made the structure worth
+Steps 1–5 are Paper 1: progress states beat the same monitor without them, catch failures an
+observation-based judge misses, and cost less per tick, on a humanoid with real dynamics. Steps
+6–7 are Paper 2: learning makes the structure's propositions robust and covers the failures
+nobody specified, without giving up the context and explainability that made the structure worth
 having.
