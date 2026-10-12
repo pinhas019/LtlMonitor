@@ -6,6 +6,11 @@
     sim.step(1.0)                          # simulated seconds
     sim.base_pose(), sim.upright(), sim.ranges()
 
+Faults scheduled in the scenario fire on their own as `step()` crosses their onset
+(faults.py); `pop_fault_events()` hands over the ones that fired since the last call.
+Sensor faults change only what the bridge should report -- `reported_pose()` and
+`scan_available()` -- while `base_pose()` and `ranges()` stay the truth.
+
 The ROS bridge is a thin shell around this; everything worth testing is here, and runs
 headless with nothing but mujoco, numpy and pyyaml installed.
 """
@@ -18,10 +23,12 @@ import mujoco
 import numpy as np
 
 from . import assets as _assets
+from .fault_spec import SPARE_BODIES
+from .faults import FaultInjector
 from .locomotion import Locomotion, LocomotionConfig
 from .policy import LstmPolicy
 from .scenario import Scenario
-from .world import ENV_GROUP, PELVIS, TARGET, build_model
+from .world import ENV_GROUP, PELVIS, SPARE, TARGET, build_model, spare_park
 
 #: The pelvis height the shipped model is authored at.
 STANDING_HEIGHT_M = 0.793
@@ -68,6 +75,9 @@ class G1Sim:
         self._episode_start = 0.0
         self._push_until = 0.0
         self.resets = 0
+        self._clear_faults()
+        self.injector = FaultInjector(self)
+        self._fault_events: list[dict] = []
 
     # ------------------------------------------------------------------ episode
 
@@ -79,6 +89,12 @@ class G1Sim:
             self.data = mujoco.MjData(self.model)
             self._pelvis = self.model.body(PELVIS).id
             self._target_mocap = self.model.body(TARGET).mocapid[0]
+            self._spares = [(self.model.body(SPARE.format(i)).mocapid[0],
+                             self.model.geom(SPARE.format(i)).id)
+                            for i in range(SPARE_BODIES)]
+            self._nominal_friction = self.model.geom_friction.copy()
+            self._nominal_spare_size = [self.model.geom_size[g].copy()
+                                        for _, g in self._spares]
             self._layout = scenario.layout_key()
         self.scenario = scenario
         model, data = self.model, self.data
@@ -92,12 +108,26 @@ class G1Sim:
         self.set_goal(*scenario.goals[0])
 
         self.locomotion.reset()            # zeroes the LSTM memory: no gait leaks over
-        self.locomotion.torque_scale = 1.0
+        # A same-layout reset reuses the model, so everything a fault mutated in it --
+        # friction, the spare boxes -- is put back here, not left to the next episode.
+        model.geom_friction[:] = self._nominal_friction
+        for i in range(len(self._spares)):
+            self._park_spare(i)
+        self._clear_faults()
         self._command = np.zeros(3)
         self._push_until = 0.0
+        self.injector = FaultInjector(self)          # nothing fires while settling
         self.step(settle_s)
         self._episode_start = data.time
+        self.injector = FaultInjector(self, scenario.faults)
+        self._fault_events = []
         self.resets += 1
+
+    def _clear_faults(self) -> None:
+        self.locomotion.torque_scale = 1.0
+        self.command_scale = 1.0
+        self._drift = None                 # (rate m/s, world angle, onset time)
+        self._scan_dropout_until = 0.0
 
     @property
     def time(self) -> float:
@@ -118,15 +148,29 @@ class G1Sim:
     def command(self) -> np.ndarray:
         return self._command.copy()
 
+    @property
+    def executed_command(self) -> np.ndarray:
+        """What the legs are actually asked for: the command, after a `stall` fault."""
+        return self._command * self.command_scale
+
     def step(self, seconds: float | None = None, control_steps: int | None = None) -> None:
-        """Advance by whole control periods (20 ms): `seconds` rounded, or a count."""
+        """Advance by whole control periods (20 ms): `seconds` rounded, or a count.
+
+        Faults are checked before each period, so one fires within 20 ms of its onset.
+        """
         if control_steps is None:
             control_steps = max(1, int(round((seconds or 0.0) / self.config.control_dt)))
         for _ in range(control_steps):
+            self._fault_events.extend(self.injector.update())
             if self._push_until and self.data.time >= self._push_until:
                 self.data.xfrc_applied[self._pelvis, :] = 0.0
                 self._push_until = 0.0
-            self.locomotion.control_step(self.model, self.data, self._command)
+            self.locomotion.control_step(self.model, self.data, self.executed_command)
+
+    def pop_fault_events(self) -> list[dict]:
+        """Faults fired since the last call, each `{type, onset_s, t, params}`."""
+        events, self._fault_events = self._fault_events, []
+        return events
 
     def push(self, force_xyz, duration_s: float = 0.2) -> None:
         """Apply a world-frame force (N) to the pelvis for `duration_s`."""
@@ -135,6 +179,76 @@ class G1Sim:
 
     def set_goal(self, x: float, y: float) -> None:
         self.data.mocap_pos[self._target_mocap] = (x, y, 0.05)
+
+    # ------------------------------------------------------------------ faults
+
+    def set_friction(self, mu: float) -> None:
+        """Sliding friction of every geom. MuJoCo takes a contact's friction as the max
+        of the pair, so lowering the floor alone would leave the feet's in charge."""
+        self.model.geom_friction[:, 0] = mu
+
+    def set_torque_scale(self, scale: float) -> None:
+        self.locomotion.torque_scale = float(scale)
+
+    def set_command_scale(self, scale: float) -> None:
+        self.command_scale = float(scale)
+
+    def place_spare(self, index: int, pos, size, yaw: float = 0.0) -> None:
+        """Move spare box `index` into the arena: centre (x, y), half-extents, yaw."""
+        if not 0 <= index < len(self._spares):
+            raise ValueError(f"no spare body {index}; the world has {len(self._spares)}")
+        mocap, _ = self._spares[index]
+        half = np.asarray(size, dtype=np.float64)
+        self._resize_spare(index, half)
+        self.data.mocap_pos[mocap] = (pos[0], pos[1], half[2] + 0.01)
+        self.data.mocap_quat[mocap] = _yaw_quat(yaw)
+        mujoco.mj_kinematics(self.model, self.data)   # visible to the next scan at once
+
+    def _park_spare(self, index: int) -> None:
+        mocap, _ = self._spares[index]
+        self._resize_spare(index, self._nominal_spare_size[index])
+        self.data.mocap_pos[mocap] = spare_park(index)
+        self.data.mocap_quat[mocap] = (1.0, 0.0, 0.0, 0.0)
+
+    def _resize_spare(self, index: int, half: np.ndarray) -> None:
+        """Every bound the compiler derived from the spare's parked size follows the new
+        one: the collision broadphase prunes by `geom_rbound`/`geom_aabb`, and
+        `mj_multiRay` -- the scan -- by the body's BVH box, so a box resized without it
+        is solid but invisible to the lidar from some angles."""
+        mocap, geom = self._spares[index]
+        body = self.model.geom_bodyid[geom]
+        aabb = np.concatenate([np.zeros(3), half])
+        self.model.geom_size[geom] = half
+        self.model.geom_rbound[geom] = float(np.linalg.norm(half))
+        self.model.geom_aabb[geom] = aabb
+        adr, num = self.model.body_bvhadr[body], self.model.body_bvhnum[body]
+        self.model.bvh_aabb[adr:adr + num] = aabb          # one geom, so one node
+
+    def start_odom_drift(self, rate_m_s: float, angle: float = 0.0) -> None:
+        """From now on the reported position walks away from the true one at `rate_m_s`,
+        in the world direction `angle` -- a slow bias, as from wheel or leg odometry."""
+        self._drift = (float(rate_m_s), float(angle), self.time)
+
+    def drop_scan(self, duration_s: float | None = None) -> None:
+        """No scan for `duration_s` simulated seconds; `None` for the rest of the episode."""
+        self._scan_dropout_until = math.inf if duration_s is None \
+            else self.time + float(duration_s)
+
+    def odom_offset(self) -> tuple[float, float]:
+        if self._drift is None:
+            return 0.0, 0.0
+        rate, angle, onset = self._drift
+        travelled = rate * max(0.0, self.time - onset)
+        return travelled * math.cos(angle), travelled * math.sin(angle)
+
+    def reported_pose(self) -> tuple[float, float, float, float]:
+        """`base_pose()` as the robot's odometry reports it, drift included."""
+        x, y, z, yaw = self.base_pose()
+        dx, dy = self.odom_offset()
+        return x + dx, y + dy, z, yaw
+
+    def scan_available(self) -> bool:
+        return self.time >= self._scan_dropout_until
 
     # ------------------------------------------------------------------ state
 

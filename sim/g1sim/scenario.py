@@ -15,8 +15,9 @@ no longer disagree about where an obstacle is.
       "faults": []
     }
 
-`size` is MuJoCo's: half-extents. `faults` is validated here and applied by the fault
-library (implementation plan SIM.4); this milestone schedules none.
+`size` is MuJoCo's: half-extents. Each fault is `{type, onset_s, params?}`, validated
+here against the table in `fault_spec.py` and applied by `faults.py`, e.g.
+`{"type": "weaken", "onset_s": 4.0, "params": {"scale": 0.4}}`.
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from . import fault_spec
 
 #: Keep the robot's footprint this far from any obstacle at start and at every goal.
 CLEARANCE_M = 0.4
@@ -200,10 +203,17 @@ def from_dict(raw: Any) -> Scenario:
         problems.append("faults must be a list")
         faults = []
     for i, fault in enumerate(faults):
-        if not (isinstance(fault, dict) and isinstance(fault.get("type"), str)
-                and fault["type"] and _num(fault.get("onset_s")) and fault["onset_s"] >= 0
-                and isinstance(fault.get("params", {}), dict)):
-            problems.append(f"faults[{i}] must be {{type, onset_s >= 0, params?}}")
+        problems.extend(fault_spec.validate(fault, f"faults[{i}]"))
+    spawning = sum(isinstance(f, dict) and f.get("type") in fault_spec.SPAWNING
+                   for f in faults)
+    if spawning > fault_spec.SPARE_BODIES:
+        problems.append(f"at most {fault_spec.SPARE_BODIES} faults may spawn a box "
+                        f"({', '.join(fault_spec.SPAWNING)}), got {spawning}")
+    for i, fault in enumerate(faults):
+        params = fault.get("params") if isinstance(fault, dict) else None
+        if isinstance(params, dict) and _xy(params.get("pos")) \
+                and not inside(*params["pos"]):
+            problems.append(f"faults[{i}]: pos lies outside the map")
 
     for label, (px, py) in [("start", start[:2]),
                             *((f"goals[{i}]", g) for i, g in enumerate(goals))]:

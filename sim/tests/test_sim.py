@@ -6,8 +6,9 @@ import json
 import math
 from pathlib import Path
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
 
 from g1sim import from_dict, load
 
