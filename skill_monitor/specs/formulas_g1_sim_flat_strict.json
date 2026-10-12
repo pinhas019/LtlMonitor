@@ -1,0 +1,53 @@
+{
+  "skill_name": "G1WalkToGoal",
+  "description": "[flattened control of G1WalkToGoal, no terminal failure] The humanoid walks to a commanded goal point while a navigation planner steers it. The monitor checks that the robot stays upright, never comes dangerously close to an obstacle, gets moving within about 15 seconds and keeps closing on the goal for at most about 60 seconds. The skill succeeds when the robot is within half a metre of the goal and upright, and fails on a sustained lack of progress towards the goal.",
+  "atomic_propositions": {
+    "goal_commanded": "True when goal_active == True. A navigation goal has been commanded.",
+    "closing_in": "True when closing_speed > 0.05. The robot is getting closer to the goal.",
+    "stalled": "True when no_progress == True. The robot has not closed on the goal for a sustained period while still away from it.",
+    "at_goal": "True when goal_active == True and dist_to_goal < 0.5. The robot is within arrival distance of the commanded goal.",
+    "upright": "True when upright_flag > 0.5. The robot is standing and level.",
+    "obstacle_too_close": "True when min_range < 0.3. An obstacle is dangerously close to the robot."
+  },
+  "ltl_formulas": [
+    {
+      "name": "eventual_completion",
+      "formula": "F(at_goal && upright)"
+    }
+  ],
+  "named_failure_modes": [
+    {
+      "name": "fell_over",
+      "formula": "G(upright)",
+      "fault_category": "SAFETY",
+      "description": "The robot must never fall over; a fall stops the skill at once."
+    },
+    {
+      "name": "collision_imminent",
+      "formula": "G(!obstacle_too_close)",
+      "fault_category": "SAFETY",
+      "description": "The robot must never come dangerously close to an obstacle."
+    }
+  ],
+  "execution_phases": [
+    {
+      "phase": "Execution",
+      "description": "Flattened control: every phase merged into one, so the monitor keeps the skill's propositions and safety conditions but not its order.",
+      "enter_condition": "goal_commanded",
+      "precondition": "upright",
+      "precondition_fault_category": "SAFETY",
+      "invariant": "upright and not obstacle_too_close",
+      "invariant_fault_category": "SAFETY",
+      "progress_condition": "True",
+      "exit_condition": "at_goal and upright",
+      "progress_violation_limit": 3,
+      "timing_bounds": {
+        "max_steps": 75
+      }
+    }
+  ],
+  "terminal_success": {
+    "condition": "at_goal and upright",
+    "description": "The robot is within half a metre of the commanded goal and still upright."
+  }
+}

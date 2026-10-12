@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-10-12T18:28:48+00:00",
+  "accepted": true,
+  "adapter": "mujoco",
+  "model": "Claude (session, acting as the describer LLM)",
+  "api_url": "none: answered in the Claude Code session",
+  "attempts_allowed": 3,
+  "llm_calls": 1,
+  "history": [
+    {
+      "attempt": 1,
+      "problems": [],
+      "fixes": []
+    }
+  ],
+  "surviving_problems": [],
+  "description_file": "skill_monitor/specs/descriptions/g1_navigation.md",
+  "description_sha256": "6d39d6e19b8c96faead92a1194ea14f74bba6b74192644331c7070961ffbd5dd",
+  "spec_sha256": "b655804dfdca3f3dc5fbba175071d455bb675bb889594b176d6e06c861cd27d5"
+}
