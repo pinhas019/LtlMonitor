@@ -24,13 +24,52 @@ run it, is in `sim/README.md`.
   capsule stops a fall sinking through the floor. The scan plane is at 0.3 m.
 - **WP0.1:** the evaluator folds sensors on every clock pulse and publishes
   `/monitor/observation` with per-source data health. Recordings now carry sensor values.
-- **WP0.4 (records):** `core/episode_record.py`. `tools/analysis/` is not written yet.
+- **WP0.4 (records):** `core/episode_record.py`. Analysis followed in milestone 2.
 
 Verified here as pure and headless tests: the main suite (1288 passed, 0 skipped) and
 `sim/tests` (36 passed). **Not verified here:** the ROS stack end to end. This environment
 has no Docker daemon and no ROS, so the bridge was exercised against stub ROS modules only.
 The first `docker compose -f sim/docker-compose.sim.yml up --build` on a real machine is
 the remaining check.
+
+## Milestone 2 — done: E1 can run
+
+Faults, progress from the robot's own sensors, a control arm, recovery, and the table are
+in. Running E1 is four commands, listed under "Running E1" in `sim/README.md`.
+
+- **SIM.4 faults:** `sim/g1sim/fault_spec.py` and `faults.py` implement `push`, `slip`,
+  `weaken`, `stall`, `obstacle`, `block_route`, `odom_drift` and `scan_dropout`.
+  - Each fault's effect is measured and pinned by a physics test.
+  - The bridge publishes each injection on `/g1/fault_injected`. The runner stamps it with
+    the clock tick as `injected_tick`.
+  - Goal-image spoof is not done, because the sim has no camera yet.
+- **Procedural scenarios:** `sim/g1sim/generator.py` provides `generate(family, seed)`.
+  It is deterministic and varies start, goal, clutter, fault onset and parameters. The
+  runner's `--scenario-dir` takes a directory of them.
+- **Sensor-grounded progress (P12's keys):** `goal_active`, `closing_speed` and
+  `no_progress` come from odometry and the commanded goal, on all three descriptors. The
+  evaluator resets its per-episode state on `arm` and `reset`.
+- **Ground-truth outcomes:** the bridge publishes `/g1/ground_truth`: a latched fall and
+  the true distance to goal. The episode outcome is judged from these, not from any
+  verdict, so the arm under test cannot grade itself.
+- **Recovery:** `--policy off|detect|recover` in the runner. `recover` re-plans: it opens
+  a fresh goal-status window, re-arms the monitor and re-sends the goal. The sim monitor
+  runs `--passive` so a sweep survives faults. Records gain `policy` and `recoveries`.
+- **WP1.1 control:** `core/spec_ablation.py` `flatten()`, with the `terminal_failure` choice
+  exposed as a flag.
+- **WP0.4 analysis:** `core/analysis.py` (Wilson, Fisher exact, bootstrap, detection scored
+  against injected ground truth) and `tools/analyze_episodes.py`.
+- **The sim spec is generated, not written:** `describer/generate_spec.py` repairs against
+  the monitor's own load gates and writes provenance. The describer's prompt no longer
+  offers a fault category the monitor cannot grade.
+
+Verified here: the main suite (1398 passed, 0 skipped) and `sim/tests` (115 passed). The
+bridge's fault and ground-truth paths were run against stub ROS.
+
+**Still to do on a real machine:**
+- generating the spec, which needs the LLM endpoint;
+- the first full stack run;
+- checking that Nav2 Humble preempts and re-plans on a re-sent `/goal_pose`.
 
 ## Where things stood before milestone 1
 

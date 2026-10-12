@@ -147,6 +147,22 @@ Consequences, in order of how much they will bite:
    stop. This is why the override latches and why the verdict topic must be made
    durable.
 
+### Re-planning in the experiments
+
+The deployed supervisor stops on REPLAN, as decided above. The E1 experiments re-plan
+instead, and that lives in the experiment's episode runner, not here:
+`backend/ablation_runner.py --policy recover`, decided by the pure
+`core/episode_outcome.decide_step`.
+
+On REPLAN, or on `terminal: FAILURE`, the runner:
+1. opens a fresh goal-status window;
+2. re-arms the monitor;
+3. re-sends the goal, up to a fixed number of times.
+
+The monitor runs `--passive` in that stack, so its stop does not end the process. This
+package's design is unchanged by it. What the runner measures is what *a* re-planning
+actor gains from the monitor, without first deciding what the deployed actor should be.
+
 ## Design
 
 **It obeys, it does not grade.** Today it calls `decide_intervention` on the state it

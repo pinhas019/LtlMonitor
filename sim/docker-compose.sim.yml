@@ -75,12 +75,9 @@ services:
 
   # The tick the evaluator and the monitor advance on. Sim uses a wall clock like the
   # robot, so a sim trace and a real trace have the same length for the same episode --
-  # the property that makes their verdicts comparable at all (docs/clocking.md).
-  #
-  # NOTE: deploy/Dockerfile.clock does not exist yet -- it is owned by P1 and lands
-  # with that package. Declared now so the stack matches the robot one; `up --build`
-  # will fail on this service until P1 merges. Until then, start the stack service by
-  # service: `up mujoco-sim nav2 monitor evaluator`.
+  # the property that makes their verdicts comparable at all (docs/clocking.md). The
+  # episode runner stamps each injected fault with this clock's tick, so detection
+  # latency is counted on the same clock as the monitor's verdicts.
   clock:
     container_name: ltl-clock
     build:
@@ -115,9 +112,15 @@ services:
       - "${SKILL_MONITOR_DATA_HOST:-../data}:/data"
     # A bare spec name, resolved by skill_monitor.spec_path() -- /config/specs first,
     # packaged specs second. formulas.json (the generic pipeline output, unrelated to
-    # G1) is the default; for the G1 nav skill: `... run monitor --formulas-file
-    # formulas_g1.json`.
-    command: ["--formulas-file", "${SPEC:-formulas.json}", "--output-dir", "/data/output"]
+    # G1) is the default; for the E1 runs, SPEC=formulas_g1_sim.json (generated, see
+    # sim/README.md) or its flattened control.
+    #
+    # --passive: a fault sends the monitor idle with `terminal: FAILURE` instead of
+    # shutting it and the evaluator down. Without it a sweep of episodes dies at the
+    # first fall or timeout; with it the episode runner re-arms the monitor for the
+    # next episode (or the next recovery attempt) and nothing restarts.
+    command: ["--formulas-file", "${SPEC:-formulas.json}", "--output-dir", "/data/output",
+              "--passive"]
     depends_on:
       - clock
 

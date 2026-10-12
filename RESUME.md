@@ -2,9 +2,50 @@
 
 **Newest session first.** Sessions 1–4 below are kept for the decisions they record,
 not for their status lines — every "unpushed", test count, `/ltl/*` topic name and git
-rule in them is out of date. **Session 6 is the current state.** The one part of
+rule in them is out of date. **Session 7 is the current state.** The one part of
 session 4 that is not superseded is its closing section on the G1 run; that is still
 the plan.
+
+---
+
+# Session 7 — E1 can run: faults, ground truth, a control arm, the table (2026-10-12)
+
+Branch `claude/monitoring-paper-submission-1ryynf`, pushed. The milestone 2 summary is at
+the top of `docs/implementation-plan.md`. The commands are under "Running E1" in
+`sim/README.md`.
+
+- **Faults.** `sim/g1sim/faults.py` provides eight fault types, each one's effect
+  measured on the walking robot.
+  - The ground truth goes to the record, stamped on the monitor's clock.
+  - `slip` must lower every geom's friction, because MuJoCo combines contact friction as
+    the max of the pair.
+  - `weaken` at 0.6 or below collapses the robot rather than slowing it.
+- **Scenarios.** `sim/generate_scenarios.py --family ... --seeds 0-19 --out DIR`. The
+  runner takes `--scenario-dir DIR`.
+- **Progress from sensors.** `goal_active`, `closing_speed` and `no_progress` are on every
+  descriptor. A `stall`, where the legs stop and the planner still says "following", is
+  visible only through these.
+- **Outcomes are ground truth** (`/g1/ground_truth`), never the monitor's verdict. A
+  monitor-ended episode's cause is now `monitor:<mode>`. A fall is `fell`, and an
+  arrival Nav2 believes in but the robot did not make is `false_arrival`.
+- **Policies.** `--policy off|detect|recover`. `recover` re-plans in the runner. The
+  deployed supervisor still stops on REPLAN (P5).
+- **Control arm.** `python -m skill_monitor.core.spec_ablation SPEC --out FLAT`.
+- **Table.** `python tools/analyze_episodes.py runs/*.jsonl`.
+- **Tests.** Main suite 1398 passed, 0 skipped. `sim/tests` 115 passed.
+- **First thing to do, on a machine with the LLM endpoint and Docker:**
+  1. Generate the spec:
+     `python -m skill_monitor.describer.generate_spec --adapter mujoco --description
+     skill_monitor/specs/descriptions/g1_navigation.md --out
+     skill_monitor/specs/formulas_g1_sim.json`.
+  2. Read its `.provenance.json`.
+  3. Bring the stack up with `SPEC=formulas_g1_sim.json AUTO_GOAL=0`.
+  4. Run one `clear` episode under `--policy recover`.
+
+  Watch two things on that first run:
+  - whether Nav2 Humble re-plans on a re-sent `/goal_pose`;
+  - whether the generated spec uses `no_progress`, and where. If it uses it only in
+    `terminal_failure`, run the control both ways (`--drop-terminal-failure`).
 
 ---
 
