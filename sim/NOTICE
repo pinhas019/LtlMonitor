@@ -1,0 +1,20 @@
+Third-party assets used by the simulator
+=========================================
+
+unitree_rl_gym (Unitree Robotics) -- BSD 3-Clause License
+https://github.com/unitreerobotics/unitree_rl_gym
+Commit 276801e46c5d433564f24658bac64f254b7d2d4b
+
+Used, unmodified:
+  resources/robots/g1_description/   the 12-DoF G1 model and meshes
+  deploy/pre_train/g1/motion.pt       the pretrained walking policy
+  deploy/deploy_mujoco/configs/g1.yaml  its control configuration
+
+These files are NOT in this repository. `sim/fetch_assets.sh` downloads them at the
+commit above, together with the project's LICENSE, which travels with them into any
+image that contains them.
+
+`sim/g1sim/locomotion.py` reimplements the control loop of their
+`deploy/deploy_mujoco/deploy_mujoco.py`, and `sim/g1sim/policy.py` evaluates the
+policy's LSTM in numpy from the archived weights, so that torch is not required. Neither
+copies their source code. The project is not endorsed by Unitree Robotics.

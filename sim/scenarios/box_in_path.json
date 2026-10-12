@@ -1,0 +1,14 @@
+{
+  "name": "box_in_path",
+  "seed": 0,
+  "map_size": [10.0, 10.0],
+  "start": {"x": -2.0, "y": 0.0, "yaw": 0.0},
+  "goals": [[2.5, 0.0]],
+  "obstacles": [
+    {"type": "box", "pos": [0.5, 0.0], "size": [0.3, 0.6, 0.5]},
+    {"type": "cylinder", "pos": [1.5, 1.6], "radius": 0.2, "height": 1.0}
+  ],
+  "walls": true,
+  "duration_s": 90.0,
+  "faults": []
+}

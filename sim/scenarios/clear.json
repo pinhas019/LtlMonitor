@@ -1,0 +1,11 @@
+{
+  "name": "clear",
+  "seed": 0,
+  "map_size": [10.0, 10.0],
+  "start": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+  "goals": [[3.0, 0.0]],
+  "obstacles": [],
+  "walls": true,
+  "duration_s": 60.0,
+  "faults": []
+}
