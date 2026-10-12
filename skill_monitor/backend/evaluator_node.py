@@ -41,10 +41,10 @@ ADAPTERS: dict[str, str] = {
     # name -> "module:ClassName", imported lazily in _load_adapter so choosing one
     # adapter doesn't require every adapter's dependencies to be importable.
     # Only for embodiments whose plumbing genuinely needs code; the normal case is a
-    # JSON descriptor in skill_monitor/adapters/, which needs no entry here.
-    "real_g1_py": "skill_monitor.backend.adapters.real_g1:RealG1Adapter",
-    "mujoco_py": "skill_monitor.backend.adapters.mujoco:MujocoAdapter",
-    "isaac_lab_py": "skill_monitor.backend.adapters.isaac_lab:IsaacLabAdapter",
+    # JSON descriptor in skill_monitor/adapters/, which needs no entry here. Empty
+    # since the hand-written G1/MuJoCo/Isaac classes went (P3, P12): they subscribed to
+    # the planner's status, debounced per message, and returned none of the pose, goal
+    # or progress keys the schema requires.
 }
 
 

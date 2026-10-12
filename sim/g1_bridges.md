@@ -17,7 +17,7 @@ python3 odom_from_tf.py --ros-args -p base_frame:=pelvis -p odom_frame:=odom -p 
 
 Republishes the `odom → pelvis` transform as `Odometry`. The pose **orientation** carries the
 base roll/pitch the evaluator turns into `upright`/`fell_over` (see `g1_sensors.quat_to_euler`,
-used identically by `adapter_isaac_lab.py` via `adapter_nav2_common.py`).
+which the `isaac_lab` descriptor's `quat_to_roll_pitch` extractor uses).
 
 ## 2. `/scan` ← PointCloud2 (stock `pointcloud_to_laserscan`) — needed by Nav2 only
 

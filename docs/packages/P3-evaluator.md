@@ -84,7 +84,8 @@ says "fresh" as long as the stream flows even if the robot's sensor died ten sec
 **Delete the four hand-written adapters.** `backend/adapters/{real_g1,nav2_common,mujoco,
 isaac_lab}.py` keep per-message debounce and would silently produce non-comparable numbers
 next to the declarative path. Remove them and their `ADAPTERS` entries; the JSON descriptors
-cover all three embodiments and are tested.
+cover all three embodiments and are tested. *Done with P12: they also read the planner's
+status, which no adapter may.*
 
 **`SCHEMA` stays an instance attribute on the declarative adapter**, not a class attribute —
 the schema belongs to the loaded descriptor, not to the class.

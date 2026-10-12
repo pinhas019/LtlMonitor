@@ -1,6 +1,6 @@
 """Pure sensor math for the G1 humanoid actor — no ROS/Isaac imports, so it is unit-testable.
 
-Used by every sensor adapter (adapter_real_g1.py, adapter_nav2_common.py) to derive base
+Used by the declarative adapter's extractors (core/adapter_spec.py) to derive base
 orientation/height AP fields from odom, and to derive obstacle range from a point cloud.
 formulas_g1.json's rule APs reference the fields these produce (``base_roll``,
 ``base_pitch``, ``base_height``, ``min_range``).
