@@ -1,4 +1,4 @@
-# E1b over ROS 2: fetch and deliver (2080 episodes)
+# E1b over ROS 2: fetch and deliver (3360 episodes)
 
 ## Detection (policy off: the monitor reports, nothing acts)
 
@@ -8,12 +8,16 @@ Fault families: detected / injected · median ticks (1 tick = 1 s) from injectio
 |---|---|---|---|---|
 | carry_clear | 0/20 false alarms | 0/20 false alarms | 0/20 false alarms | 0/20 false alarms |
 | carry_cluttered | 3/20 false alarms | 3/20 false alarms | 3/20 false alarms | 5/20 false alarms |
+| carry_close_pass | 20/20 · 25 ticks | 20/20 · 25 ticks | 0/0 | 0/0 |
+| carry_detour | 0/20 | 0/20 | 0/0 | 0/0 |
 | carry_drop | 20/20 · 1 ticks | 20/20 · 14 ticks | 20/20 · 14 ticks | 20/20 · 14 ticks |
 | carry_grasp_fail | 20/20 · 4 ticks | 20/20 · 19 ticks | 20/20 · 19 ticks | 20/20 · 19 ticks |
 | carry_object_moved | 20/20 · 31 ticks | 20/20 · 32 ticks | 20/20 · 32 ticks | 20/20 · 32 ticks |
 | carry_push | 13/13 · 1 ticks | 13/13 · 1 ticks | 13/13 · 1 ticks | 13/13 · 1 ticks |
 | carry_skip_pickup | 20/20 · 21 ticks | 20/20 · 21 ticks | 20/20 · 21 ticks | 20/20 · 21 ticks |
+| carry_slow_nav | 0/20 | 0/20 | 0/0 | 0/0 |
 | carry_stall | 14/17 · 11 ticks | 10/17 · 12 ticks | 11/17 · 106 ticks | 12/17 · 11 ticks |
+| carry_wrong_dropoff | 20/20 · 14 ticks | 20/20 · 16 ticks | 0/0 | 0/0 |
 
 ## Detection of faults that mattered (policy off)
 
@@ -23,12 +27,16 @@ A fault *mattered* when the episode failed under `off` (judged from ground truth
 |---|---|---|---|---|---|---|
 | carry_clear | 0/20 | 0/0 | 0/0 | 0/0 | 0/0 | 0 |
 | carry_cluttered | 0/20 | 0/0 | 0/0 | 0/0 | 0/0 | 3 |
+| carry_close_pass | 0/20 | 0/0 | 0/0 | 0/0 | 0/0 | 20 |
+| carry_detour | 0/20 | 0/0 | 0/0 | 0/0 | 0/0 | 0 |
 | carry_drop | 20/20 | 20/20 | 20/20 | 20/20 | 20/20 | 0 |
 | carry_grasp_fail | 20/20 | 20/20 | 20/20 | 20/20 | 20/20 | 0 |
 | carry_object_moved | 20/20 | 20/20 | 20/20 | 20/20 | 20/20 | 0 |
 | carry_push | 13/20 | 13/13 | 13/13 | 13/13 | 13/13 | 0 |
 | carry_skip_pickup | 20/20 | 20/20 | 20/20 | 20/20 | 20/20 | 0 |
+| carry_slow_nav | 0/20 | 0/0 | 0/0 | 0/0 | 0/0 | 0 |
 | carry_stall | 11/20 | 11/11 | 9/11 | 11/11 | 11/11 | 3 |
+| carry_wrong_dropoff | 20/20 | 20/20 | 20/20 | 0/20 | 0/20 | 0 |
 
 ### …of which caught during the task, before the executor claimed success
 
@@ -42,6 +50,7 @@ The rest were caught only by the completion check (`completion_unverified`), whe
 | carry_push | 13 | 13/13 | 13/13 | 13/13 | 13/13 |
 | carry_skip_pickup | 20 | 0/20 | 0/20 | 0/20 | 0/20 |
 | carry_stall | 11 | 11/11 | 9/11 | 11/11 | 11/11 |
+| carry_wrong_dropoff | 20 | 20/20 | 0/20 | 0/20 | 0/20 |
 
 ## The monitor's own conclusion against ground truth (policy off)
 
@@ -49,8 +58,8 @@ The monitor's last verdict, from the ROS messages alone: *success* (SATISFIED or
 
 | arm | n | succeeded: said success / undecided / failure | failed: said success / undecided / failure | agreement |
 |---|---|---|---|---|
-| full | 160 | 52 / 0 / 4 | 0 / 33 / 71 | 156/160 (98%) |
-| flat | 160 | 52 / 0 / 4 | 0 / 82 / 22 | 156/160 (98%) |
+| full | 240 | 92 / 0 / 24 | 0 / 33 / 91 | 216/240 (90%) |
+| flat | 240 | 92 / 1 / 23 | 0 / 102 / 22 | 216/240 (90%) |
 | flat_strict | 160 | 53 / 0 / 3 | 0 / 80 / 24 | 157/160 (98%) |
 | ltl_only | 160 | 49 / 3 / 4 | 0 / 80 / 24 | 153/160 (96%) |
 
@@ -60,6 +69,8 @@ The monitor's last verdict, from the ROS messages alone: *success* (SATISFIED or
 
 | family | against | measure | pairs | median full | median other | full lower / tie / higher | sign test p |
 |---|---|---|---|---|---|---|---|
+| carry_close_pass | flat | deliver | 11 | 34.0 | 34.0 | 0 / 11 / 0 | 1 |
+| carry_detour | flat | deliver | 20 | 47.0 | 47.0 | 0 / 20 / 0 | 1 |
 | carry_drop | flat | detect | 20 | 1.0 | 14.0 | 20 / 0 / 0 | 1.9e-06 |
 | carry_drop | flat | deliver | 20 | 34.5 | 63.0 | 20 / 0 / 0 | 1.9e-06 |
 | carry_drop | flat_strict | detect | 20 | 1.0 | 14.0 | 20 / 0 / 0 | 1.9e-06 |
@@ -90,23 +101,25 @@ The monitor's last verdict, from the ROS messages alone: *success* (SATISFIED or
 | carry_skip_pickup | flat_strict | deliver | 20 | 57.5 | 57.5 | 0 / 20 / 0 | 1 |
 | carry_skip_pickup | ltl_only | detect | 20 | 21.0 | 21.0 | 0 / 20 / 0 | 1 |
 | carry_skip_pickup | ltl_only | deliver | 20 | 57.5 | 57.5 | 1 / 19 / 0 | 1 |
+| carry_slow_nav | flat | deliver | 20 | 59.5 | 59.5 | 0 / 20 / 0 | 1 |
 | carry_stall | flat | detect | 9 | 11.0 | 11.0 | 0 / 9 / 0 | 1 |
 | carry_stall | flat | deliver | 6 | 32.5 | 32.5 | 0 / 6 / 0 | 1 |
 | carry_stall | flat_strict | detect | 11 | 11.0 | 106.0 | 11 / 0 / 0 | 0.00098 |
 | carry_stall | flat_strict | deliver | 6 | 32.5 | 32.5 | 0 / 6 / 0 | 1 |
 | carry_stall | ltl_only | detect | 11 | 11.0 | 11.0 | 0 / 11 / 0 | 1 |
 | carry_stall | ltl_only | deliver | 6 | 32.5 | 32.5 | 0 / 6 / 0 | 1 |
+| carry_wrong_dropoff | flat | detect | 20 | 14.0 | 16.0 | 20 / 0 / 0 | 1.9e-06 |
 
 ## Outcomes (all families pooled; success judged from simulator ground truth)
 
 | arm | policy | n | success (95% CI) | Δ vs off | mean recoveries |
 |---|---|---|---|---|---|
-| full | off | 160 | 35% (28–43) | — | 0.00 |
-| full | detect | 160 | 31% (25–39) | -4 pp (p=0.55) | 0.00 |
-| full | recover | 160 | 82% (76–88) | +48 pp (p=2.9e-18) | 0.70 |
-| flat | off | 160 | 35% (28–43) | — | 0.00 |
-| flat | detect | 160 | 32% (26–40) | -2 pp (p=0.72) | 0.00 |
-| flat | recover | 160 | 84% (78–89) | +49 pp (p=7e-20) | 0.68 |
+| full | off | 240 | 48% (42–55) | — | 0.00 |
+| full | detect | 240 | 38% (32–44) | -11 pp (p=0.021) | 0.00 |
+| full | recover | 240 | 77% (71–82) | +28 pp (p=1.8e-10) | 0.79 |
+| flat | off | 240 | 48% (42–55) | — | 0.00 |
+| flat | detect | 240 | 38% (32–45) | -10 pp (p=0.034) | 0.00 |
+| flat | recover | 240 | 78% (72–82) | +29 pp (p=4.6e-11) | 0.78 |
 | flat_strict | off | 160 | 35% (28–43) | — | 0.00 |
 | flat_strict | detect | 160 | 33% (26–41) | -2 pp (p=0.81) | 0.00 |
 | flat_strict | recover | 160 | 84% (78–89) | +49 pp (p=7e-20) | 0.61 |
@@ -118,19 +131,42 @@ The monitor's last verdict, from the ROS messages alone: *success* (SATISFIED or
 
 The closed-loop executor checks its own work from the same perception ("still holding it?", "is it at the drop-off?") and re-plans on its own; no monitor acts. Success, and median simulated seconds to deliver over the episodes that delivered.
 
-| family | hand-coded checks, no monitor | full spec + re-plan | no monitor (open loop) |
-|---|---|---|---|
-| carry_clear | 20/20 · 34.0 s | 20/20 · 34.0 s | 20/20 · 34.0 s |
-| carry_cluttered | 20/20 · 35.0 s | 19/20 · 34.0 s | 20/20 · 35.0 s |
-| carry_drop | 20/20 · 34.5 s | 20/20 · 34.5 s | 0/20 |
-| carry_grasp_fail | 20/20 · 36.0 s | 20/20 · 36.5 s | 0/20 |
-| carry_object_moved | 20/20 · 46.0 s | 20/20 · 70.0 s | 0/20 |
-| carry_push | 7/20 · 32.0 s | 7/20 · 31.0 s | 7/20 · 31.0 s |
-| carry_skip_pickup | 20/20 · 32.5 s | 20/20 · 57.5 s | 0/20 |
-| carry_stall | 9/20 · 33.0 s | 6/20 · 32.5 s | 9/20 · 33.0 s |
-| **all** | 136/160 · 35.0 s | 132/160 · 36.0 s | 56/160 · 34.0 s |
+| family | hand-coded checks, no monitor | full spec + re-plan | hand-coded checks + full monitor, re-plan | no monitor (open loop) |
+|---|---|---|---|---|
+| carry_clear | 20/20 · 34.0 s | 20/20 · 34.0 s | 20/20 · 34.0 s | 20/20 · 34.0 s |
+| carry_cluttered | 20/20 · 35.0 s | 19/20 · 34.0 s | 19/20 · 34.0 s | 20/20 · 35.0 s |
+| carry_drop | 20/20 · 34.5 s | 20/20 · 34.5 s | 20/20 · 34.5 s | 0/20 |
+| carry_grasp_fail | 20/20 · 36.0 s | 20/20 · 36.5 s | 20/20 · 36.0 s | 0/20 |
+| carry_object_moved | 20/20 · 46.0 s | 20/20 · 70.0 s | 20/20 · 45.5 s | 0/20 |
+| carry_push | 7/20 · 32.0 s | 7/20 · 31.0 s | 7/20 · 32.0 s | 7/20 · 31.0 s |
+| carry_skip_pickup | 20/20 · 32.5 s | 20/20 · 57.5 s | 20/20 · 32.5 s | 0/20 |
+| carry_stall | 9/20 · 33.0 s | 6/20 · 32.5 s | 6/20 · 32.5 s | 9/20 · 33.0 s |
+| **all** | 136/160 · 35.0 s | 132/160 · 36.0 s | 132/160 · 35.0 s | 56/160 · 34.0 s |
 
 Pooled success, hand-coded checks vs full spec + re-plan: Fisher p = 0.65.
+
+## Unanticipated faults: what nobody wrote a check for
+
+One family per requirement of the task description that the hand-coded executor does not check (design and predictions in sim/e1/README.md, committed before the run). *Failed*: wrong_dropoff, not delivered to the commanded drop-off; slow_nav and detour, not delivered within 1.5× the nominal time; close_pass, true clearance under 0.3 m at any time or not delivered. *Flagged*: a monitor intervention at or after the fault (none for `closed_loop`, which has no monitor acting), or an executor recheck or abort. Policy `off` for the detection columns; the last column is the same family with each arm's acting policy (re-plan for the monitors).
+
+| family | arm | failed | **silent** | flagged only at completion | flagged during the task | median s to first flag | not failed, acting |
+|---|---|---|---|---|---|---|---|
+| wrong_dropoff | full spec | 20/20 | **0/20** | 0 | 20 | 14 | 0/20 |
+| wrong_dropoff | flat (keeps terminal failure) | 20/20 | **0/20** | 20 | 0 | 16 | 0/20 |
+| wrong_dropoff | hand-coded checks, no monitor | 20/20 | **20/20** | 0 | 0 | — | 0/20 |
+| wrong_dropoff | hand-coded checks + full monitor | 20/20 | **0/20** | 0 | 20 | 14 | 0/20 |
+| slow_nav | full spec | 20/20 | **20/20** | 0 | 0 | — | 0/20 |
+| slow_nav | flat (keeps terminal failure) | 20/20 | **20/20** | 0 | 0 | — | 0/20 |
+| slow_nav | hand-coded checks, no monitor | 20/20 | **20/20** | 0 | 0 | — | 0/20 |
+| slow_nav | hand-coded checks + full monitor | 20/20 | **19/20** | 0 | 1 | 19 | 0/20 |
+| detour | full spec | 8/20 | **8/8** | 0 | 0 | — | 12/20 |
+| detour | flat (keeps terminal failure) | 8/20 | **8/8** | 0 | 0 | — | 12/20 |
+| detour | hand-coded checks, no monitor | 8/20 | **8/8** | 0 | 0 | — | 12/20 |
+| detour | hand-coded checks + full monitor | 8/20 | **8/8** | 0 | 0 | — | 12/20 |
+| close_pass | full spec | 20/20 | **0/20** | 0 | 20 | 25 | 0/20 |
+| close_pass | flat (keeps terminal failure) | 20/20 | **0/20** | 1 | 19 | 25 | 0/20 |
+| close_pass | hand-coded checks, no monitor | 20/20 | **20/20** | 0 | 0 | — | 0/20 |
+| close_pass | hand-coded checks + full monitor | 20/20 | **0/20** | 0 | 20 | 25 | 0/20 |
 
 ## Delivered by a deadline
 
@@ -143,6 +179,7 @@ Deadline = k × the scenario's nominal time to deliver (straight-line walk start
 | flat strict (no terminal failure) + re-plan | 16% | 34% | 36% | 54% | 84% | 84% |
 | LTL only (no phase machine) + re-plan | 15% | 32% | 36% | 51% | 83% | 83% |
 | hand-coded checks, no monitor | 22% | 74% | 81% | 84% | 85% | 85% |
+| hand-coded checks + full monitor + re-plan | 23% | 75% | 80% | 82% | 82% | 82% |
 | no monitor (open-loop executor) | 15% | 34% | 34% | 34% | 35% | 35% |
 
 Fisher p, full spec + re-plan against each, per deadline:
@@ -153,22 +190,26 @@ Fisher p, full spec + re-plan against each, per deadline:
 | flat strict (no terminal failure) + re-plan | 0.76 | 3e-05 | 1.3e-06 | 0.00047 | 0.76 | 0.76 |
 | LTL only (no phase machine) + re-plan | 0.65 | 1.1e-05 | 7.4e-07 | 8.2e-05 | 1 | 1 |
 | hand-coded checks, no monitor | 0.33 | 0.0021 | 0.0011 | 0.02 | 0.65 | 0.65 |
+| hand-coded checks + full monitor + re-plan | 0.27 | 0.0014 | 0.0018 | 0.059 | 1 | 1 |
 | no monitor (open-loop executor) | 0.65 | 3e-05 | 1.2e-07 | 4.3e-12 | 2.9e-18 | 2.9e-18 |
 
 ## Causes of failure
 
 | arm | policy | causes |
 |---|---|---|
-| closed_loop | off | fell 13, timeout 11 |
-| flat | detect | monitor:completion_unverified 80, fell 13, monitor:terminal_failure 11, monitor:collision_imminent 3, timeout 1 |
-| flat | off | false_arrival 80, fell 13, timeout 11 |
-| flat | recover | fell 13, monitor:terminal_failure 11, monitor:collision_imminent 1 |
+| closed_loop | off | false_arrival 20, fell 13, timeout 11 |
+| closed_loop_full | detect | monitor:phase:Carry:invariant 38, monitor:collision_imminent 23, fell 13, monitor:TIMEOUT 11, monitor:terminal_failure 10, timeout 1 |
+| closed_loop_full | off | false_arrival 20, fell 13, timeout 11 |
+| closed_loop_full | recover | monitor:phase:Carry:invariant 20, fell 13, monitor:collision_imminent 10, monitor:terminal_failure 9, monitor:TIMEOUT 3, timeout 2 |
+| flat | detect | monitor:completion_unverified 100, monitor:collision_imminent 23, fell 13, monitor:terminal_failure 11, timeout 1 |
+| flat | off | false_arrival 100, fell 13, timeout 11 |
+| flat | recover | monitor:completion_unverified 20, fell 13, monitor:terminal_failure 11, monitor:collision_imminent 10 |
 | flat_strict | detect | monitor:completion_unverified 80, fell 13, monitor:TIMEOUT 11, monitor:collision_imminent 3 |
 | flat_strict | off | false_arrival 80, fell 13, timeout 11 |
 | flat_strict | recover | fell 13, timeout 11, monitor:collision_imminent 1 |
-| full | detect | monitor:completion_unverified 33, monitor:TIMEOUT 30, monitor:phase:Carry:invariant 20, fell 13, monitor:terminal_failure 9, monitor:collision_imminent 3, timeout 2 |
-| full | off | false_arrival 80, fell 13, timeout 11 |
-| full | recover | fell 13, monitor:terminal_failure 6, timeout 5, monitor:TIMEOUT 3, monitor:collision_imminent 1 |
+| full | detect | monitor:phase:Carry:invariant 38, monitor:completion_unverified 33, monitor:TIMEOUT 32, monitor:collision_imminent 23, fell 13, monitor:terminal_failure 9, timeout 2 |
+| full | off | false_arrival 100, fell 13, timeout 11 |
+| full | recover | monitor:phase:Carry:invariant 20, fell 13, monitor:collision_imminent 9, monitor:terminal_failure 6, timeout 5, monitor:TIMEOUT 3 |
 | ltl_only | detect | monitor:completion_unverified 83, fell 13, monitor:terminal_failure 12, monitor:collision_imminent 3 |
 | ltl_only | off | false_arrival 80, fell 13, timeout 11 |
 | ltl_only | recover | fell 13, monitor:terminal_failure 8, timeout 3, monitor:completion_unverified 2, monitor:collision_imminent 1 |
@@ -178,29 +219,41 @@ Fisher p, full spec + re-plan against each, per deadline:
 | arm | policy | family | n | success (95% CI) | Δ vs off [95% CI] (p) | precision | recall | F1 | TTD (ticks) | recoveries |
 |---|---|---|---|---|---|---|---|---|---|---|
 | flat | detect | carry_clear | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | — | — | — | 0.00 |
+| flat | detect | carry_close_pass | 20 | 0% (0%–16%) | -100 pp [-100, -100] (p=1.45e-11) | 100% | 100% | 1.00 | 25.1 | 0.00 |
 | flat | detect | carry_cluttered | 20 | 85% (64%–95%) | -15 pp [-35, +0] (p=0.231) | 0% | — | — | — | 0.00 |
+| flat | detect | carry_detour | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | 0% | — | — | 0.00 |
 | flat | detect | carry_drop | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 14.5 | 0.00 |
 | flat | detect | carry_grasp_fail | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 19.7 | 0.00 |
 | flat | detect | carry_object_moved | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 32.6 | 0.00 |
 | flat | detect | carry_push | 20 | 35% (18%–57%) | +0 pp [-30, +30] (p=1) | 100% | 100% | 1.00 | 1.2 | 0.00 |
 | flat | detect | carry_skip_pickup | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 21.3 | 0.00 |
+| flat | detect | carry_slow_nav | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | 0% | — | — | 0.00 |
 | flat | detect | carry_stall | 20 | 40% (22%–61%) | -5 pp [-35, +25] (p=1) | 100% | 65% | 0.79 | 11.7 | 0.00 |
+| flat | detect | carry_wrong_dropoff | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 19.1 | 0.00 |
 | flat | off | carry_clear | 20 | 100% (84%–100%) | — | — | — | — | — | 0.00 |
+| flat | off | carry_close_pass | 20 | 100% (84%–100%) | — | 100% | 100% | 1.00 | 25.6 | 0.00 |
 | flat | off | carry_cluttered | 20 | 100% (84%–100%) | — | 0% | — | — | — | 0.00 |
+| flat | off | carry_detour | 20 | 100% (84%–100%) | — | — | 0% | — | — | 0.00 |
 | flat | off | carry_drop | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 14.5 | 0.00 |
 | flat | off | carry_grasp_fail | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 19.7 | 0.00 |
 | flat | off | carry_object_moved | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 32.6 | 0.00 |
 | flat | off | carry_push | 20 | 35% (18%–57%) | — | 100% | 100% | 1.00 | 1.2 | 0.00 |
 | flat | off | carry_skip_pickup | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 21.3 | 0.00 |
+| flat | off | carry_slow_nav | 20 | 100% (84%–100%) | — | — | 0% | — | — | 0.00 |
 | flat | off | carry_stall | 20 | 45% (26%–66%) | — | 100% | 59% | 0.74 | 12.1 | 0.00 |
+| flat | off | carry_wrong_dropoff | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 19.1 | 0.00 |
 | flat | recover | carry_clear | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | — | — | — | 0.00 |
+| flat | recover | carry_close_pass | 20 | 55% (34%–74%) | -45 pp [-65, -25] (p=0.00123) | 100% | 100% | 1.00 | 25.1 | 1.90 |
 | flat | recover | carry_cluttered | 20 | 95% (76%–99%) | -5 pp [-15, +0] (p=1) | 0% | — | — | — | 0.30 |
+| flat | recover | carry_detour | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | 0% | — | — | 0.00 |
 | flat | recover | carry_drop | 20 | 100% (84%–100%) | +100 pp [+100, +100] (p=1.45e-11) | 100% | 100% | 1.00 | 14.5 | 1.00 |
 | flat | recover | carry_grasp_fail | 20 | 100% (84%–100%) | +100 pp [+100, +100] (p=1.45e-11) | 100% | 100% | 1.00 | 19.7 | 1.00 |
 | flat | recover | carry_object_moved | 20 | 100% (84%–100%) | +100 pp [+100, +100] (p=1.45e-11) | 100% | 100% | 1.00 | 32.6 | 1.00 |
 | flat | recover | carry_push | 20 | 35% (18%–57%) | +0 pp [-30, +30] (p=1) | 100% | 100% | 1.00 | 1.2 | 0.00 |
 | flat | recover | carry_skip_pickup | 20 | 100% (84%–100%) | +100 pp [+100, +100] (p=1.45e-11) | 100% | 100% | 1.00 | 21.3 | 1.00 |
+| flat | recover | carry_slow_nav | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | 0% | — | — | 0.00 |
 | flat | recover | carry_stall | 20 | 45% (26%–66%) | +0 pp [-30, +30] (p=1) | 100% | 71% | 0.83 | 11.8 | 1.15 |
+| flat | recover | carry_wrong_dropoff | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 19.1 | 2.00 |
 | flat_strict | detect | carry_clear | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | — | — | — | 0.00 |
 | flat_strict | detect | carry_cluttered | 20 | 85% (64%–95%) | -15 pp [-35, +0] (p=0.231) | 0% | — | — | — | 0.00 |
 | flat_strict | detect | carry_drop | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 14.5 | 0.00 |
@@ -226,29 +279,41 @@ Fisher p, full spec + re-plan against each, per deadline:
 | flat_strict | recover | carry_skip_pickup | 20 | 100% (84%–100%) | +100 pp [+100, +100] (p=1.45e-11) | 100% | 100% | 1.00 | 21.3 | 1.00 |
 | flat_strict | recover | carry_stall | 20 | 45% (26%–66%) | +0 pp [-30, +30] (p=1) | 100% | 65% | 0.79 | 104.9 | 0.55 |
 | full | detect | carry_clear | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | — | — | — | 0.00 |
+| full | detect | carry_close_pass | 20 | 0% (0%–16%) | -100 pp [-100, -100] (p=1.45e-11) | 100% | 100% | 1.00 | 25.1 | 0.00 |
 | full | detect | carry_cluttered | 20 | 85% (64%–95%) | -15 pp [-35, +0] (p=0.231) | 0% | — | — | — | 0.00 |
+| full | detect | carry_detour | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | 0% | — | — | 0.00 |
 | full | detect | carry_drop | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 1.0 | 0.00 |
 | full | detect | carry_grasp_fail | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 3.9 | 0.00 |
 | full | detect | carry_object_moved | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 25.9 | 0.00 |
 | full | detect | carry_push | 20 | 35% (18%–57%) | +0 pp [-30, +30] (p=1) | 100% | 100% | 1.00 | 1.2 | 0.00 |
 | full | detect | carry_skip_pickup | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 21.3 | 0.00 |
+| full | detect | carry_slow_nav | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | 0% | — | — | 0.00 |
 | full | detect | carry_stall | 20 | 30% (15%–52%) | -15 pp [-45, +15] (p=0.514) | 100% | 71% | 0.83 | 12.7 | 0.00 |
+| full | detect | carry_wrong_dropoff | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 16.5 | 0.00 |
 | full | off | carry_clear | 20 | 100% (84%–100%) | — | — | — | — | — | 0.00 |
+| full | off | carry_close_pass | 20 | 100% (84%–100%) | — | 100% | 100% | 1.00 | 25.1 | 0.00 |
 | full | off | carry_cluttered | 20 | 100% (84%–100%) | — | 0% | — | — | — | 0.00 |
+| full | off | carry_detour | 20 | 100% (84%–100%) | — | — | 0% | — | — | 0.00 |
 | full | off | carry_drop | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 1.0 | 0.00 |
 | full | off | carry_grasp_fail | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 4.0 | 0.00 |
 | full | off | carry_object_moved | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 25.9 | 0.00 |
 | full | off | carry_push | 20 | 35% (18%–57%) | — | 100% | 100% | 1.00 | 1.2 | 0.00 |
 | full | off | carry_skip_pickup | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 21.3 | 0.00 |
+| full | off | carry_slow_nav | 20 | 100% (84%–100%) | — | — | 0% | — | — | 0.00 |
 | full | off | carry_stall | 20 | 45% (26%–66%) | — | 100% | 82% | 0.90 | 12.4 | 0.00 |
+| full | off | carry_wrong_dropoff | 20 | 0% (0%–16%) | — | 100% | 100% | 1.00 | 16.5 | 0.00 |
 | full | recover | carry_clear | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | — | — | — | 0.00 |
+| full | recover | carry_close_pass | 20 | 60% (39%–78%) | -40 pp [-60, -20] (p=0.00328) | 100% | 100% | 1.00 | 25.1 | 1.90 |
 | full | recover | carry_cluttered | 20 | 95% (76%–99%) | -5 pp [-15, +0] (p=1) | 0% | — | — | — | 0.30 |
+| full | recover | carry_detour | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | 0% | — | — | 0.00 |
 | full | recover | carry_drop | 20 | 100% (84%–100%) | +100 pp [+100, +100] (p=1.45e-11) | 100% | 100% | 1.00 | 1.0 | 1.00 |
 | full | recover | carry_grasp_fail | 20 | 100% (84%–100%) | +100 pp [+100, +100] (p=1.45e-11) | 100% | 100% | 1.00 | 3.9 | 1.10 |
 | full | recover | carry_object_moved | 20 | 100% (84%–100%) | +100 pp [+100, +100] (p=1.45e-11) | 100% | 100% | 1.00 | 25.9 | 1.00 |
 | full | recover | carry_push | 20 | 35% (18%–57%) | +0 pp [-30, +30] (p=1) | 100% | 100% | 1.00 | 1.2 | 0.00 |
 | full | recover | carry_skip_pickup | 20 | 100% (84%–100%) | +100 pp [+100, +100] (p=1.45e-11) | 100% | 100% | 1.00 | 21.3 | 1.00 |
+| full | recover | carry_slow_nav | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | 0% | — | — | 0.00 |
 | full | recover | carry_stall | 20 | 30% (15%–52%) | -15 pp [-45, +15] (p=0.514) | 100% | 71% | 0.83 | 12.8 | 1.20 |
+| full | recover | carry_wrong_dropoff | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 16.5 | 2.00 |
 | ltl_only | detect | carry_clear | 20 | 100% (84%–100%) | +0 pp [+0, +0] (p=1) | — | — | — | — | 0.00 |
 | ltl_only | detect | carry_cluttered | 20 | 75% (53%–89%) | -25 pp [-45, -10] (p=0.0471) | 0% | — | — | — | 0.00 |
 | ltl_only | detect | carry_drop | 20 | 0% (0%–16%) | +0 pp [+0, +0] (p=1) | 100% | 100% | 1.00 | 14.5 | 0.00 |

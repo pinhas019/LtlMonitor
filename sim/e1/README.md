@@ -440,3 +440,54 @@ top costs anything where the executor's checks suffice.
 
 A 2-seed mechanics pilot (not counted) already suggests that `slow_nav` and `detour` stay
 inside the monitor's budgets. The predictions are kept as written.
+
+## Unanticipated faults: findings (1280 episodes over ROS 2)
+
+Full table: [`docs/e1b_ros/results.md`](../../docs/e1b_ros/results.md), section
+"Unanticipated faults". Policy `off`, 20 scenarios per family. *Silent* means the episode
+failed by its family's requirement and nothing in that deployment flagged it.
+
+| family | hand-coded checks, no monitor | full spec | flat spec | hand-coded checks + full monitor |
+|---|---|---|---|---|
+| `wrong_dropoff` | **20/20 silent** | 0/20 silent, all flagged during the task (median 14 s after the fault) | 0/20 silent, all flagged only at completion | 0/20 silent |
+| `close_pass` (true clearance 0.18-0.28 m) | **20/20 silent** | 0/20 silent | 0/20 silent | 0/20 silent |
+| `slow_nav` | 20/20 silent | 20/20 silent | 20/20 silent | 19/20 silent |
+| `detour` (8 of 20 late at 1.5×) | 8/8 silent | 8/8 silent | 8/8 silent | 8/8 silent |
+
+**Predictions against outcomes.**
+- **`wrong_dropoff`: as predicted.** The executor's own check passes at its own, wrong
+  drop-off: 20/20 silent false successes. The full spec catches every one during the
+  task, when the object leaves the robot's hand away from the commanded drop-off (Carry
+  invariant). The flat spec catches every one at completion. Re-planning cannot repair it
+  (0/20 delivered in any arm), because the executor re-plans to the same wrong place. The
+  value is detection: a false success becomes a reported failure.
+- **`close_pass`: as predicted.** The executor never checks clearance; every monitor arm
+  flags `collision_imminent` on all 20 true violations. Nothing can undo a close pass
+  after the fact, so again the value is the report. The same rule's false alarms on safe
+  passes remain (3/20 cluttered episodes).
+- **`slow_nav`: prediction wrong.** The full spec was predicted to catch it with its phase
+  budgets. It did not: slowed runs took a median of 61 s (at most 87 s), inside the
+  phase budgets written from the description ("about 45 s", "about 60 s"). One episode
+  in 20 tripped a budget, under `closed_loop_full`.
+- **`detour`: as feared, nobody.** The monitor measures progress toward the goal the
+  executor publishes, so a detour looks like progress. Runs took a median of 48 s (at most
+  56 s), inside the Carry budget.
+
+**On top of the hand-coded executor**, the full monitor turns its two blind spots from
+40/40 silent into 0/40 silent. On the original families it costs nothing measurable:
+- 132/160 vs 136/160 delivered (p = 0.65);
+- 80% vs 81% within 1.5×;
+- the difference is in the stall family (6 vs 9 of 20), where the phase budgets cut off
+  slow runs that would have finished.
+
+**Reading.**
+- **What the monitor adds over hand-written checks:** requirements it observes directly
+  and the executor's checks do not cover, namely the commanded drop-off read from `/task`
+  and clearance read from the scan.
+- **What it misses:** requirements it can only judge through quantities the executor
+  controls (progress toward the executor's own goal), or through budgets loose enough
+  for nominal variation. Slowness and detours inside those budgets are invisible to it.
+- **What would close that gap:**
+  - progress measured against the phase's own target (the object, the commanded
+    drop-off) rather than the published goal;
+  - budgets calibrated from nominal runs.
