@@ -328,7 +328,7 @@ def deadline_figure(rows, out: Path):
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e3df")
     ax.set_axisbelow(True)
-    ax.legend(frameon=False, fontsize=9, loc="upper left")
+    ax.legend(frameon=False, fontsize=9, loc="lower right")
     fig.tight_layout()
     fig.savefig(out / "deadline.svg")
     fig.savefig(out / "deadline.png", dpi=160)

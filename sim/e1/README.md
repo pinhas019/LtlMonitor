@@ -334,3 +334,56 @@ late duplicate verdicts (discarded) in about 100 000 ticks; 30 minutes on 4 core
 
 **Limits that remain.** The perception stand-in is the simulator's object position plus
 noise and misses, not a camera. The grasp is an attachment. One spec per skill.
+
+## What the phases add, and against what (2080 episodes over ROS 2)
+
+Three comparisons were added on the same 160 scenarios, over ROS 2 as above:
+
+- **`ltl_only`** (`formulas_g1_carry_ltl.json`, `spec_ablation.strip_phases`): the full
+  spec minus its phase machine. The ordered-task automaton, the safety automata and both
+  terminals are unchanged. 480 episodes (off, detect, recover).
+- **`closed_loop`**: no monitor acting. The executor carries the checks a developer would
+  write into a behaviour tree (`CarryExecutor(closed_loop=True)`): "still holding it?"
+  while carrying, and "is it at the drop-off?" before reporting success. It reads the same
+  noisy perception and re-plans with the same `replan()`. 160 episodes (off).
+- **Deadlines** (analysis only; a deadline judges an episode and changes nothing the robot
+  does). Delivered within k × the scenario's nominal time to deliver: the straight-line
+  walk at 0.22 m/s (the median of the fault-free runs) plus 4 s of grasp and release.
+
+Delivered by a deadline (all 160 scenarios, families pooled):
+
+| way of running the task | 1.25× | 1.5× | 2× | no deadline |
+|---|---|---|---|---|
+| full spec + re-plan | 58% | **64%** | 73% | 82% |
+| flat + re-plan | 34% | 36% | 54% | 84% |
+| LTL only + re-plan | 32% | 36% | 51% | 83% |
+| hand-coded checks, no monitor | **74%** | **81%** | 84% | 85% |
+| no monitor | 34% | 34% | 34% | 35% |
+
+The p-values below are for 1.5×.
+
+1. **The phase machine is what does the work, not LTL.** LTL-only catches no drop and no
+   failed grasp during the task (0/20 each, the same as flat): the ordered automaton has
+   no rejecting state, so "eventually" can always still come true. Against the full spec at
+   1.5×: 36% vs 64% (Fisher p = 7·10⁻⁷).
+2. **Earlier detection turns into success once time matters.** With no deadline every
+   monitored arm ends at 82–84%. With a deadline of 1.5× the nominal time, the full spec
+   delivers 64% against flat's 36% (p = 1.3·10⁻⁶); at 2×, 73% vs 54% (p = 5·10⁻⁴).
+3. **A hand-coded closed-loop executor does as well or better.**
+   - Drop and failed grasp: the same delivery times (34.5 vs 34.5 s; 36 vs 36.5 s).
+   - Object moved: 46 vs 70 s. Skipped pick-up: 32.5 vs 57.5 s.
+   - At 1.5×: 81% vs 64% (p = 0.001).
+   - It knows its own state ("I am carrying now"). The monitor has to infer the phase from
+     what it observes, and it never left WalkToObject when the pick-up was skipped.
+   - Final success is the same (85% vs 82%, p = 0.65).
+
+**Reading.** On these faults the generated monitor gets most of what hand-written checks
+get, but not all of it. It does so without a line of task-specific code: the checks come
+from the plain-language description. What the comparison does not show is the monitor's
+claimed advantage over hand-coded checks:
+- generality across skills;
+- catching failures the developer did not anticipate;
+- independence from the executor's own (possibly wrong) belief about its state.
+
+Each needs a test of its own: several skills, faults outside the developer's list, and
+an executor whose state estimate is wrong.
