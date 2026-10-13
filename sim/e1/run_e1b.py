@@ -48,6 +48,7 @@ ARMS = {
     "full": "formulas_g1_carry.json",
     "flat": "formulas_g1_carry_flat.json",
     "flat_strict": "formulas_g1_carry_flat_strict.json",
+    "ltl_only": "formulas_g1_carry_ltl.json",       # the LTL automata, no phase machine
 }
 POLICIES = ("off", "detect", "recover")
 COMPLETION_GRACE = 2            # ticks for the monitor to see a reported completion

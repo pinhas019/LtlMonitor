@@ -1,0 +1,43 @@
+{
+  "skill_name": "G1FetchAndDeliver",
+  "description": "[LTL-only control of G1FetchAndDeliver: no phase machine] The humanoid walks to an object, picks it up, carries it to a drop-off station and puts it down, while a task executor and a navigation planner direct it. The monitor checks that the robot stays upright and clear of obstacles, keeps progressing towards where it is walking, completes each step within its time budget, and keeps the object in its gripper for the whole carry. The task succeeds when the object rests within half a metre of the drop-off station and is no longer held, and fails on a sustained lack of progress.",
+  "atomic_propositions": {
+    "task_started": "True when task_active == True. A fetch-and-deliver task has been commanded.",
+    "approaching": "True when closing_speed > 0.05. The robot is getting closer to where it is walking.",
+    "stalled": "True when no_progress == True. The robot has not got any closer to where it is walking for a sustained period while still away from it.",
+    "near_object": "True when object_dist < 0.5. The robot is standing next to the object.",
+    "holding_object": "True when holding == True. The gripper reports the object held.",
+    "near_dropoff": "True when dist_to_dropoff < 0.5. The robot is at the drop-off station.",
+    "object_at_dropoff": "True when object_to_dropoff < 0.5. The object is within half a metre of the drop-off station.",
+    "upright": "True when upright_flag > 0.5. The robot is standing and level.",
+    "obstacle_too_close": "True when min_range < 0.3. An obstacle is dangerously close to the robot."
+  },
+  "ltl_formulas": [
+    {
+      "name": "fetch_and_deliver_in_order",
+      "formula": "F(task_started && F(near_object && F(holding_object && F(near_dropoff && F(object_at_dropoff && !holding_object)))))"
+    }
+  ],
+  "named_failure_modes": [
+    {
+      "name": "fell_over",
+      "formula": "G(upright)",
+      "fault_category": "SAFETY",
+      "description": "The robot must never fall; a fall stops the task at once."
+    },
+    {
+      "name": "collision_imminent",
+      "formula": "G(!obstacle_too_close)",
+      "fault_category": "SAFETY",
+      "description": "The robot must never come dangerously close to an obstacle."
+    }
+  ],
+  "terminal_success": {
+    "condition": "object_at_dropoff and not holding_object and upright",
+    "description": "The object rests within half a metre of the drop-off station, the robot no longer holds it, and the robot is upright."
+  },
+  "terminal_failure": {
+    "condition": "stalled",
+    "description": "The robot has not got any closer to where it is walking for a sustained period while still away from it."
+  }
+}

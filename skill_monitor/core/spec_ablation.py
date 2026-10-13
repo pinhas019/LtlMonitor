@@ -141,6 +141,24 @@ def flatten(spec: dict, *, keep_terminal_failure: bool = True,
     return out
 
 
+def strip_phases(spec: dict) -> dict:
+    """The LTL-only control of `spec`: everything but the phase machine.
+
+    Where `flatten` asks whether the ORDER matters, this asks whether the phase machine
+    matters at all, given LTL: the ordered formula (its automaton), the named failure
+    modes and both terminals are kept exactly, and only `execution_phases` -- per-phase
+    invariants, progress conditions and time budgets -- is removed. The input is not
+    modified.
+    """
+    if not spec.get("execution_phases"):
+        raise ValueError("spec has no execution_phases to strip")
+    out = copy.deepcopy(spec)
+    out.pop("execution_phases")
+    out["description"] = (f"[LTL-only control of {spec.get('skill_name', 'the skill')}: "
+                          f"no phase machine] " + (spec.get("description") or ""))
+    return out
+
+
 def problems(spec: dict) -> list[str]:
     """What the monitor would refuse or misgrade at load, schema aside."""
     return spec_contract.validate_structure(spec) + manifest.fault_category_problems(spec)
@@ -154,18 +172,25 @@ def main(argv=None) -> int:
                         help="also remove terminal_failure (the stricter reading)")
     parser.add_argument("--shared-invariants", action="store_true",
                         help="keep only the invariant conjuncts every phase states")
+    parser.add_argument("--strip-phases", action="store_true",
+                        help="write the LTL-only control instead: the spec minus its "
+                             "phase machine")
     args = parser.parse_args(argv)
 
     spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
-    flat = flatten(spec, keep_terminal_failure=not args.drop_terminal_failure,
-                   invariants="shared" if args.shared_invariants else "all")
+    if args.strip_phases:
+        flat = strip_phases(spec)
+    else:
+        flat = flatten(spec, keep_terminal_failure=not args.drop_terminal_failure,
+                       invariants="shared" if args.shared_invariants else "all")
     found = problems(flat)
     if found:
         for problem in found:
             print(f"  - {problem}")
         return 1
     Path(args.out).write_text(json.dumps(flat, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {args.out}: {len(spec['execution_phases'])} phases -> 1")
+    print(f"wrote {args.out}: {len(spec['execution_phases'])} phases -> "
+          f"{len(flat.get('execution_phases') or [])}")
     return 0
 
 

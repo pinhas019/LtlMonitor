@@ -163,3 +163,29 @@ def test_shared_invariants_equal_all_when_every_phase_states_the_same():
 def test_an_unknown_invariants_rule_is_refused():
     with pytest.raises(ValueError):
         flatten(three_phases(), invariants="some")
+
+
+# ---------------------------------------------------------------- the LTL-only control
+
+def test_strip_phases_removes_the_phase_machine_and_nothing_else():
+    spec = three_phases()
+    ltl = spec_ablation.strip_phases(spec)
+    assert "execution_phases" not in ltl
+    for key in ("ltl_formulas", "named_failure_modes", "atomic_propositions",
+                "terminal_success", "terminal_failure", "skill_name"):
+        assert ltl.get(key) == spec.get(key), key
+    assert spec["execution_phases"], "the input is not modified"
+
+
+def test_a_spec_without_phases_cannot_be_stripped():
+    spec = three_phases()
+    spec.pop("execution_phases")
+    with pytest.raises(ValueError):
+        spec_ablation.strip_phases(spec)
+
+
+def test_the_committed_ltl_only_carry_spec_is_the_full_one_minus_its_phases():
+    full = json.loads((SPECS / "formulas_g1_carry.json").read_text(encoding="utf-8"))
+    ltl = json.loads((SPECS / "formulas_g1_carry_ltl.json").read_text(encoding="utf-8"))
+    assert ltl == spec_ablation.strip_phases(full)
+    assert not spec_ablation.problems(ltl)
