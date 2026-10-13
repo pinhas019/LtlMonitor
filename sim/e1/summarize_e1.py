@@ -34,11 +34,17 @@ MONITOR_ARMS = ("full", "flat", "flat_strict", "ltl_only")
 ARMS = ("full", "flat", "flat_strict")
 #: Arms that are not a monitor: the executor decides on its own (E1b's baseline).
 EXECUTOR_ARMS = ("closed_loop",)
+#: Fault families no check was written for (sim/e1/carry/task.py UNANTICIPATED). Kept out
+#: of the deadline and closed-loop tables, which stay on the original families.
+UNANTICIPATED = ("wrong_dropoff", "slow_nav", "detour", "close_pass")
+SAFE_CLEARANCE_M = 0.3
 ARM_LABEL = {"full": "full spec", "flat": "flat (keeps terminal failure)",
              "flat_strict": "flat strict (no terminal failure)",
              "ltl_only": "LTL only (no phase machine)",
-             "closed_loop": "hand-coded checks, no monitor"}
+             "closed_loop": "hand-coded checks, no monitor",
+             "closed_loop_full": "hand-coded checks + full monitor"}
 COLORS = {"full": "#2a78d6", "flat": "#eb6834", "flat_strict": "#1baf7a",
+          "closed_loop_full": "#0f3d73",
           "ltl_only": "#8a5cc2", "closed_loop": "#52514e", "none": "#b5b3ad"}
 #: Deadlines, as multiples of a scenario's nominal time to deliver.
 DEADLINE_K = (1.0, 1.25, 1.5, 2.0, 3.0, float("inf"))
@@ -254,6 +260,81 @@ def fitted_speed(records) -> float | None:
     return statistics.median(speeds) if speeds else None
 
 
+def unanticipated(record) -> bool:
+    return analysis.family(record).replace("carry_", "") in UNANTICIPATED
+
+
+def _failed(record, speed) -> bool:
+    """Whether an episode of an unanticipated family failed, by that family's requirement."""
+    fam = analysis.family(record).replace("carry_", "")
+    if fam in ("slow_nav", "detour"):
+        return not (record["success"] and record["elapsed_s"] <= 1.5 * nominal_s(record, speed))
+    if fam == "close_pass":
+        clearance = record["timing"].get("min_clearance_m")
+        return (not record["success"]) or (clearance is not None
+                                           and clearance < SAFE_CLEARANCE_M)
+    return not record["success"]
+
+
+def _flags(record):
+    """(first tick anything flagged at or after the fault, flagged only at completion?)
+    -- what the deployment itself would have noticed, by arm."""
+    t = record["timing"]
+    inj = [f["injected_tick"] for f in record["faults"] if f["injected_tick"] is not None]
+    t0 = min(inj) if inj else 0
+    ticks = []
+    if record["arm"] != "closed_loop":                    # that arm has no monitor acting
+        ticks += [(seq, name) for seq, name in t.get("interventions") or [] if seq >= t0]
+    if record["arm"] in ("closed_loop", "closed_loop_full"):
+        ticks += [(int(round(c["t"])), "recheck") for c in t.get("executor_rechecks") or []]
+        if t.get("executor") == "aborted":
+            ticks.append((t.get("ticks", 0), "aborted"))
+    if not ticks:
+        return None, False
+    ticks.sort()
+    first = ticks[0]
+    return first[0] - t0, all(name == AT_COMPLETION for _, name in ticks)
+
+
+UA_GROUPS = (("full", "off"), ("flat", "off"), ("closed_loop", "off"),
+             ("closed_loop_full", "off"))
+UA_RECOVER = (("full", "recover"), ("flat", "recover"), ("closed_loop", "off"),
+              ("closed_loop_full", "recover"))
+
+
+def unanticipated_rows(records, speed):
+    """Per unanticipated family and arm (policy off): failed, silent (failed, nothing
+    flagged), flagged only at completion, flagged during the task, median ticks to the
+    first flag; and success with each arm's acting policy."""
+    rows = []
+    for fam in UNANTICIPATED:
+        recs = [r for r in records if analysis.family(r).replace("carry_", "") == fam]
+        if not recs:
+            continue
+        for (arm, policy), (arm2, policy2) in zip(UA_GROUPS, UA_RECOVER):
+            group = [r for r in recs if r["arm"] == arm and r["policy"] == policy]
+            acting = [r for r in recs if r["arm"] == arm2 and r["policy"] == policy2]
+            if not group:
+                continue
+            failed = [r for r in group if _failed(r, speed)]
+            silent = during = at_end = 0
+            ttd = []
+            for r in failed:
+                first, only_end = _flags(r)
+                if first is None:
+                    silent += 1
+                elif only_end:
+                    at_end += 1
+                    ttd.append(first)
+                else:
+                    during += 1
+                    ttd.append(first)
+            ok = sum(1 for r in acting if not _failed(r, speed))
+            rows.append((fam, arm, len(group), len(failed), silent, at_end, during,
+                         statistics.median(ttd) if ttd else None, ok, len(acting)))
+    return rows
+
+
 def deadline_groups(records):
     """(key, label, records) for every way of running the task that the deadline curve
     compares: each monitor arm under `recover`, the closed-loop executor, and no monitor."""
@@ -266,6 +347,9 @@ def deadline_groups(records):
         rs = [r for r in records if r["arm"] == arm and r["policy"] == "off"]
         if rs:
             groups.append((arm, ARM_LABEL[arm], rs))
+    rs = [r for r in records if r["arm"] == "closed_loop_full" and r["policy"] == "recover"]
+    if rs:
+        groups.append(("closed_loop_full", f"{ARM_LABEL['closed_loop_full']} + re-plan", rs))
     rs = [r for r in records if r["arm"] == "full" and r["policy"] == "off"]
     if rs:
         groups.append(("none", "no monitor (open-loop executor)", rs))
@@ -298,6 +382,7 @@ def closed_loop_rows(records):
             return [r for r in records if r["arm"] == arm and r["policy"] == policy
                     and (fam == "all" or analysis.family(r) == fam)]
         cl, full, none = pick("closed_loop", "off"), pick("full", "recover"), pick("full", "off")
+        both = pick("closed_loop_full", "recover")
         if not cl:
             continue
 
@@ -305,7 +390,7 @@ def closed_loop_rows(records):
             ok = [r for r in rs if r["success"]]
             med = statistics.median(r["elapsed_s"] for r in ok) if ok else None
             return len(ok), len(rs), med
-        rows.append((fam, cell(cl), cell(full), cell(none)))
+        rows.append((fam, cell(cl), cell(full), cell(none), cell(both) if both else None))
     return rows
 
 
@@ -495,7 +580,8 @@ def main(argv=None) -> int:
               "|---|---|---|---|---|---|"]
     for arm, policy, n, succ, delta, rec in outcome_rows(records):
         lines.append(f"| {arm} | {policy} | {n} | {succ} | {delta} | {rec} |")
-    cl = closed_loop_rows(everything)
+    original = [r for r in everything if not unanticipated(r)]
+    cl = closed_loop_rows(original)
     if cl:
         lines += ["", "## Against a hand-coded closed-loop executor", "",
                   "The closed-loop executor checks its own work from the same perception "
@@ -503,19 +589,40 @@ def main(argv=None) -> int:
                   "own; no monitor acts. Success, and median simulated seconds to deliver "
                   "over the episodes that delivered.", "",
                   "| family | hand-coded checks, no monitor | full spec + re-plan | "
-                  "no monitor (open loop) |", "|---|---|---|---|"]
+                  "hand-coded checks + full monitor, re-plan | no monitor (open loop) |",
+                  "|---|---|---|---|---|"]
 
         def fmt(c):
             ok, n, med = c
             return f"{ok}/{n}" + (f" · {med:.1f} s" if med is not None else "")
-        for fam, a, b, c in cl:
+        for fam, a, b, c, d in cl:
             lines.append(f"| {'**all**' if fam == 'all' else fam} | {fmt(a)} | {fmt(b)} | "
-                         f"{fmt(c)} |")
+                         f"{fmt(d) if d else '—'} | {fmt(c)} |")
         a, b = cl[-1][1], cl[-1][2]
         p = analysis.fisher_exact(a[0], a[1] - a[0], b[0], b[1] - b[0])
         lines += ["", f"Pooled success, hand-coded checks vs full spec + re-plan: Fisher "
                       f"p = {p:.2g}."]
-    speed, dl = deadline_rows(everything)
+    speed, dl = deadline_rows(original)
+    ua = unanticipated_rows(everything, speed) if speed else []
+    if ua:
+        lines += ["", "## Unanticipated faults: what nobody wrote a check for", "",
+                  "One family per requirement of the task description that the hand-coded "
+                  "executor does not check (design and predictions in sim/e1/README.md, "
+                  "committed before the run). *Failed*: wrong_dropoff, not delivered to the "
+                  "commanded drop-off; slow_nav and detour, not delivered within 1.5× the "
+                  "nominal time; close_pass, true clearance under "
+                  f"{SAFE_CLEARANCE_M} m at any time or not delivered. *Flagged*: a monitor "
+                  "intervention at or after the fault (none for `closed_loop`, which has no "
+                  "monitor acting), or an executor recheck or abort. Policy `off` for the "
+                  "detection columns; the last column is the same family with each arm's "
+                  "acting policy (re-plan for the monitors).", "",
+                  "| family | arm | failed | **silent** | flagged only at completion | "
+                  "flagged during the task | median s to first flag | not failed, acting |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for fam, arm, n, failed, silent, at_end, during, med, ok, n2 in ua:
+            lines.append(f"| {fam} | {ARM_LABEL.get(arm, arm)} | {failed}/{n} | "
+                         f"**{silent}/{failed}** | {at_end} | {during} | "
+                         f"{'—' if med is None else f'{med:.0f}'} | {ok}/{n2} |")
     if dl:
         lines += ["", "## Delivered by a deadline", "",
                   f"Deadline = k × the scenario's nominal time to deliver (straight-line "
