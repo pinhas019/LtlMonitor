@@ -88,7 +88,7 @@ Options:
   - the generated automata (`docs/figures/automata/`);
   - "Try it yourself" (the same install as above).
 - **Deck:** a private claude.ai artifact owned by Pinhas,
-  https://claude.ai/artifact/7EiBmWB6He5MXZRt94h3X2 (12 slides).
+  https://claude.ai/artifact/7EiBmWB6He5MXZRt94h3X2 (13 slides).
   - Pinhas exports it as PDF/PPTX from its Share menu.
   - If this session has an Artifact tool and he wants slides changed, read the artifact
     first and update it in place. Slides live under `project/slides/<id>.html`, the index
@@ -156,9 +156,8 @@ The code is in `sim/e1/carry/task.py`, `sim/g1sim/navigator.py` (`set_inflation`
 - slowness and detours were missed by everyone, against the `slow_nav` prediction;
 - the full monitor on top of the executor: 0/40 silent, no measurable cost elsewhere.
 
-**Still to do from this section:** the deck. Add one slide, "Faults nobody wrote a check
-for", with the silent-failure table from the pitch (§2), and update the claim slide.
-Write the slide text for Pinhas if this session cannot edit the artifact.
+The deck is done too: slide 9 "Faults nobody wrote a check for", and the claim slide is
+updated (13 slides). **Nothing in this section is left.** Pick up from §6.
 
 **Write-up (done; kept for reference):**
 1. **`sim/e1/README.md`.** Add "Unanticipated faults: findings" under the design section:
