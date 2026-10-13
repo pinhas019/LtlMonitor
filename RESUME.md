@@ -1,5 +1,8 @@
 # Resume
 
+**Start with [`HANDOFF.md`](HANDOFF.md)**: the current state, the laptop install and
+demo, and the experiment in flight. The sessions below are history.
+
 **Newest session first.** Sessions 1–4 below are kept for the decisions they record,
 not for their status lines — every "unpushed", test count, `/ltl/*` topic name and git
 rule in them is out of date. **Session 7b is the current state.** The one part of
