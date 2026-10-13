@@ -19,7 +19,7 @@ fifteen stalls** (15/15 vs 14/15, p = 1.0). What caught stalls was **progress gr
 odometry**: remove that rule from the control and stall detection falls to 1/15
 (p = 2·10⁻⁷). For a two-phase skill, the claim is not supported.
 
-**E1b, fetch and deliver (2080 episodes, over real ROS 2).** Four phases: walk to the
+**E1b, fetch and deliver (3360 episodes, over real ROS 2).** Four phases: walk to the
 object, grasp, carry, place. The monitor reads only ROS 2 topics (odometry, lidar, the
 commanded goal and task, and the object as a detector sees it) and infers from them both
 whether the object is held and whether the task succeeded. Here the structure **does**
@@ -43,12 +43,21 @@ matter:
 - **A hand-coded closed-loop executor does as well or better** (81% at 1.5×, p = 0.001),
   because it knows its own state, but it needs task-specific code. The generated monitor
   gets most of the way there from a plain-language description alone.
+- **But the hand-coded executor is blind to what it was not written to check.** Two
+  faults outside its checks: an executor wrong about where the drop-off is, and a
+  navigator grazing obstacles. On these, its own checks passed and it reported success
+  silently, on **40 of 40**. Every monitor caught all 40. With the monitor on top of the
+  same executor: 0 of 40 silent, at no measurable cost elsewhere (132 vs 136 of 160
+  delivered, p = 0.65).
 
 So the supported claim is: **progress states catch phase-specific failures as they happen,
 where a flat specification, or LTL alone, can only notice them at the end; when time
-matters, that is a higher success rate.** Both experiments also show that progress must be
-grounded in sensors, not in the planner. Not yet shown: an advantage over checks
-hand-written into the executor.
+matters, that is a higher success rate. And an independent monitor generated from the
+task description catches failures the executor's own hand-written checks are blind to.**
+Both experiments also show that progress must be grounded in sensors, not in the planner.
+Not shown, and found not to hold: catching slowness or detours that stay inside the
+description's time budgets. The monitor measures progress toward the goal the executor
+publishes, so nobody caught those.
 
 A supporting claim also holds. The specification was generated from plain language in one
 attempt and passed the monitor's own load checks. The monitor reads no planner self-report,
@@ -227,6 +236,23 @@ robot.
 
 ![Delivered by a deadline](e1b_ros/deadline.png)
 
+**Faults nobody wrote a check for** (1280 more episodes over ROS 2): one per requirement
+of the task description that the hand-coded executor does not check. The design and the
+predictions were committed before the run. A *silent* failure is one that nothing in the
+deployment flagged.
+
+| fault | hand-coded checks | full spec | flat spec | hand-coded + full monitor |
+|---|---|---|---|---|
+| executor's drop-off wrong by 1.5–2.5 m | **20/20 silent** | 0/20 (caught during the task, ~14 s) | 0/20 (caught at completion) | 0/20 |
+| navigator grazes obstacles (0.18–0.28 m) | **20/20 silent** | 0/20 | 0/20 | 0/20 |
+| navigator slowed to 25–35% | 20/20 silent | 20/20 silent | 20/20 silent | 19/20 silent |
+| carry leg via a 2.5–3.5 m detour | 8/8 silent | 8/8 silent | 8/8 silent | 8/8 silent |
+
+The monitor catches the requirements it observes directly: the commanded drop-off from
+`/task`, and clearance from the scan. It misses those it judges through the executor's
+own goal or through loose budgets. The slowed runs stayed inside "about 45 s / about
+60 s" (median 61 s in total), against the prediction that the full spec would catch them.
+
 Against the hand-coded executor, per fault (median seconds to deliver): drop 34.5 vs 34.5,
 failed grasp 36.5 vs 36, object moved 70 vs 46, skipped pick-up 57.5 vs 32.5 (full spec +
 re-plan vs hand-coded). The monitor matches it where the phase is unambiguous from what is
@@ -236,7 +262,7 @@ it has skipped the pick-up).
 **Also done and tested.**
 - Falls are physical.
 - Reset is bit-identical.
-- 1429 monitor tests and 135 simulator tests pass.
+- 1429 monitor tests and 142 simulator tests pass.
 
 Full tables and raw records: [`docs/e1/results.md`](e1/results.md),
 [`docs/e1b_ros/results.md`](e1b_ros/results.md) (the first, in-process E1b run:
@@ -255,14 +281,14 @@ Full tables and raw records: [`docs/e1/results.md`](e1/results.md),
 
 ## 3. Research directions
 
-1. **Show what hand-written checks cannot.** E1b's deadline result shows the latency is
-   worth success; the open question is the monitor against checks written into the
-   executor.
-   - **Generality:** one description → one monitor for several skills, with no code in
-     any of them.
-   - **Unanticipated faults:** faults outside the list the developer wrote checks for.
-   - **A wrong executor belief:** an executor that thinks it holds the object when it does
-     not. Its own checks inherit the error; an independent monitor does not.
+1. **Close the blind spots E1b found, then widen the comparison.**
+   - **Progress against the phase's own target** (the object, the commanded drop-off),
+     not the executor's published goal. This would catch detours and skipped pick-ups.
+   - **Budgets calibrated from nominal runs**, to catch slowness.
+   - **Generality:** one description → monitors for several skills, with no code in any
+     of them.
+   - **More executor belief errors** like the wrong drop-off, e.g. believing it holds the
+     object when it does not.
    - Several specifications generated per skill, to separate the structure from one
      spec's choices.
 2. **Fix what E1 and E1b exposed.**

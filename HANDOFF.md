@@ -148,42 +148,19 @@ The code is in `sim/e1/carry/task.py`, `sim/g1sim/navigator.py` (`set_inflation`
 "Unanticipated faults" in `results.md`, built by `summarize_e1.py`
 (`unanticipated_rows`).
 
-**Status when the cloud session stopped.**
-- The sweep (1120 episodes: 800 on the new families, plus 320 of `closed_loop_full` on
-  the original families) was running in the cloud.
-- **Check first:** does `docs/e1b_ros/results.md` already have a section
-  "Unanticipated faults: what nobody wrote a check for", computed on 20 seeds?
-  - **If yes:** the cloud session finished it. Go to "write-up" below.
-  - **If no** (or it shows only 2 seeds): run it here. This is in-process, needs no ROS,
-    and gives about the same results; the transports agreed on 18/18 noise-free pilot
-    episodes.
-    ```bash
-    python sim/e1/run_e1b.py --families wrong_dropoff slow_nav detour close_pass --seeds 0-19 \
-        --arms full flat closed_loop closed_loop_full --workers 4 --out ua.jsonl
-    python sim/e1/run_e1b.py --families clear cluttered grasp_fail drop skip_pickup object_moved stall push \
-        --seeds 0-19 --arms closed_loop_full --workers 4 --out clf.jsonl
-    cat <(zcat docs/e1b_ros/e1b_ros_episodes.jsonl.gz) ua.jsonl clf.jsonl > all.jsonl
-    python sim/e1/summarize_e1.py all.jsonl --out docs/e1b_ros --title "E1b over ROS 2: fetch and deliver"
-    gzip -c all.jsonl > docs/e1b_ros/e1b_ros_episodes.jsonl.gz
-    ```
-    - About 2 s per episode on 4 cores, so roughly 20 minutes.
-    - **Say in the README** that these episodes ran in-process, not over ROS 2. The
-      record field `timing.transport` says which. Optionally the summary could split by
-      transport.
-    - The ROS 2 runner is `sim/e1/ros_e1b.py`. It needs ROS 2 Humble, e.g. RoboStack:
-      `conda create -n ros -c robostack-staging -c conda-forge python=3.11
-      ros-humble-ros-base spot pyyaml "numpy<2" matplotlib pytest`, then
-      `pip install mujoco`.
+**Status: DONE in the cloud.** All 1280 episodes ran over ROS 2. The results are in
+`docs/e1b_ros/results.md` ("Unanticipated faults"), the findings are in
+`sim/e1/README.md` ("Unanticipated faults: findings"), and `docs/pitch.md` is updated:
+- the hand-coded executor was silent on 40/40 wrong drop-offs and close passes; every
+  monitor caught them;
+- slowness and detours were missed by everyone, against the `slow_nav` prediction;
+- the full monitor on top of the executor: 0/40 silent, no measurable cost elsewhere.
 
-**What the 2-seed pilot showed** (not counted):
-- `wrong_dropoff`: the hand-coded executor was silent (reported success at the wrong
-  place); the full monitor flagged it at release.
-- `close_pass`: true clearance was 0.19–0.20 m; the monitor's proximity rule fired; the
-  executor was silent.
-- `slow_nav` and `detour` were silent for **every** arm: they stay inside the monitor's
-  phase budgets. That contradicts the `slow_nav` prediction. Report it as such.
+**Still to do from this section:** the deck. Add one slide, "Faults nobody wrote a check
+for", with the silent-failure table from the pitch (§2), and update the claim slide.
+Write the slide text for Pinhas if this session cannot edit the artifact.
 
-**Write-up, once the table exists:**
+**Write-up (done; kept for reference):**
 1. **`sim/e1/README.md`.** Add "Unanticipated faults: findings" under the design section:
    the table, each prediction against its outcome, and the reading. The reading must be
    honest:
