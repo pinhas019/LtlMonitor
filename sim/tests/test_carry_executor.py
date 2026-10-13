@@ -53,9 +53,11 @@ class FakeNav:
 
     def __init__(self):
         self.goal, self.status, self._arrive = None, "idle", 0.0
+        self.max_speed, self.goals = 0.26, []
 
     def set_goal(self, x, y, t):
         self.goal, self.status, self._arrive = (x, y), "executing", t + self.TRAVEL_S
+        self.goals.append((round(x, 3), round(y, 3)))
 
     def tick(self, sim, t):
         if self.status == "executing" and t >= self._arrive:
@@ -136,3 +138,45 @@ def test_closed_loop_never_reports_success_while_holding(family):
     task, sim, ex = world(family, closed_loop=True)
     run(ex, sim, task)
     assert not (ex.status == "succeeded" and sim.holding)
+
+
+# ------------------------------------------------------- faults no check was written for
+
+from task import UNANTICIPATED  # noqa: E402
+
+
+@pytest.mark.parametrize("family", UNANTICIPATED)
+def test_unanticipated_families_are_deterministic_per_seed(family):
+    assert generate(family, 3) == generate(family, 3)
+    assert generate(family, 3) != generate(family, 4)
+
+
+def test_wrong_dropoff_fools_the_closed_loop_check():
+    task, sim, ex = world("wrong_dropoff", closed_loop=True)
+    run(ex, sim, task)
+    believed = tuple(task["task_faults"][0]["believed"])
+    assert ex.status == "succeeded" and ex.rechecks == []       # its own check passes...
+    ox, oy, _ = sim.obj
+    tx, ty = task["dropoff"]
+    assert ((ox - tx) ** 2 + (oy - ty) ** 2) ** 0.5 > 1.0       # ...far from the commanded one
+    assert ex.nav.goals[-1] == believed
+
+
+def test_detour_goes_via_the_waypoint_then_on_to_the_dropoff():
+    task, sim, ex = world("detour", closed_loop=True)
+    run(ex, sim, task)
+    via = tuple(task["task_faults"][0]["via"])
+    goals = ex.nav.goals
+    assert via in goals and goals.index(via) < goals.index(tuple(task["dropoff"]))
+    assert ex.status == "succeeded" and ex.rechecks == []
+
+
+def test_slow_nav_cuts_the_speed_once_at_its_onset():
+    task = generate("slow_nav", 0)
+    f = task["task_faults"][0]
+    f["onset_s"] = 1.0                       # the fake world finishes in ~10 s
+    sim = FakeSim()
+    ex = CarryExecutor(sim, FakeNav(), task)
+    run(ex, sim, task, until=30.0)
+    assert ex.nav.max_speed == pytest.approx(0.26 * f["factor"])
+    assert [e["type"] for e in ex.fired] == ["slow_nav"]

@@ -33,6 +33,10 @@ from collections import deque
 
 FAMILIES = ("clear", "cluttered", "grasp_fail", "drop", "skip_pickup", "object_moved",
             "stall", "push")
+#: Faults the hand-coded executor has no check for: one per requirement of the task
+#: description it does not check (see sim/e1/README.md, "Unanticipated faults").
+UNANTICIPATED = ("wrong_dropoff", "slow_nav", "detour", "close_pass")
+FAMILIES = FAMILIES + UNANTICIPATED
 ARENA = 3.4
 DURATION_S = 150.0
 DWELL_S = 2.0                   # standing still for a grasp or a release
@@ -75,6 +79,21 @@ def _point(rng, near=None, lo=0.0, hi=0.0):
             return round(p[0], 3), round(p[1], 3)
 
 
+def _clip(p):
+    return (round(max(-ARENA, min(ARENA, p[0])), 3), round(max(-ARENA, min(ARENA, p[1])), 3))
+
+
+def _offset(rng, origin, lo, hi):
+    """A point lo..hi m from `origin` in a random direction, inside the arena."""
+    for _ in range(100):
+        a = rng.uniform(-math.pi, math.pi)
+        r = rng.uniform(lo, hi)
+        p = (origin[0] + r * math.cos(a), origin[1] + r * math.sin(a))
+        if abs(p[0]) <= ARENA and abs(p[1]) <= ARENA:
+            return round(p[0], 3), round(p[1], 3)
+    return _clip(p)
+
+
 def generate(family: str, seed: int) -> dict:
     if family not in FAMILIES:
         raise ValueError(f"family must be one of {FAMILIES}")
@@ -104,8 +123,37 @@ def generate(family: str, seed: int) -> dict:
     elif family == "push":
         faults.append({"type": "push", "onset_s": round(rng.uniform(3.0, 45.0), 2),
                        "params": {"force_n": round(rng.uniform(250.0, 400.0), 1)}})
+    elif family == "wrong_dropoff":
+        # The executor's own idea of the drop-off is off by 1.5-2.5 m (a stale
+        # configuration, a frame error); the commanded one on /task is right.
+        task_faults.append({"type": "wrong_dropoff", "onset_s": 0.0,
+                            "believed": list(_offset(rng, drop, 1.5, 2.5))})
+    elif family == "slow_nav":
+        # The navigator's speed limit drops to 25-35% (a controller misconfiguration).
+        task_faults.append({"type": "slow_nav", "onset_s": round(rng.uniform(5.0, 15.0), 2),
+                            "factor": round(rng.uniform(0.25, 0.35), 3)})
+    elif family == "detour":
+        # The carry leg is routed through a waypoint 2.5-3.5 m off the line (a planner bug).
+        mid = ((obj[0] + drop[0]) / 2, (obj[1] + drop[1]) / 2)
+        ang = math.atan2(drop[1] - obj[1], drop[0] - obj[0]) + rng.choice((1, -1)) * math.pi / 2
+        r = rng.uniform(2.5, 3.5)
+        task_faults.append({"type": "detour", "onset_s": 0.0,
+                            "via": list(_clip((mid[0] + r * math.cos(ang),
+                                               mid[1] + r * math.sin(ang))))})
+    elif family == "close_pass":
+        # The navigator's obstacle inflation is cut to 0.05 m; a pillar stands on the
+        # object -> drop-off line, so the carry leg has to pass it.
+        task_faults.append({"type": "close_pass", "onset_s": 0.0, "inflation_m": 0.05})
 
     obstacles = []
+    if family == "close_pass":
+        f = rng.uniform(0.4, 0.6)
+        side = rng.uniform(-0.15, 0.15)
+        nx, ny = -(drop[1] - obj[1]), drop[0] - obj[0]
+        norm = math.hypot(nx, ny) or 1.0
+        obstacles.append({"type": "cylinder", "radius": 0.18, "height": 1.0,
+                          "pos": [round(obj[0] + f * (drop[0] - obj[0]) + side * nx / norm, 3),
+                                  round(obj[1] + f * (drop[1] - obj[1]) + side * ny / norm, 3)]})
     if family == "cluttered":
         keep = [start, obj, drop] + [t["to"] for t in task_faults if "to" in t]
         for _ in range(200):
@@ -148,7 +196,9 @@ class CarryExecutor:
         self.closed_loop, self.max_rechecks = closed_loop, max_rechecks
         self.rechecks: list[dict] = []
         self._seen = deque(maxlen=CHECK_WINDOW)
-        self.dropoff = tuple(task["dropoff"])
+        self._via_done = False
+        self._slowed = False
+        self.dropoff = tuple(task["dropoff"])       # the commanded one (also on /task)
         self.status = "executing"
         self.fired: list[dict] = []
         self._faults = {f["type"]: f for f in task.get("task_faults", [])}
@@ -159,6 +209,11 @@ class CarryExecutor:
         self.goal_changed = True
         sim.place_object(*task["object"])
         sim.place_dropoff(*self.dropoff)
+        if "wrong_dropoff" in self._faults:          # what the executor believes instead
+            self.dropoff = tuple(self._faults["wrong_dropoff"]["believed"])
+        if "close_pass" in self._faults and hasattr(nav, "set_inflation"):
+            nav.set_inflation(self._faults["close_pass"]["inflation_m"])
+            self._fire("close_pass", sim.time)
         if "skip_pickup" in self._faults:
             self._fire("skip_pickup", 0.0)
             self._go("carry", self.dropoff, sim.time)
@@ -194,11 +249,22 @@ class CarryExecutor:
         self.replan(t)
         return True
 
+    def _to_dropoff(self, t: float) -> None:
+        """The carry leg: straight to the drop-off, or first via a planner's detour."""
+        if "detour" in self._faults and not self._via_done:
+            self._fire("detour", t)
+            self._go("detour", self._faults["detour"]["via"], t)
+        else:
+            if "wrong_dropoff" in self._faults and not any(
+                    e["type"] == "wrong_dropoff" for e in self.fired):
+                self._fire("wrong_dropoff", t)
+            self._go("carry", self.dropoff, t)
+
     def replan(self, t: float) -> None:
         """Re-perceive and re-plan: to the drop-off if the object is held, else to it."""
         self.status = "executing"
         if self.sim.holding:
-            self._go("carry", self.dropoff, t)
+            self._to_dropoff(t)
         else:
             ox, oy, _ = self.sim.object_position()
             self._go("to_object", (ox, oy), t)
@@ -216,6 +282,10 @@ class CarryExecutor:
             sim.drop()
             self._dropped = True
             self._fire("drop", t)
+        if "slow_nav" in f and not self._slowed and t >= f["slow_nav"]["onset_s"]:
+            self.nav.max_speed *= f["slow_nav"]["factor"]
+            self._slowed = True
+            self._fire("slow_nav", t)
 
         if self.status != "executing":
             return
@@ -223,11 +293,14 @@ class CarryExecutor:
             self.status = "aborted"
             return
         full = len(self._seen) == CHECK_WINDOW
-        if self.closed_loop and self.state == "carry" and full \
+        if self.closed_loop and self.state in ("carry", "detour") and full \
                 and not any(held for held, _ in self._seen):
             if self._recheck("not holding the object while carrying", t):
                 return
-        if self.state in ("to_object", "carry") and self.nav.status == "succeeded":
+        if self.state == "detour" and self.nav.status == "succeeded":
+            self._via_done = True
+            self._go("carry", self.dropoff, t)
+        elif self.state in ("to_object", "carry") and self.nav.status == "succeeded":
             self.state = "grasp" if self.state == "to_object" else "place"
             self._dwell_from = t
         elif self.state == "grasp" and t - self._dwell_from >= DWELL_S:
@@ -238,7 +311,7 @@ class CarryExecutor:
                 sim.grasp()
             if sim.holding and self._carry_started is None:
                 self._carry_started = t
-            self._go("carry", self.dropoff, t)       # open loop: on to the drop-off
+            self._to_dropoff(t)                      # open loop: on to the drop-off
         elif self.state == "place" and t - self._dwell_from >= DWELL_S:
             sim.release()
             if self.closed_loop:

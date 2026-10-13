@@ -48,6 +48,7 @@ class Navigator:
         self.progress_radius, self.progress_window_s = progress_radius, progress_window_s
         self.abort_after_failures = abort_after_failures
 
+        self._scenario = scenario
         self.inflated = self._grid(scenario, robot_radius)
         self.lethal = self._grid(scenario, lethal_radius)
         self.rows, self.cols = self.inflated.shape
@@ -61,6 +62,14 @@ class Navigator:
         self._failures = 0
         self._progress_ref = None
         self.plans = 0
+
+    def set_inflation(self, radius: float) -> None:
+        """Change the obstacle inflation -- the clearance planned paths keep -- and replan.
+        E1b's `close_pass` fault cuts it, as a misconfigured costmap would."""
+        self.robot_radius = radius
+        self.inflated = self._grid(self._scenario, radius)
+        self._disk_inflated = self._disk(radius)
+        self.path = None
 
     # ------------------------------------------------------------------ grid
 

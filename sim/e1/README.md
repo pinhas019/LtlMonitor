@@ -387,3 +387,56 @@ claimed advantage over hand-coded checks:
 
 Each needs a test of its own: several skills, faults outside the developer's list, and
 an executor whose state estimate is wrong.
+
+## Unanticipated faults (design, committed before the sweep)
+
+**Question.** Does an independent monitor, generated from the task description, catch
+failures that the hand-coded executor has no check for? And does it add anything on top
+of that executor (`closed_loop_full`: the same checks, plus the full monitor)?
+
+**Families.** One per requirement the description states and the executor does not check
+(`task.UNANTICIPATED`; parameters deterministic per seed). The executor checks only
+"holding while carrying" and "at its drop-off before reporting success".
+
+| requirement (g1_fetch_and_deliver.md) | family | injected as |
+|---|---|---|
+| put it down at the drop-off station: the *commanded* one, on `/task` | `wrong_dropoff` | the executor's own drop-off is 1.5-2.5 m off (stale configuration, frame error) |
+| reach it in ~45 s, carry it in ~60 s | `slow_nav` | from 5-15 s, the navigator's speed limit drops to 25-35% |
+| get steadily closer | `detour` | the carry leg goes via a waypoint 2.5-3.5 m off the line (planner bug) |
+| never come dangerously close to an obstacle | `close_pass` | obstacle inflation cut to 0.05 m, a pillar on the object -> drop-off line |
+
+**Arms.** All over ROS 2, 20 seeds each:
+- `full` and `flat` (off, recover);
+- `closed_loop` (off: no monitor acting);
+- `closed_loop_full` (off, recover).
+
+`closed_loop_full` also runs on the 8 original families, to see whether the monitor on
+top costs anything where the executor's checks suffice.
+
+**Main metric: silent failures.** A failed episode that nothing flagged.
+- **What counts as failed:**
+  - `wrong_dropoff`: not delivered to the commanded drop-off;
+  - `slow_nav` and `detour`: not delivered within 1.5× the nominal time;
+  - `close_pass`: true clearance under 0.3 m at any time (from the simulator's geometry,
+    `timing.min_clearance_m`), or not delivered.
+- **What counts as flagged:**
+  - for monitor arms, any monitor intervention, the completion check included;
+  - for `closed_loop`, an executor recheck or an aborted executor (its record's monitor
+    fields are ignored, since no monitor acts in that deployment);
+  - for `closed_loop_full`, either.
+
+**Predictions** (from the plan, before any episode):
+- **`wrong_dropoff`.** `closed_loop` silent on all of them. `full` catches it when the
+  object is released away from the commanded drop-off (Carry invariant); `flat` catches it
+  at completion. Re-planning cannot fix it (it reuses the wrong drop-off), so the value is
+  detection.
+- **`slow_nav`.** `full` catches it by its phase time budgets, `flat` only by its 125 s
+  total, and `closed_loop` is silent.
+- **`detour`.** Possibly nobody: the monitor measures progress toward the goal the
+  executor publishes. `full` catches it via the Carry budget only if the detour is long
+  enough.
+- **`close_pass`.** Every monitor arm flags `collision_imminent`; `closed_loop` is silent.
+  The rule's false-alarm rate on safe passes (E1) is reported next to it.
+
+A 2-seed mechanics pilot (not counted) already suggests that `slow_nav` and `detour` stay
+inside the monitor's budgets. The predictions are kept as written.

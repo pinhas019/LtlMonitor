@@ -53,8 +53,13 @@ ARMS = {
     # monitor still runs (on the flat spec) so the record has the same fields, but the arm
     # is only ever run under `off`, so nothing it says reaches the robot.
     "closed_loop": "formulas_g1_carry_flat.json",
+    # The hand-coded executor with the full monitor on top: the realistic deployment.
+    "closed_loop_full": "formulas_g1_carry.json",
 }
-CLOSED_LOOP_ARMS = ("closed_loop",)
+#: Arms whose executor runs its own checks.
+CLOSED_LOOP_ARMS = ("closed_loop", "closed_loop_full")
+#: Arms with no monitor acting: only ever run under `off`.
+EXECUTOR_ONLY_ARMS = ("closed_loop",)
 POLICIES = ("off", "detect", "recover")
 COMPLETION_GRACE = 2            # ticks for the monitor to see a reported completion
 
@@ -195,6 +200,9 @@ def play_episode(item: dict, sim, link, *, on_step=None, on_tick=None) -> dict:
     done_seq = None
     intervention_log, fired_seen = [], 0
     steps_per_tick = round(1.0 / sim.config.control_dt)
+    pillars = [(o["pos"][0], o["pos"][1], o["radius"]) for o in
+               task["scenario"].get("obstacles", []) if o.get("type") == "cylinder"]
+    min_clearance = math.inf
     timeout = float(task.get("duration_s", 150.0))
     step, decision = 0, None
     while True:
@@ -225,6 +233,10 @@ def play_episode(item: dict, sim, link, *, on_step=None, on_tick=None) -> dict:
                 vx, wz = 0.0, 0.0
             sim.set_command(vx, 0.0, wz)
         sim.step(control_steps=1)
+        if pillars:
+            bx, by, _, _ = sim.base_pose()                  # ground truth, never published
+            min_clearance = min(min_clearance, min(
+                math.hypot(bx - px, by - py) - pr for px, py, pr in pillars))
         if on_step is not None:
             on_step(sim)
         for event in sim.pop_fault_events():
@@ -288,6 +300,8 @@ def play_episode(item: dict, sim, link, *, on_step=None, on_tick=None) -> dict:
                                                         oy - task["dropoff"][1]), 3),
                 "fell": bool(sim.fell),
                 "executor_rechecks": ex.rechecks,
+                "min_clearance_m": None if math.isinf(min_clearance)
+                else round(min_clearance, 3),
                 # What the monitor concluded, from the messages alone: its last verdict.
                 "monitor_outcome": {"terminal": verdict.get("terminal"),
                                     "verdict": verdict.get("verdict")},
@@ -339,7 +353,7 @@ def main(argv=None) -> int:
             task = generate(family, seed)
             for arm in args.arms:
                 for policy in args.policies:
-                    if arm in CLOSED_LOOP_ARMS and policy != "off":
+                    if arm in EXECUTOR_ONLY_ARMS and policy != "off":
                         continue                 # its executor decides; nothing else acts
                     if f"{arm}-{policy}-{task['name']}" not in done:
                         items.append({"task": task, "arm": arm, "policy": policy,
