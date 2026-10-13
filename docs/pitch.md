@@ -19,7 +19,7 @@ fifteen stalls** (15/15 vs 14/15, p = 1.0). What caught stalls was **progress gr
 odometry**: remove that rule from the control and stall detection falls to 1/15
 (p = 2·10⁻⁷). For a two-phase skill, the claim is not supported.
 
-**E1b, fetch and deliver (1440 episodes, over real ROS 2).** Four phases: walk to the
+**E1b, fetch and deliver (2080 episodes, over real ROS 2).** Four phases: walk to the
 object, grasp, carry, place. The monitor reads only ROS 2 topics (odometry, lidar, the
 commanded goal and task, and the object as a detector sees it) and infers from them both
 whether the object is held and whether the task succeeded. Here the structure **does**
@@ -33,13 +33,22 @@ matter:
 - **The monitor's own verdict never called a failed task a success** (0 of 104 failed
   episodes, every arm). The full spec ends a failed episode on an explicit FAILURE 71 times
   in 104; the flat spec 22 times, otherwise staying undecided.
-- **Final success is the same** (82% vs 84% with re-planning, from 35% without), because
-  these faults can be repaired after the fact.
+- **With no deadline, final success is the same** (82% vs 84% with re-planning, from 35%
+  without), because these faults can be repaired after the fact.
+- **With a deadline it is not.** Counting only deliveries within 1.5× the scenario's
+  nominal time, the full spec delivers **64% vs 36%** for flat (p = 1.3·10⁻⁶).
+- **It is the phase machine, not LTL.** The same spec with its phases removed (LTL
+  automata only) behaves like flat: no drop or failed grasp caught during the task, 36% at
+  1.5× (p = 7·10⁻⁷).
+- **A hand-coded closed-loop executor does as well or better** (81% at 1.5×, p = 0.001),
+  because it knows its own state, but it needs task-specific code. The generated monitor
+  gets most of the way there from a plain-language description alone.
 
 So the supported claim is: **progress states catch phase-specific failures as they happen,
-where a flat specification can only notice them at the end.** That turns into a better
-outcome when time matters or the failure cannot be undone later. Both experiments also
-show that progress must be grounded in sensors, not in the planner.
+where a flat specification, or LTL alone, can only notice them at the end; when time
+matters, that is a higher success rate.** Both experiments also show that progress must be
+grounded in sensors, not in the planner. Not yet shown: an advantage over checks
+hand-written into the executor.
 
 A supporting claim also holds. The specification was generated from plain language in one
 attempt and passed the monitor's own load checks. The monitor reads no planner self-report,
@@ -198,10 +207,36 @@ finished late. Over ROS, the flat arm missed 2 of 11 stalls that the in-process 
 topics are not ordered against each other, so a slow crawl's debounce can restart, as on a
 robot.
 
+**What the phases are compared with** (640 more episodes over ROS 2, same scenarios):
+- **LTL only.** The full spec minus its phase machine: the 6-state task automaton, the
+  safety automata and the terminals, nothing else.
+- **Hand-coded checks, no monitor.** The executor itself checks, from the same noisy
+  perception, "am I still holding it?" while carrying and "is it at the drop-off?" before
+  reporting success, and re-plans on its own.
+- **Deadlines.** Delivered within k × the scenario's nominal time to deliver (straight-line
+  walk at the fault-free runs' median speed, plus grasp and release). A deadline only
+  judges an episode, so it is read from the same records.
+
+| delivered by the deadline | 1.25× | 1.5× | 2× | no deadline |
+|---|---|---|---|---|
+| full spec + re-plan | 58% | **64%** | 73% | 82% |
+| flat + re-plan | 34% | 36% | 54% | 84% |
+| LTL only + re-plan | 32% | 36% | 51% | 83% |
+| hand-coded checks, no monitor | **74%** | **81%** | 84% | 85% |
+| no monitor | 34% | 34% | 34% | 35% |
+
+![Delivered by a deadline](e1b_ros/deadline.png)
+
+Against the hand-coded executor, per fault (median seconds to deliver): drop 34.5 vs 34.5,
+failed grasp 36.5 vs 36, object moved 70 vs 46, skipped pick-up 57.5 vs 32.5 (full spec +
+re-plan vs hand-coded). The monitor matches it where the phase is unambiguous from what is
+observed, and loses where the executor knows something the observations do not show (that
+it has skipped the pick-up).
+
 **Also done and tested.**
 - Falls are physical.
 - Reset is bit-identical.
-- 1426 monitor tests and 125 simulator tests pass.
+- 1429 monitor tests and 135 simulator tests pass.
 
 Full tables and raw records: [`docs/e1/results.md`](e1/results.md),
 [`docs/e1b_ros/results.md`](e1b_ros/results.md) (the first, in-process E1b run:
@@ -220,9 +255,14 @@ Full tables and raw records: [`docs/e1/results.md`](e1/results.md),
 
 ## 3. Research directions
 
-1. **Turn E1b's latency into outcome.**
-   - A deadline, or a failure that cannot be repaired later (a fragile object, a person
-     waiting): there detection time is the result.
+1. **Show what hand-written checks cannot.** E1b's deadline result shows the latency is
+   worth success; the open question is the monitor against checks written into the
+   executor.
+   - **Generality:** one description → one monitor for several skills, with no code in
+     any of them.
+   - **Unanticipated faults:** faults outside the list the developer wrote checks for.
+   - **A wrong executor belief:** an executor that thinks it holds the object when it does
+     not. Its own checks inherit the error; an independent monitor does not.
    - Several specifications generated per skill, to separate the structure from one
      spec's choices.
 2. **Fix what E1 and E1b exposed.**
