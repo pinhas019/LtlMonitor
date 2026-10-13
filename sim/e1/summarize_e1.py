@@ -29,9 +29,20 @@ sys.path.insert(0, str(ROOT))
 
 from skill_monitor.core import analysis                          # noqa: E402
 
+#: Arms whose monitor is compared, in table order. `main` narrows this to those present.
+MONITOR_ARMS = ("full", "flat", "flat_strict", "ltl_only")
 ARMS = ("full", "flat", "flat_strict")
+#: Arms that are not a monitor: the executor decides on its own (E1b's baseline).
+EXECUTOR_ARMS = ("closed_loop",)
 ARM_LABEL = {"full": "full spec", "flat": "flat (keeps terminal failure)",
-             "flat_strict": "flat strict (no terminal failure)"}
+             "flat_strict": "flat strict (no terminal failure)",
+             "ltl_only": "LTL only (no phase machine)",
+             "closed_loop": "hand-coded checks, no monitor"}
+COLORS = {"full": "#2a78d6", "flat": "#eb6834", "flat_strict": "#1baf7a",
+          "ltl_only": "#8a5cc2", "closed_loop": "#52514e", "none": "#b5b3ad"}
+#: Deadlines, as multiples of a scenario's nominal time to deliver.
+DEADLINE_K = (1.0, 1.25, 1.5, 2.0, 3.0, float("inf"))
+DWELL_TOTAL_S = 4.0             # grasp and release dwell, 2 s each
 CLEAN = ("clear", "cluttered")
 
 
@@ -217,19 +228,125 @@ def paired_rows(records, base="full"):
     return rows
 
 
+def nominal_s(record, speed: float) -> float:
+    """A scenario's time to deliver with nothing going wrong: start -> object -> drop-off
+    in straight lines at `speed`, plus the grasp and release dwell."""
+    import math
+    task = record["scenario_params"]
+    start = task["scenario"]["start"]
+    walk = (math.dist((start["x"], start["y"]), task["object"])
+            + math.dist(task["object"], task["dropoff"]))
+    return walk / speed + DWELL_TOTAL_S
+
+
+def fitted_speed(records) -> float | None:
+    """Effective speed over the fault-free `clear` episodes that succeeded under `off`."""
+    import math
+    speeds = []
+    for r in records:
+        if r["policy"] == "off" and r["success"] and analysis.family(r).endswith("clear") \
+                and r["arm"] == "full":
+            task = r["scenario_params"]
+            start = task["scenario"]["start"]
+            walk = (math.dist((start["x"], start["y"]), task["object"])
+                    + math.dist(task["object"], task["dropoff"]))
+            speeds.append(walk / max(r["elapsed_s"] - DWELL_TOTAL_S, 1e-6))
+    return statistics.median(speeds) if speeds else None
+
+
+def deadline_groups(records):
+    """(key, label, records) for every way of running the task that the deadline curve
+    compares: each monitor arm under `recover`, the closed-loop executor, and no monitor."""
+    groups = []
+    for arm in ARMS:
+        rs = [r for r in records if r["arm"] == arm and r["policy"] == "recover"]
+        if rs:
+            groups.append((arm, f"{ARM_LABEL[arm]} + re-plan", rs))
+    for arm in EXECUTOR_ARMS:
+        rs = [r for r in records if r["arm"] == arm and r["policy"] == "off"]
+        if rs:
+            groups.append((arm, ARM_LABEL[arm], rs))
+    rs = [r for r in records if r["arm"] == "full" and r["policy"] == "off"]
+    if rs:
+        groups.append(("none", "no monitor (open-loop executor)", rs))
+    return groups
+
+
+def deadline_rows(records):
+    """Success within k x nominal time, per group. A deadline only judges an episode -- it
+    changes nothing the robot does -- so it is computed from the same records."""
+    speed = fitted_speed(records)
+    if speed is None:
+        return None, []
+    rows = []
+    for key, label, rs in deadline_groups(records):
+        cells = []
+        for k in DEADLINE_K:
+            ok = sum(1 for r in rs if r["success"] and r["elapsed_s"] <= k * nominal_s(r, speed))
+            cells.append((ok, len(rs)))
+        rows.append((key, label, cells))
+    return speed, rows
+
+
+def closed_loop_rows(records):
+    """Per family: the closed-loop executor (no monitor) against the full spec with re-plan,
+    and against no monitor at all: success, and median seconds to deliver when delivered."""
+    rows = []
+    fams = sorted({analysis.family(r) for r in records}, key=lambda f: (not is_clean(f), f))
+    for fam in fams + ["all"]:
+        def pick(arm, policy):
+            return [r for r in records if r["arm"] == arm and r["policy"] == policy
+                    and (fam == "all" or analysis.family(r) == fam)]
+        cl, full, none = pick("closed_loop", "off"), pick("full", "recover"), pick("full", "off")
+        if not cl:
+            continue
+
+        def cell(rs):
+            ok = [r for r in rs if r["success"]]
+            med = statistics.median(r["elapsed_s"] for r in ok) if ok else None
+            return len(ok), len(rs), med
+        rows.append((fam, cell(cl), cell(full), cell(none)))
+    return rows
+
+
+def deadline_figure(rows, out: Path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    labels = ["1×", "1.25×", "1.5×", "2×", "3×", "no deadline"]
+    fig, ax = plt.subplots(figsize=(10, 4.6))
+    for key, label, cells in rows:
+        if key == "flat_strict":
+            continue                    # under re-plan it coincides with flat; see the table
+        ys = [ok / n for ok, n in cells]
+        ax.plot(range(len(cells)), ys, marker="o", lw=2, ms=7, color=COLORS.get(key, "#888"),
+                label=label, ls="--" if key == "none" else "-")
+    ax.set_xticks(range(len(labels)), labels)
+    ax.set_xlabel("deadline, as a multiple of the scenario's nominal time to deliver")
+    ax.set_ylabel("delivered by the deadline")
+    ax.set_ylim(0, 1.0)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(axis="y", color="#e4e3df")
+    ax.set_axisbelow(True)
+    ax.legend(frameon=False, fontsize=9, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(out / "deadline.svg")
+    fig.savefig(out / "deadline.png", dpi=160)
+
+
 def figure(records, out: Path):
     """Detection of the faults that mattered: episodes that failed under `off`."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    colors = {"full": "#2a78d6", "flat": "#eb6834", "flat_strict": "#1baf7a"}
+    colors = COLORS
     rows = [r for r in consequence_rows(records) if r[1] > 0]
     stacked = any(r[5] != r[3] for r in rows)
     fig, ax = plt.subplots(figsize=(12, 4.6))
-    width = 0.26
+    width = 0.8 / len(ARMS)
     for i, arm in enumerate(ARMS):
         vals = [r[3][arm] / r[1] for r in rows]
-        xs = [j + (i - 1) * width for j in range(len(rows))]
+        xs = [j + (i - (len(ARMS) - 1) / 2) * width for j in range(len(rows))]
         if stacked:
             during = [r[5][arm] / r[1] for r in rows]
             ax.bar(xs, during, width=width - 0.03, color=colors[arm], label=ARM_LABEL[arm])
@@ -249,8 +366,9 @@ def figure(records, out: Path):
         from matplotlib.patches import Patch
         handles.append(Patch(color="#9a9a96", alpha=0.3))
         labels.append("lighter: caught only when the executor claimed success")
-    ax.legend(handles, labels, frameon=False, ncol=4 if stacked else 3, loc="upper center",
-              bbox_to_anchor=(0.5, 1.13), fontsize=9 if stacked else 10)
+    ax.legend(handles, labels, frameon=False, ncol=3 if len(labels) > 4 else len(labels),
+              loc="upper center", bbox_to_anchor=(0.5, 1.2 if len(labels) > 4 else 1.13),
+              fontsize=9 if stacked else 10)
     fig.tight_layout()
     fig.savefig(out / "detection.svg")
     fig.savefig(out / "detection.png", dpi=160)
@@ -262,7 +380,7 @@ def latency_figure(records, out: Path):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    colors = {"full": "#2a78d6", "flat": "#eb6834", "flat_strict": "#1baf7a"}
+    colors = COLORS
     off = [r for r in records if r["policy"] == "off" and not r["success"]]
     fams = sorted({analysis.family(r) for r in off if not is_clean(analysis.family(r))})
     med = {}
@@ -274,9 +392,9 @@ def latency_figure(records, out: Path):
             med[(fam, arm)] = statistics.median(ttd) if ttd else None
     fams = [f for f in fams if any(med[(f, a)] is not None for a in ARMS)]
     fig, ax = plt.subplots(figsize=(12, 4.6))
-    width = 0.26
+    width = 0.8 / len(ARMS)
     for i, arm in enumerate(ARMS):
-        xs = [j + (i - 1) * width for j in range(len(fams))]
+        xs = [j + (i - (len(ARMS) - 1) / 2) * width for j in range(len(fams))]
         vals = [med[(f, arm)] or 0 for f in fams]
         bars = ax.bar(xs, vals, width=width - 0.03, color=colors[arm], label=ARM_LABEL[arm])
         for x, v in zip(xs, vals):
@@ -286,7 +404,8 @@ def latency_figure(records, out: Path):
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e3df")
     ax.set_axisbelow(True)
-    ax.legend(frameon=False, ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.13))
+    ax.legend(frameon=False, ncol=len(ARMS), loc="upper center", bbox_to_anchor=(0.5, 1.13),
+              fontsize=10 if len(ARMS) <= 3 else 9)
     fig.tight_layout()
     fig.savefig(out / "latency.svg")
     fig.savefig(out / "latency.png", dpi=160)
@@ -298,13 +417,17 @@ def main(argv=None) -> int:
     parser.add_argument("--out", default="docs/e1")
     parser.add_argument("--title", default="E1 results")
     args = parser.parse_args(argv)
-    records = load(args.records)
+    everything = load(args.records)
+    global ARMS
+    ARMS = tuple(a for a in MONITOR_ARMS if any(r["arm"] == a for r in everything))
+    # The monitor tables compare monitors; the executor-only arms get their own tables.
+    records = [r for r in everything if r["arm"] in ARMS]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
     rows, cells = detection_table(records)
     fams = [r["family"] for r in rows]
-    lines = [f"# {args.title} ({len(records)} episodes)", "",
+    lines = [f"# {args.title} ({len(everything)} episodes)", "",
              "## Detection (policy off: the monitor reports, nothing acts)", "",
              "Fault families: detected / injected · median ticks (1 tick = 1 s) from "
              "injection to the first intervention. Fault-free families: episodes with any "
@@ -372,9 +495,58 @@ def main(argv=None) -> int:
               "|---|---|---|---|---|---|"]
     for arm, policy, n, succ, delta, rec in outcome_rows(records):
         lines.append(f"| {arm} | {policy} | {n} | {succ} | {delta} | {rec} |")
+    cl = closed_loop_rows(everything)
+    if cl:
+        lines += ["", "## Against a hand-coded closed-loop executor", "",
+                  "The closed-loop executor checks its own work from the same perception "
+                  "(\"still holding it?\", \"is it at the drop-off?\") and re-plans on its "
+                  "own; no monitor acts. Success, and median simulated seconds to deliver "
+                  "over the episodes that delivered.", "",
+                  "| family | hand-coded checks, no monitor | full spec + re-plan | "
+                  "no monitor (open loop) |", "|---|---|---|---|"]
+
+        def fmt(c):
+            ok, n, med = c
+            return f"{ok}/{n}" + (f" · {med:.1f} s" if med is not None else "")
+        for fam, a, b, c in cl:
+            lines.append(f"| {'**all**' if fam == 'all' else fam} | {fmt(a)} | {fmt(b)} | "
+                         f"{fmt(c)} |")
+        a, b = cl[-1][1], cl[-1][2]
+        p = analysis.fisher_exact(a[0], a[1] - a[0], b[0], b[1] - b[0])
+        lines += ["", f"Pooled success, hand-coded checks vs full spec + re-plan: Fisher "
+                      f"p = {p:.2g}."]
+    speed, dl = deadline_rows(everything)
+    if dl:
+        lines += ["", "## Delivered by a deadline", "",
+                  f"Deadline = k × the scenario's nominal time to deliver (straight-line "
+                  f"walk start → object → drop-off at {speed:.2f} m/s, the median "
+                  f"effective speed of the fault-free `clear` runs, plus "
+                  f"{DWELL_TOTAL_S:.0f} s of grasp and release). A deadline only judges an "
+                  f"episode, so it is computed from the same records; k = ∞ is plain "
+                  f"success. All 160 episodes of each way of running the task, every "
+                  f"family pooled.", "",
+                  "| way of running the task | " + " | ".join(
+                      "no deadline" if k == float("inf") else f"{k:g}×" for k in DEADLINE_K)
+                  + " |", "|---|" + "---|" * len(DEADLINE_K)]
+        for key, label, cells in dl:
+            lines.append(f"| {label} | " + " | ".join(
+                f"{100 * ok / n:.0f}%" for ok, n in cells) + " |")
+        ref = next((c for k, _, c in dl if k == "full"), None)
+        if ref:
+            lines += ["", "Fisher p, full spec + re-plan against each, per deadline:", "",
+                      "| against | " + " | ".join(
+                          "∞" if k == float("inf") else f"{k:g}×" for k in DEADLINE_K) + " |",
+                      "|---|" + "---|" * len(DEADLINE_K)]
+            for key, label, cells in dl:
+                if key == "full":
+                    continue
+                ps = [analysis.fisher_exact(a[0], a[1] - a[0], b[0], b[1] - b[0])
+                      for a, b in zip(ref, cells)]
+                lines.append(f"| {label} | " + " | ".join(f"{p:.2g}" for p in ps) + " |")
+        deadline_figure(dl, out)
     lines += ["", "## Causes of failure", "", "| arm | policy | causes |", "|---|---|---|"]
     by = defaultdict(lambda: defaultdict(int))
-    for r in records:
+    for r in everything:
         if not r["success"]:
             by[(r["arm"], r["policy"])][r["cause"]] += 1
     for (arm, policy), causes in sorted(by.items()):
