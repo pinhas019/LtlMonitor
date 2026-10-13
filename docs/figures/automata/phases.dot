@@ -1,0 +1,30 @@
+digraph phases {
+  rankdir=LR; node [fontname="Helvetica" fontsize=11];
+  edge [fontname="Helvetica" fontsize=10];
+  Idle [shape=box style=rounded];
+  Done [shape=box style="rounded,filled" fillcolor="#DCEBDD"];
+  Fault [label="FAULT\n(intervention)" shape=box style="rounded,filled" fillcolor="#F6D5CF"];
+  WalkToObject [shape=box label="WalkToObject
+≤ 45 s
+progress: not stalled
+invariant: upright and not obstacle_too_close"];
+  Grasp [shape=box label="Grasp
+≤ 10 s
+invariant: upright and not obstacle_too_close"];
+  Carry [shape=box label="Carry
+≤ 60 s
+progress: not stalled
+invariant: upright and holding_object and not obstacle_too_close"];
+  Place [shape=box label="Place
+≤ 10 s
+invariant: upright and not obstacle_too_close"];
+  Idle -> WalkToObject [label="task_started"];
+  WalkToObject -> Grasp [label="near_object"];
+  Grasp -> Carry [label="holding_object"];
+  Carry -> Place [label="near_dropoff"];
+  Place -> Done [label="object_at_dropoff and not holding_object"];
+  WalkToObject -> Fault [style=dashed color="#B5503C" label="invariant broken / time budget exceeded / progress lost" fontcolor="#B5503C"];
+  Grasp -> Fault [style=dashed color="#B5503C" label="invariant broken / time budget exceeded" fontcolor="#B5503C"];
+  Carry -> Fault [style=dashed color="#B5503C" label="invariant broken / time budget exceeded / progress lost" fontcolor="#B5503C"];
+  Place -> Fault [style=dashed color="#B5503C" label="invariant broken / time budget exceeded" fontcolor="#B5503C"];
+}

@@ -1,0 +1,11 @@
+digraph automaton {
+  rankdir=LR; node [fontname="Helvetica" fontsize=11];
+  edge [fontname="Helvetica" fontsize=10];
+  start [shape=point];
+  start -> s0;
+  s0 [label="0" shape=doublecircle style=filled fillcolor="#DCEBDD"];
+  s1 [label="1" shape=circle style=filled fillcolor="#F6D5CF"];
+  s0 -> s0 [label="!obstacle_too_close"];
+  s0 -> s1 [label="obstacle_too_close"];
+  s1 -> s1 [label="1"];
+}

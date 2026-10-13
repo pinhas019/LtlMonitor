@@ -129,6 +129,53 @@ or a fall.
   A first run in one process, with the simulator's grasp flag, gave the same headline
   numbers; noise-free, the two transports agree on 18/18 pilot episodes.
 
+**The generated automaton for the task.** The specification Claude generated for E1b
+(`skill_monitor/specs/formulas_g1_carry.json`) gives the monitor two things to run. The
+figures below are rendered from the monitor's own construction (`core/automata.LTLMonitor`
+calls Spot exactly as at runtime: deterministic, complete, state-based Büchi).
+
+*1. The phase machine.* Each phase has an enter and an exit condition, a time budget, a
+progress condition and an invariant; breaking any of them is a fault. The Carry invariant,
+`holding_object`, is what the flat control cannot express.
+
+![Phase machine of the fetch-and-deliver specification](figures/automata/phases.svg)
+
+*2. The LTL automata*, stepped once per tick on the propositions the evaluator computes from
+the ROS messages.
+
+- **Order of the task**, `F(task_started ∧ F(near_object ∧ F(holding_object ∧
+  F(near_dropoff ∧ F(object_at_dropoff ∧ ¬holding_object)))))`: 6 states. Each state
+  records how far along the task the robot has got (0 = not started, 1 = started,
+  2 = at the object, 3 = holding it, 4 = at the drop-off holding it, 5 = delivered,
+  accepting).
+  Several steps may happen in one tick, hence the edges that skip states.
+
+  ![Automaton of the ordered fetch-and-deliver formula](figures/automata/fetch_and_deliver_in_order.svg)
+
+  | state | meaning | stays while | moves to |
+  |---|---|---|---|
+  | 0 (initial) | task not started | `¬task_started` | 1–4, depending on what already holds |
+  | 1 | started, walking to the object | `¬near_object` | 2 (at the object), 3–4 if already holding |
+  | 2 | at the object | `¬holding_object` | 3 (holding), 4 (holding and at the drop-off) |
+  | 3 | holding, carrying | `¬near_dropoff` | 4 (at the drop-off), 5 (put down at the drop-off) |
+  | 4 | at the drop-off | `holding_object ∨ ¬object_at_dropoff` | 5 (object down at the drop-off) |
+  | 5 (accepting) | delivered | always | — |
+
+- **Safety failure modes**, `G(upright)` (`fell_over`) and `G(¬obstacle_too_close)`
+  (`collision_imminent`): 2 states each. A safe initial state is left for a violating sink
+  the first tick the condition fails
+  ([`fell_over.svg`](figures/automata/fell_over.svg),
+  [`collision_imminent.svg`](figures/automata/collision_imminent.svg)).
+- **The flat control** keeps both safety automata but replaces the ordered formula with
+  `F(object_at_dropoff ∧ ¬holding_object ∧ upright)`, a 2-state automaton (waiting, then
+  accepting). It has one phase whose invariant is only `upright ∧ ¬obstacle_too_close`.
+
+The ordered automaton has no rejecting state: "eventually" can always still come true. A
+step that goes wrong (the object dropped while carrying) is caught by the phase machine,
+not by the LTL automaton; that division is what the E1b comparison measures. Regenerate:
+`python tools/report/render_automata.py skill_monitor/specs/formulas_g1_carry.json --out
+docs/figures/automata` (needs Spot and Graphviz).
+
 **E1b results.** Episodes that failed under `off`, caught *during the task* (before the
 executor claimed success), and median time to detection:
 

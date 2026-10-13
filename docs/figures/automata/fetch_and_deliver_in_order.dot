@@ -1,0 +1,30 @@
+digraph automaton {
+  rankdir=LR; node [fontname="Helvetica" fontsize=11];
+  edge [fontname="Helvetica" fontsize=10];
+  start [shape=point];
+  start -> s0;
+  s0 [label="0" shape=circle];
+  s1 [label="1" shape=circle];
+  s2 [label="2" shape=circle];
+  s3 [label="3" shape=circle];
+  s4 [label="4" shape=circle];
+  s5 [label="5" shape=doublecircle style=filled fillcolor="#DCEBDD"];
+  s0 -> s0 [label="!task_started"];
+  s0 -> s1 [label="!near_object & task_started"];
+  s0 -> s2 [label="!holding_object & near_object & task_started"];
+  s0 -> s3 [label="holding_object & !near_dropoff & near_object & task_started"];
+  s0 -> s4 [label="holding_object & near_dropoff & near_object & task_started"];
+  s1 -> s1 [label="!near_object"];
+  s1 -> s2 [label="!holding_object & near_object"];
+  s1 -> s3 [label="holding_object & !near_dropoff & near_object"];
+  s1 -> s4 [label="holding_object & near_dropoff & near_object"];
+  s2 -> s2 [label="!holding_object"];
+  s2 -> s3 [label="holding_object & !near_dropoff"];
+  s2 -> s4 [label="holding_object & near_dropoff"];
+  s3 -> s3 [label="!near_dropoff"];
+  s3 -> s4 [label="(holding_object & near_dropoff) | (near_dropoff & !object_at_dropoff)"];
+  s3 -> s5 [label="!holding_object & near_dropoff & object_at_dropoff"];
+  s4 -> s4 [label="holding_object | !object_at_dropoff"];
+  s4 -> s5 [label="!holding_object & object_at_dropoff"];
+  s5 -> s5 [label="1"];
+}
