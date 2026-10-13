@@ -141,9 +141,11 @@ class InProcess:
         self.monitor.destroy_node()
 
 
-def play_episode(item: dict, sim, link) -> dict:
+def play_episode(item: dict, sim, link, *, on_step=None, on_tick=None) -> dict:
     """One episode of the carry skill against whatever `link` carries messages over.
-    `link` may be a factory, called once the simulator has been reset.
+    `link` may be a factory, called once the simulator has been reset. `on_step(sim)` runs
+    after every control step and `on_tick(seq, verdict, intervention, ex, sim, link)` after
+    every tick (the demo's viewer and printout); neither changes the episode.
 
     Everything the monitor learns goes through `link`: odometry, the scan, the commanded
     goal and task, and the object as perception reports it. The executor's own status is
@@ -223,6 +225,8 @@ def play_episode(item: dict, sim, link) -> dict:
                 vx, wz = 0.0, 0.0
             sim.set_command(vx, 0.0, wz)
         sim.step(control_steps=1)
+        if on_step is not None:
+            on_step(sim)
         for event in sim.pop_fault_events():
             stamp(event["type"], event["t"], seq, event["params"])
         if step % steps_per_tick:
@@ -249,6 +253,8 @@ def play_episode(item: dict, sim, link) -> dict:
             intervention_log.append((seq, name))
             if detected is None:
                 detected = seq
+        if on_tick is not None:
+            on_tick(seq, verdict if verdict.get("seq") == seq else None, name, ex, sim, link)
 
         dx, dy = task["dropoff"]
         ox, oy, _ = sim.object_position()

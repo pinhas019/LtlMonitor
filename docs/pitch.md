@@ -287,27 +287,42 @@ Full tables and raw records: [`docs/e1/results.md`](e1/results.md),
 
 ## 4. Try it yourself
 
-You need Linux with `git` and Python 3.10 or newer. No GPU, ROS or Docker is needed. It was
-developed on Ubuntu 24.04.
+Linux or macOS (on Windows: inside WSL2 with Ubuntu). No GPU, ROS or Docker. The monitor
+needs Spot, which comes from conda-forge, so the environment is a conda one (Miniforge or
+micromamba; `pip` alone cannot install Spot).
 
 ```bash
 git clone https://github.com/pinhas019/LtlMonitor.git && cd LtlMonitor
 git checkout claude/monitoring-paper-submission-1ryynf
-python3 -m venv .venv && . .venv/bin/activate
-pip install mujoco "numpy<2" pyyaml pytest matplotlib
-sim/fetch_assets.sh /tmp/unitree && export G1SIM_ASSETS=/tmp/unitree
-
-python sim/demo.py                     # stall at t=5 s: no_progress turns TRUE at t=16 s
-python sim/demo.py --fault push        # the robot falls: upright = NO
-python sim/demo.py --fault none        # healthy walk, never flagged
-python -m pytest -q sim/tests          # simulator tests, 1–2 min
-python sim/e1/summarize_e1.py <(zcat docs/e1/e1_episodes.jsonl.gz) --out /tmp/e1     # E1 tables from the raw records
-python sim/e1/summarize_e1.py <(zcat docs/e1b_ros/e1b_ros_episodes.jsonl.gz) --out /tmp/e1b  # E1b (ROS 2)
+conda create -y -n ltl -c conda-forge python=3.12 spot pyyaml "numpy<2" matplotlib pytest
+conda activate ltl && pip install mujoco
+sim/fetch_assets.sh ~/unitree && export G1SIM_ASSETS=~/unitree   # Unitree's G1 model and walking policy
 ```
 
-`demo.py` walks the G1 toward a goal, injects the fault, and passes the robot's odometry
-through the monitor's real sensor processing at 1 Hz. Each line it prints shows the time,
-the distance to the goal, the closing speed, `no_progress` and whether the robot is upright.
+**The live demo: fetch and deliver, with the real monitor.** A MuJoCo window shows the
+robot; the overlay and the terminal show the monitor's phase, whether it thinks the object
+is held, its verdict, and every alarm, tick by tick. On macOS run `mjpython` instead of
+`python` (MuJoCo's viewer needs it there); `--no-view` prints text only.
+
+```bash
+python sim/demo_e1b.py                                   # object dropped at ~22 s: full spec alarms at the next tick
+python sim/demo_e1b.py --spec flat                       # same drop: the flat spec only notices when the executor claims success
+python sim/demo_e1b.py --fault grasp_fail --policy recover   # caught, re-planned, delivered
+python sim/demo_e1b.py --fault clear                     # nothing goes wrong, nothing is flagged
+python sim/demo_e1b.py --fault push                      # the robot is shoved and falls
+```
+
+**Smaller checks and the raw results:**
+
+```bash
+python sim/demo.py                     # walking only: legs stall at 5 s, no_progress turns TRUE ~11 s later
+python -m pytest -q sim/tests          # simulator tests, 1-2 min
+python sim/e1/summarize_e1.py <(zcat docs/e1b_ros/e1b_ros_episodes.jsonl.gz) --out /tmp/e1b  # every E1b table and figure from the raw records
+```
+
+**For a meeting:** do the install beforehand (about 300 MB with conda, plus the Unitree
+assets), run `python sim/demo_e1b.py` once to check the window opens, and keep the deck
+exported as PDF in case there is no network.
 
 **Re-run E1 or E1b** (needs Spot, which comes from conda-forge; E1 takes about 15 minutes
 on 4 cores, E1b over ROS 2 about 30 and also needs ROS 2 Humble, e.g. from RoboStack): see
