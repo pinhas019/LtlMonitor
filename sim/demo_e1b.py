@@ -119,8 +119,15 @@ def main(argv=None) -> int:
                 print(f"      ** fault injected: {f['type']} at {f['onset_s']:.1f} s")
         sensors = getattr(getattr(link, "monitor", None), "sensors", {}) or {}
         held = sensors.get("holding")
+        if args.spec == "closed_loop":                  # no monitor in this deployment:
+            name, verdict, held = None, None, None      # show only the executor's checks
+            for c in ex.rechecks[fired_seen.setdefault("rc", 0):]:
+                name = f"executor check: {c['reason']}"
+            fired_seen["rc"] = len(ex.rechecks)
         fired_seen["alarm"] = fired_seen["alarm"] or bool(name)
         phase = (verdict or {}).get("phase") or ("(stopped)" if fired_seen["alarm"] else "(idle)")
+        if args.spec == "closed_loop":
+            phase = "(no monitor)"
         says = f"!! {WHY.get(name, name)}" if name else (verdict or {}).get("verdict", "")
         truth = ("fell" if s.fell else "holding" if s.holding else "not holding") + \
             f", {ex.status}"
@@ -148,9 +155,10 @@ def main(argv=None) -> int:
     finally:
         for link in made:
             link.end()
+    said = ("executor reported " + rec["timing"]["executor"] if args.spec == "closed_loop"
+            else f"monitor's own conclusion: {rec['timing']['monitor_outcome']}")
     print(f"\nGround truth: {'DELIVERED' if rec['success'] else 'FAILED'} ({rec['cause']}) at "
-          f"{rec['elapsed_s']:.0f} s. Monitor's own conclusion: "
-          f"{rec['timing']['monitor_outcome']}")
+          f"{rec['elapsed_s']:.0f} s; {said}.")
     if view["viewer"] is not None:
         print("Close the window to exit.")
         while view["viewer"].is_running():

@@ -61,7 +61,8 @@ python sim/demo_e1b.py --fault clear                     # nothing goes wrong, n
 python sim/demo_e1b.py                                   # object dropped ~22 s; full spec alarms at the next tick
 python sim/demo_e1b.py --spec flat                       # same drop; flat spec only notices at the end (37 s)
 python sim/demo_e1b.py --fault grasp_fail --policy recover   # caught, re-planned, delivered
-python sim/demo_e1b.py --fault wrong_dropoff --spec closed_loop   # hand-coded checks: reports success, wrong place
+python sim/demo_e1b.py --fault drop --spec closed_loop            # hand-coded checks catch the fault they were written for
+python sim/demo_e1b.py --fault wrong_dropoff --spec closed_loop   # ...but report success at the wrong place, silently
 python sim/demo_e1b.py --fault wrong_dropoff             # full monitor: alarm when it lets go in the wrong place
 ```
 
