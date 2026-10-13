@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections import deque
 
 FAMILIES = ("clear", "cluttered", "grasp_fail", "drop", "skip_pickup", "object_moved",
             "stall", "push")
@@ -41,6 +42,14 @@ DWELL_S = 2.0                   # standing still for a grasp or a release
 #: monitor gets nothing else about the object: no gripper flag, no executor state.
 PERCEPTION_NOISE_M = 0.02
 PERCEPTION_MISS = 0.05
+
+#: The closed-loop executor's own "is it held" rule -- the same one the evaluator's
+#: `object_held` extractor applies, on the same perception.
+HELD_LIFT_MIN_M = 0.3
+HELD_REACH_M = 0.5
+CHECK_WINDOW = 3                # consecutive detections a check needs
+DELIVERED_M = 0.5
+MAX_RECHECKS = 4
 
 
 def perceive_object(sim, rng, *, noise_m: float = PERCEPTION_NOISE_M,
@@ -120,10 +129,25 @@ def generate(family: str, seed: int) -> dict:
 
 
 class CarryExecutor:
-    """The open-loop task sequence on top of the navigator."""
+    """The task sequence on top of the navigator: open loop by default.
 
-    def __init__(self, sim, nav, task: dict):
+    `closed_loop=True` is the engineering baseline E1b compares the monitor against: the
+    checks a careful developer writes into a behaviour tree, reading the same perception
+    the monitor gets (`observe`), with no monitor at all --
+      * while carrying, if CHECK_WINDOW consecutive detections say the object is not held,
+        go back for it (catches a failed grasp, a drop, a skipped pick-up);
+      * after putting it down, report success only once a detection shows it at the
+        drop-off and not held; otherwise go back for it.
+    A check re-plans with `replan()`, the same re-perception the monitor-triggered
+    recovery uses, at most `max_rechecks` times.
+    """
+
+    def __init__(self, sim, nav, task: dict, *, closed_loop: bool = False,
+                 max_rechecks: int = MAX_RECHECKS):
         self.sim, self.nav, self.task = sim, nav, task
+        self.closed_loop, self.max_rechecks = closed_loop, max_rechecks
+        self.rechecks: list[dict] = []
+        self._seen = deque(maxlen=CHECK_WINDOW)
         self.dropoff = tuple(task["dropoff"])
         self.status = "executing"
         self.fired: list[dict] = []
@@ -150,6 +174,25 @@ class CarryExecutor:
         self.nav.set_goal(*self.target, t)
         self.goal_changed = True
         self._dwell_from = None
+        self._seen.clear()                       # a check judges only what came after
+
+    def observe(self, seen, pose) -> None:
+        """One perception sample: `seen` = (x, y, z) of the object or None (missed), `pose`
+        = the robot's (x, y) from odometry. Only the closed-loop checks read it."""
+        if seen is None:
+            return
+        ox, oy, oz = seen
+        held = oz >= HELD_LIFT_MIN_M and math.hypot(ox - pose[0], oy - pose[1]) <= HELD_REACH_M
+        at_dropoff = math.hypot(ox - self.dropoff[0], oy - self.dropoff[1]) <= DELIVERED_M
+        self._seen.append((held, at_dropoff))
+
+    def _recheck(self, reason: str, t: float) -> bool:
+        """Re-plan on a failed check, if any re-plans are left."""
+        if len(self.rechecks) >= self.max_rechecks:
+            return False
+        self.rechecks.append({"reason": reason, "t": round(t, 3)})
+        self.replan(t)
+        return True
 
     def replan(self, t: float) -> None:
         """Re-perceive and re-plan: to the drop-off if the object is held, else to it."""
@@ -179,6 +222,11 @@ class CarryExecutor:
         if self.nav.status == "aborted":
             self.status = "aborted"
             return
+        full = len(self._seen) == CHECK_WINDOW
+        if self.closed_loop and self.state == "carry" and full \
+                and not any(held for held, _ in self._seen):
+            if self._recheck("not holding the object while carrying", t):
+                return
         if self.state in ("to_object", "carry") and self.nav.status == "succeeded":
             self.state = "grasp" if self.state == "to_object" else "place"
             self._dwell_from = t
@@ -193,9 +241,22 @@ class CarryExecutor:
             self._go("carry", self.dropoff, t)       # open loop: on to the drop-off
         elif self.state == "place" and t - self._dwell_from >= DWELL_S:
             sim.release()
-            self.state = "done"
-            self.status = "succeeded"                # the sequence finished
+            if self.closed_loop:
+                self.state, self._dwell_from = "verify", t
+                self._seen.clear()
+            else:
+                self.state = "done"
+                self.status = "succeeded"            # the sequence finished
+        elif self.state == "verify":
+            if self._seen:
+                held, at_dropoff = self._seen[-1]
+                if at_dropoff and not held:
+                    self.state, self.status = "done", "succeeded"
+                elif not self._recheck("object not at the drop-off after placing", t):
+                    self.state, self.status = "done", "succeeded"
+            elif t - self._dwell_from >= DWELL_S:     # nothing seen: report as open loop
+                self.state, self.status = "done", "succeeded"
 
     def command(self):
         """What the robot is told to do this period (stand still while dwelling)."""
-        return self.state in ("grasp", "place", "done")
+        return self.state in ("grasp", "place", "verify", "done")

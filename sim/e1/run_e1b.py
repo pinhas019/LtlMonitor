@@ -49,7 +49,12 @@ ARMS = {
     "flat": "formulas_g1_carry_flat.json",
     "flat_strict": "formulas_g1_carry_flat_strict.json",
     "ltl_only": "formulas_g1_carry_ltl.json",       # the LTL automata, no phase machine
+    # The engineering baseline: hand-coded checks in the executor, no monitor acting. A
+    # monitor still runs (on the flat spec) so the record has the same fields, but the arm
+    # is only ever run under `off`, so nothing it says reaches the robot.
+    "closed_loop": "formulas_g1_carry_flat.json",
 }
+CLOSED_LOOP_ARMS = ("closed_loop",)
 POLICIES = ("off", "detect", "recover")
 COMPLETION_GRACE = 2            # ticks for the monitor to see a reported completion
 
@@ -164,7 +169,7 @@ def play_episode(item: dict, sim, link) -> dict:
     if callable(link):
         link = link()
     nav = Navigator(scenario)
-    ex = CarryExecutor(sim, nav, task)
+    ex = CarryExecutor(sim, nav, task, closed_loop=arm in CLOSED_LOOP_ARMS)
     task_json = json.dumps({"dropoff_x": task["dropoff"][0], "dropoff_y": task["dropoff"][1]})
     link.begin(task_json)
 
@@ -206,6 +211,7 @@ def play_episode(item: dict, sim, link) -> dict:
             if seen is not None:
                 link.object(*seen)
             x, y, _, yaw = sim.reported_pose()
+            ex.observe(seen, (x, y))             # only a closed-loop executor reads it
             pts = None
             if sim.scan_available():
                 ranges = sim.ranges()
@@ -275,6 +281,7 @@ def play_episode(item: dict, sim, link) -> dict:
                 "object_to_dropoff_m": round(math.hypot(ox - task["dropoff"][0],
                                                         oy - task["dropoff"][1]), 3),
                 "fell": bool(sim.fell),
+                "executor_rechecks": ex.rechecks,
                 # What the monitor concluded, from the messages alone: its last verdict.
                 "monitor_outcome": {"terminal": verdict.get("terminal"),
                                     "verdict": verdict.get("verdict")},
@@ -326,6 +333,8 @@ def main(argv=None) -> int:
             task = generate(family, seed)
             for arm in args.arms:
                 for policy in args.policies:
+                    if arm in CLOSED_LOOP_ARMS and policy != "off":
+                        continue                 # its executor decides; nothing else acts
                     if f"{arm}-{policy}-{task['name']}" not in done:
                         items.append({"task": task, "arm": arm, "policy": policy,
                                       **perception})

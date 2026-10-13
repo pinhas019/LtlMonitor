@@ -378,6 +378,8 @@ def main(argv=None) -> int:
             task = generate(family, seed)
             for arm in args.arms:
                 for policy in args.policies:
+                    if arm in run_e1b.CLOSED_LOOP_ARMS and policy != "off":
+                        continue                 # its executor decides; nothing else acts
                     if f"{arm}-{policy}-{task['name']}" not in done:
                         work[arm].append({"task": task, "arm": arm, "policy": policy,
                                           **perception})
