@@ -112,16 +112,21 @@ def micromamba() -> Path:
     if exe.exists():
         return exe
     plat = conda_platform()
-    url = f"https://micro.mamba.pm/api/micromamba/{plat}/latest"
-    say(f"downloading micromamba for {plat}")
-    LTL.mkdir(parents=True, exist_ok=True)
-    archive = LTL / "micromamba.tar.bz2"
-    urllib.request.urlretrieve(url, archive)
-    with tarfile.open(archive, "r:bz2") as tar:
-        member = tar.getmember("bin/micromamba")
-        member.name = "bin/micromamba"
-        tar.extract(member, LTL)
-    archive.unlink()
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    # The official release binary on GitHub first; micro.mamba.pm (a tarball) as fallback.
+    binary = ("https://github.com/mamba-org/micromamba-releases/releases/latest/download/"
+              f"micromamba-{plat}")
+    try:
+        say(f"downloading micromamba for {plat}")
+        urllib.request.urlretrieve(binary, exe)
+    except Exception as exc:                                      # noqa: BLE001
+        say(f"GitHub download failed ({exc}); trying micro.mamba.pm")
+        archive = LTL / "micromamba.tar.bz2"
+        urllib.request.urlretrieve(f"https://micro.mamba.pm/api/micromamba/{plat}/latest",
+                                   archive)
+        with tarfile.open(archive, "r:bz2") as tar:
+            tar.extract(tar.getmember("bin/micromamba"), LTL)
+        archive.unlink()
     exe.chmod(0o755)
     return exe
 
