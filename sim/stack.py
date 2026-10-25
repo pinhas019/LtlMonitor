@@ -66,11 +66,13 @@ class Stack:
         self.finished: queue.Queue = queue.Queue()      # the state after each run
         self.requests: queue.Queue = queue.Queue()
         self.cancel = threading.Event()
+        self.paused = threading.Event()   # the presenter holds the run to explain a stage
         self.frame_cv = threading.Condition()
         self.frame, self.frame_no = None, 0
         self.lock = threading.Lock()
         self.state = {"stack": "starting", "run": None, "fields": {}, "log": [],
-                      "result": None, "error": None, "graph": {}}
+                      "result": None, "error": None, "graph": {}, "auto": None,
+                      "paused": False}
         self._snap, self._snap_ready = None, threading.Event()
         self.thread = threading.Thread(target=self._main, name="ros-stack", daemon=True)
         self.thread.start()
@@ -80,7 +82,16 @@ class Stack:
     # ----------------------------------------------------------------- public
     def submit(self, run: dict) -> None:
         self.cancel.set()                 # stop whatever is running
+        self.set_paused(False)
+        self._set(auto=None)              # not the previous run's automaton
         self.requests.put(run)
+
+    def set_paused(self, paused: bool) -> None:
+        if paused:
+            self.paused.set()
+        else:
+            self.paused.clear()
+        self._set(paused=paused)
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -132,6 +143,19 @@ class Stack:
             except ValueError:
                 pass
         node.create_subscription(String, api.OBSERVATION, on_obs, 10)
+        # The monitor's latched manifest: its spec, phases and every automaton it built,
+        # which the page draws and lights up from each verdict's states.
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        node.manifest = None
+
+        def on_manifest(msg):
+            try:
+                node.manifest = json.loads(msg.data)
+            except ValueError:
+                pass
+        node.create_subscription(String, api.MANIFEST, on_manifest, QoSProfile(
+            depth=1, reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL))
         ros_e1b._assert_domain_empty(node, self.domain)
         sim = G1Sim()
         self.logdir.mkdir(parents=True, exist_ok=True)
@@ -148,14 +172,18 @@ class Stack:
                 spec = run["spec"]
                 if spec != current:
                     self._set(stack="starting nodes", run=run, fields={}, log=[],
-                              result=None, error=None)
+                              result=None, error=None, auto=None)
                     self._stop(procs, node)
+                    node.manifest = None
                     procs = ros_e1b._launch_nodes(spec, self.domain, self.logdir)
                     ros_e1b._wait_ready(node)
+                    end = time.monotonic() + 15
+                    while node.manifest is None and time.monotonic() < end:
+                        node.exe.spin_once(timeout_sec=0.1)
                     current = spec
                     self._set(graph=self._graph(node))
                 self._set(stack="running", run=run, fields={}, log=[], result=None,
-                          error=None)
+                          error=None, auto=self._view(run, node, None, None, {}))
                 try:
                     rec = self._episode(run, sim, node, episode, run_e1b, ros_e1b)
                     from demo_common import result_line
@@ -186,6 +214,14 @@ class Stack:
             while time.monotonic() < end and node.count_publishers(api.VERDICT):
                 node.exe.spin_once(timeout_sec=0.2)
 
+    @staticmethod
+    def _view(run, node, verdict, observation, prev) -> dict:
+        from demo_common import NO_MONITOR
+        if run["spec"] in NO_MONITOR:
+            return {"none": True}
+        from stack_view import automata_view
+        return automata_view(node.manifest, verdict, observation, prev)
+
     def _graph(self, node) -> dict:
         end = time.monotonic() + 1.0
         while time.monotonic() < end:
@@ -206,11 +242,16 @@ class Stack:
         self._log(f"{task['name']}: {run['spec']} spec, policy {run['policy']}. Injected: "
                   + (", ".join(f["type"] for f in task["scenario"].get("faults", [])
                                + task.get("task_faults", [])) or "nothing"))
-        r = {"wall0": time.monotonic(), "last": 0.0}
+        r = {"wall0": time.monotonic(), "last": 0.0, "verdict": None, "prev": {}}
 
         def on_step(s):
             if self.cancel.is_set():
                 raise Cancelled
+            if self.paused.is_set():            # hold here; the clock does not advance
+                t0 = time.monotonic()
+                while self.paused.is_set() and not self.cancel.is_set():
+                    time.sleep(0.05)
+                r["wall0"] += time.monotonic() - t0
             now = time.monotonic()
             if self.fps > 0 and now - r["last"] >= 1.0 / self.fps:
                 r["last"] = now                  # a snapshot; the render thread draws it
@@ -227,8 +268,13 @@ class Stack:
             held = (node.observation.get("sensors") or {}).get("holding")
             f = tv.tick(seq, verdict, name, ex, s, held)
             self._log(f["line"])
+            if verdict:                         # the monitor is silent after a terminal
+                r["verdict"] = verdict
+            view = self._view(run, node, r["verdict"], node.observation, r["prev"])
+            if verdict and view and view.get("automata"):
+                r["prev"] = {a["name"]: a["current"] for a in view["automata"]}
             self._set(fields={k: f[k] for k in ("t", "phase", "held", "verdict", "alarm",
-                                                "truth")})
+                                                "truth")}, auto=view)
 
         link = ros_e1b.RosLink(node, episode=episode)
         return run_e1b.play_episode(item, sim, link, on_step=on_step, on_tick=on_tick)
@@ -302,21 +348,49 @@ select,input{font:inherit;padding:4px;border:1px solid var(--line);border-radius
 pre{margin:0;max-height:300px;overflow:auto;font:12px/1.4 ui-monospace,monospace;white-space:pre}
 h2{font-size:14px;margin:0 0 8px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
 .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.state{color:var(--mut)}
+.now{font-size:17px;line-height:1.45;margin:0 0 12px;padding:10px 12px;border-left:4px solid var(--acc);background:var(--bg);border-radius:6px}
+.now.bad{border-color:var(--bad)}.now.ok{border-color:#2f8f4e}
+.lbl{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin:12px 0 6px}
+.phases{display:flex;flex-wrap:wrap;align-items:stretch;gap:4px}
+.ph{border:1px solid var(--line);border-radius:8px;padding:6px 8px;min-width:96px;max-width:190px;font-size:13px;background:var(--bg)}
+.ph b{display:block;font-size:14px}.ph small{color:var(--mut);display:block;font-size:11px;line-height:1.3}
+.ph.cur{background:var(--acc);border-color:var(--acc);color:#fff}.ph.cur small{color:#e6eefc}
+.ph.done{opacity:.6}.ph.fault{background:var(--bad);border-color:var(--bad);color:#fff}.ph.fault small{color:#fde9e4}
+.ph.win{background:#2f8f4e;border-color:#2f8f4e;color:#fff}.ph.win small{color:#e2f3e8}
+.ph.broke{outline:3px solid var(--bad)}.arrow{align-self:center;color:var(--mut)}
+#aut{width:100%}#aut svg{display:block;margin:0 auto;height:auto}
+.pills span{display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:999px;font:12px ui-monospace,monospace;border:1px solid var(--line);color:var(--mut)}
+.pills span.t{background:var(--acc);border-color:var(--acc);color:#fff}.pills span.u{border-style:dashed}
+.chips span{display:inline-block;margin:2px 6px 2px 0;padding:3px 8px;border-radius:6px;font-size:12px;border:1px solid var(--line)}
+.chips span.v{background:var(--bad);color:#fff;border-color:var(--bad)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media (max-width:700px){.two{grid-template-columns:1fr}}
+#guards td{font-size:12px}#guards td:first-child{width:28%}
 </style></head><body>
 <header><h1>LTL skill monitor: fetch and deliver, live</h1>
 <p>MuJoCo G1 · evaluator and monitor as separate ROS 2 processes · the monitor sees only ROS messages; the last row is the simulator's ground truth, which it never sees.</p></header>
 <main>
 <div><img id="view" src="/stream" alt="live view of the robot">
-<div class="card" style="margin-top:12px"><h2>Tick log</h2><pre id="log"></pre></div></div>
+<div class="card" style="margin-top:12px" id="autocard"><h2>What the monitor is doing</h2>
+<p class="now" id="now">Pick a scenario.</p>
+<div id="autobody">
+<div class="lbl">Phase machine (from the generated spec)</div><div class="phases" id="phases"></div>
+<div class="lbl">LTL task automaton · <span id="fname" style="text-transform:none;font-family:ui-monospace,monospace"></span></div>
+<div id="aut" role="img" aria-label="task automaton"></div>
+<div class="two"><div><div class="lbl">Propositions this tick (from __OBS_TOPIC__)</div><div class="pills" id="props"></div>
+<div class="lbl">Safety automata</div><div class="chips" id="safety"></div></div>
+<div><div class="lbl">This phase's checks (from __VERDICT_TOPIC__)</div><table id="guards"></table></div></div>
+</div></div></div>
 <div style="display:flex;flex-direction:column;gap:12px">
 <div class="card"><h2>Scenarios</h2><div class="presets" id="presets"></div>
 <div class="row" style="margin-top:8px">
 <select id="fault"></select><select id="spec"></select><select id="policy"></select>
 <label>seed <input id="seed" type="number" value="0" min="0" max="999" style="width:64px"></label>
 <label>speed <input id="speed" type="number" value="2" min="0.5" max="20" step="0.5" style="width:64px"></label>
-<button class="go" onclick="go()">Run</button></div>
+<button class="go" onclick="go()">Run</button>
+<button class="go" id="pause" onclick="fetch('/pause',{method:'POST'})" style="background:var(--bg);color:var(--fg);border-color:var(--line)">Pause</button></div>
 <p class="state" id="state">starting...</p></div>
 <div class="card"><h2>Monitor</h2><table id="fields"></table><p id="result"></p></div>
+<div class="card"><h2>Tick log</h2><pre id="log"></pre></div>
 <div class="card"><h2>ROS 2 graph</h2><pre id="graph"></pre></div>
 </div></main>
 <script>
@@ -336,12 +410,64 @@ document.getElementById("fields").innerHTML=Object.entries(L).map(([k,n])=>`<tr>
 document.getElementById("result").textContent=s.result||"";
 const lg=document.getElementById("log");lg.textContent=s.log.join("\\n");lg.scrollTop=lg.scrollHeight;
 const g=s.graph;document.getElementById("graph").textContent=g.nodes?`ROS_DOMAIN_ID ${g.domain}\\nnodes:\\n  ${g.nodes.join("\\n  ")}\\ntopics:\\n  ${g.topics.join("\\n  ")}`:"";
-}catch(e){}setTimeout(poll,300)}poll();
+document.getElementById("pause").textContent=s.paused?"Resume":"Pause";
+if(s.paused)document.getElementById("state").textContent+=" · PAUSED";
+drawAuto(s.auto,s.fields);
+}catch(e){console.error(e)}setTimeout(poll,300)}poll();
+const esc=t=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let lastKey="";
+function drawAuto(a,f){
+const now=document.getElementById("now"),body=document.getElementById("autobody");
+if(!a){now.textContent="Pick a scenario.";now.className="now";body.style.display="none";return}
+if(a.none){now.textContent="No monitor acting in this run: only the executor's own hand-coded checks. (A monitor node still runs for the record, but nothing it says is shown or used.) Watch the truth row: when the checks miss a fault, nothing says so.";now.className="now";body.style.display="none";return}
+body.style.display="";
+let words=a.now;if(f&&f.alarm&&a.terminal!=="FAILURE")words+=` Alarm: ${f.alarm}.`;
+now.textContent=words;now.className="now"+(a.terminal==="FAILURE"||(f&&f.alarm)?" bad":a.success?" ok":"");
+const key=JSON.stringify([a.phase,a.terminal,a.automata.map(x=>[x.current,x.prev]),a.props.map(p=>p.value),a.guards.map(g=>g.value),a.safety.map(x=>x.status),a.seconds_left]);
+if(key===lastKey)return;lastKey=key;
+// phase machine
+const idx=a.phases.findIndex(p=>p.name===a.phase);
+let h="";a.phases.forEach((p,i)=>{let c="ph";
+if(a.success&&p.name==="Done")c+=" win";else if(i===idx&&a.terminal==="FAILURE")c+=" broke";else if(i===idx)c+=" cur";else if(i<idx)c+=" done";
+const sub=[p.budget!=null?`≤ ${p.budget} s`:"",p.invariant?`keep: ${p.invariant}`:"",p.exit?`next when: ${p.exit}`:""].filter(Boolean).map(x=>`<small>${esc(x)}</small>`).join("");
+h+=(i?'<span class="arrow">→</span>':"")+`<div class="${c}" title="${esc(p.description)}"><b>${i<idx&&a.terminal!=="FAILURE"?"✓ ":""}${esc(p.name)}</b>${sub}</div>`});
+h+=`<span class="arrow">⇢</span><div class="ph${a.terminal==="FAILURE"?" fault":""}" style="${a.terminal==="FAILURE"?"":"opacity:.45"}"><b>FAULT</b><small>${a.terminal==="FAILURE"?esc((a.fault||{}).name||""):"invariant broken / over budget / no progress"}</small></div>`;
+document.getElementById("phases").innerHTML=h;
+// task automaton
+const A=a.automata[0];document.getElementById("fname").textContent=A?A.formula||A.name:"";
+document.getElementById("aut").innerHTML=A?autSvg(A):"";
+document.getElementById("props").innerHTML=a.props.map(p=>`<span class="${p.value===true?"t":p.value==null?"u":""}" title="${esc(p.meaning)}">${esc(p.name)} ${p.value===true?"✓":p.value===false?"✗":"?"}</span>`).join("");
+document.getElementById("safety").innerHTML=a.safety.map(x=>`<span class="${x.status==="VIOLATED"?"v":""}" title="${esc(x.formula)}">${esc(x.name)}: ${esc(x.formula)} · ${x.status==="VIOLATED"?"VIOLATED":"ok"}</span>`).join("")||"<small>none</small>";
+document.getElementById("guards").innerHTML=a.guards.map(g=>`<tr><td>${esc(g.name.replace("_condition",""))}</td><td><code>${esc(g.expr)}</code></td><td>${g.value===true?"✓":g.value===false?'<b class="alarm">✗</b>':"·"}</td></tr>`).join("");
+}
+function wrap(t,n){const w=String(t).replace(/ ([|&]) /g," $1\\u00a0").split(" ");const out=[];let cur="";for(const x of w){if(cur&&(cur+" "+x).length>n){out.push(cur);cur=x}else cur=cur?cur+" "+x:x}if(cur)out.push(cur);return out}
+function autSvg(A){
+const st=[...A.states].sort((x,y)=>x.id-y.id),n=st.length,W=n>3?128:170,R=22,top=46,cy=top+R+8;
+const X=i=>W/2+i*W,pos={};st.forEach((s,i)=>pos[s.id]=i);
+const H=cy+R+100,acc="var(--acc)",line="var(--line)",mut="var(--mut)",fg="var(--fg)";
+let g=`<svg viewBox="0 0 ${W*n} ${H}" width="100%" style="max-width:${Math.round(W*n*1.35)}px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="${mut}"/></marker><marker id="ahA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="${acc}"/></marker></defs>`;
+for(const e of A.edges){const i=pos[e.from],j=pos[e.to];if(i==null||j==null)continue;const hot=A.prev!=null&&e.from===A.prev&&e.to===A.current&&A.prev!==A.current;
+const x1=X(i),x2=X(j),dx=(x2>x1?1:-1);let d;if(Math.abs(j-i)===1)d=`M${x1+dx*R},${cy} L${x2-dx*(R+2)},${cy}`;else{const hgt=Math.min(top-6,18+14*Math.abs(j-i));d=`M${x1+dx*R*0.7},${cy-R*0.7} C${x1+dx*20},${cy-R-hgt} ${x2-dx*20},${cy-R-hgt} ${x2-dx*R*0.7},${cy-R*0.75}`}
+g+=`<path d="${d}" fill="none" stroke="${hot?acc:line}" stroke-width="${hot?3.5:1.3}" marker-end="url(#${hot?"ahA":"ah"})"><title>${esc(e.label)}</title></path>`}
+st.forEach((s,i)=>{const x=X(i),cur=s.id===A.current;
+g+=`<path d="M${x-9},${cy-R+2} C${x-22},${cy-R-26} ${x+22},${cy-R-26} ${x+9},${cy-R+2}" fill="none" stroke="${cur?acc:line}" stroke-width="1.2" marker-end="url(#ah)"><title>${esc(s.stay)}</title></path>`;
+g+=`<circle cx="${x}" cy="${cy}" r="${R}" fill="${cur?acc:"var(--card)"}" stroke="${cur?acc:mut}" stroke-width="${cur?3:1.4}"/>`;
+if(s.accepting)g+=`<circle cx="${x}" cy="${cy}" r="${R-5}" fill="none" stroke="${cur?"#fff":mut}" stroke-width="1.2"/>`;
+if(s.id===A.initial)g+=`<text x="${x-R-4}" y="${cy-R-4}" font-size="11" fill="${mut}" text-anchor="end">start</text>`;
+g+=`<text x="${x}" y="${cy+6}" font-size="17" font-weight="700" text-anchor="middle" fill="${cur?"#fff":fg}">${s.id}</text>`;
+let y=cy+R+18;if(s.meaning){for(const l of wrap(s.meaning,17)){g+=`<text x="${x}" y="${y}" font-size="13.5" font-weight="${cur?700:500}" text-anchor="middle" fill="${cur?acc:fg}">${esc(l)}</text>`;y+=16}}
+if(s.stay&&s.stay!=="1"){g+=`<text x="${x}" y="${y}" font-size="11.5" text-anchor="middle" fill="${mut}">stays while</text>`;y+=14;
+for(const l of wrap(s.stay,Math.floor(W/7.3)).slice(0,3)){g+=`<text x="${x}" y="${y}" font-size="11.5" font-family="ui-monospace,monospace" text-anchor="middle" fill="${mut}">${esc(l)}</text>`;y+=14}}
+else if(s.accepting){g+=`<text x="${x}" y="${y}" font-size="11.5" text-anchor="middle" fill="${mut}">accepting: done</text>`}});
+return g+"</svg>"}
 </script></body></html>"""
 
 
 def make_handler(stack: Stack, options: dict):
-    page = PAGE.replace("__OPTIONS__", json.dumps(options)).encode("utf-8")
+    from skill_monitor.core import api
+    page = (PAGE.replace("__OPTIONS__", json.dumps(options))
+            .replace("__OBS_TOPIC__", api.OBSERVATION)
+            .replace("__VERDICT_TOPIC__", api.VERDICT)).encode("utf-8")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):        # quiet
@@ -386,6 +512,10 @@ def make_handler(stack: Stack, options: dict):
             return self._send(404, b"not found", "text/plain")
 
         def do_POST(self):
+            if self.path == "/pause":
+                stack.set_paused(not stack.paused.is_set())
+                return self._send(200, json.dumps({"paused": stack.paused.is_set()}).encode(),
+                                  "application/json")
             if self.path != "/run":
                 return self._send(404, b"not found", "text/plain")
             try:

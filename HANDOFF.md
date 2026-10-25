@@ -36,6 +36,10 @@ install: no GPU, display or ROS setup on the host.
   starts at once after that.
 - **Terminal only:** `python3 run.py --text -- --fault drop --spec flat`.
 
+**What to say at each stage: [docs/demo_script.md](docs/demo_script.md).** The page's
+"What the monitor is doing" card shows the phase machine and the LTL automaton live, with
+the current phase and state lit; Pause freezes a run to explain it.
+
 This is the demo for the meeting. Use the preset buttons in the page; their order is the
 order in §2. Everything below is the developer setup.
 

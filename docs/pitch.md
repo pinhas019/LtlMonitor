@@ -332,6 +332,10 @@ install: no GPU, display or ROS setup on the host.
   starts at once after that.
 - **Terminal only:** `python3 run.py --text -- --fault drop --spec flat`.
 
+The page's "What the monitor is doing" card draws the phase machine and the LTL task
+automaton the monitor published, with the current phase and state lit each tick. What to
+say at each stage of each preset: [demo_script.md](demo_script.md).
+
 **Developer setup** (tests, experiments, the native MuJoCo window): Linux or macOS (on
 Windows, inside WSL2). The monitor needs Spot, which comes from conda-forge, so the
 environment is a conda one (Miniforge or micromamba; `pip` alone cannot install Spot).
