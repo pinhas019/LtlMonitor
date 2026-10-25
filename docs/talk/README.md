@@ -13,4 +13,4 @@ fonts-noto-core`.
 
 The two bar charts come from `tools/charts.py` (values from `docs/e1b_ros/results.md`,
 produced by `sim/e1/summarize_e1.py`); the screenshots are from the live demo page
-(`python3 run.py`). Slide 9's times are one demo run, and it says so.
+(`python3 run.py`). Slide 11's times ("Inside one run") are one demo run, and it says so.
