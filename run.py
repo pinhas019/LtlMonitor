@@ -8,7 +8,7 @@
 With Docker installed, this runs the published image (ghcr.io/pinhas019/ltlmonitor-demo;
 built from ./Dockerfile if the pull fails). Without Docker, on Linux or macOS, the first
 run sets up a private environment in ./.ltl -- micromamba, ROS 2 Humble (RoboStack),
-Spot, MuJoCo and Unitree's G1 model (about 10 minutes, ~1 GB) -- and later runs start at
+Spot, MuJoCo and Unitree's G1 model (a few minutes on a fast network, ~2.5 GB) -- and later runs start at
 once. Windows without Docker is not supported: Spot has no Windows build.
 
 What starts: the evaluator and the monitor as their own ROS 2 processes, the simulated G1
@@ -143,6 +143,8 @@ def setup_local() -> Path:
         if subprocess.run([str(mm), "create", "-y", "-p", str(env), "-f",
                            str(ROOT / "environment.yml")], env=menv).returncode != 0:
             raise SystemExit("environment creation failed (see above)")
+        # The package cache is ~0.8 GB that nothing reads again.
+        subprocess.run([str(mm), "clean", "--all", "-y"], env=menv, capture_output=True)
         stamp.write_text(time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
     assets = LTL / "unitree"
     if not (assets / "LICENSE").exists():

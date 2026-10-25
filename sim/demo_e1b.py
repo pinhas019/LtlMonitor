@@ -55,6 +55,16 @@ def main(argv=None) -> int:
         print("The monitor needs Spot: conda install -c conda-forge spot  "
               "(or micromamba; see docs/pitch.md, 'Try it yourself').")
         return 2
+    import ros_stub
+    if ros_stub.real_ros_present():
+        # With ROS 2 installed the in-process stand-in cannot be used; the same run goes
+        # over DDS, the evaluator and the monitor as their own processes.
+        if not args.no_view:
+            print("ROS 2 is installed here, so this runs over ROS 2 in the terminal; for "
+                  "the live view use `python sim/stack.py` (a web page).")
+        import stack
+        return stack.main(["--text", "--fault", args.fault, "--spec", args.spec,
+                           "--policy", args.policy, "--seed", str(args.seed)])
     import run_e1
     run_e1._init_worker()               # the real Spot, then the stand-in ROS layer
     sim = run_e1._W["sim"]

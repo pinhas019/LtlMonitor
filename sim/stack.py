@@ -1,6 +1,7 @@
 """The whole stack in one process tree, shown in the browser.
 
     python sim/stack.py                     # then open http://localhost:8080
+    python sim/stack.py --text --fault drop --spec flat     # one run, in the terminal
 
 What runs, as in the E1b experiments over ROS 2:
   * the **evaluator** (`python -m skill_monitor.backend.evaluator_node`) and the **monitor**
@@ -58,8 +59,11 @@ class Stack:
     processes it starts (which die with the thread that started them) live as long as
     the stack does."""
 
-    def __init__(self, domain: int, logdir: Path, size=(800, 500), fps: float = 10.0):
+    def __init__(self, domain: int, logdir: Path, size=(800, 500), fps: float = 10.0,
+                 echo=None):
         self.domain, self.logdir, self.size, self.fps = domain, logdir, size, fps
+        self.echo = echo                  # also print the tick log (the --text mode)
+        self.finished: queue.Queue = queue.Queue()      # the state after each run
         self.requests: queue.Queue = queue.Queue()
         self.cancel = threading.Event()
         self.frame_cv = threading.Condition()
@@ -88,6 +92,8 @@ class Stack:
             self.state.update(kw)
 
     def _log(self, line: str):
+        if self.echo:
+            self.echo(line)
         with self.lock:
             self.state["log"].append(line)
             del self.state["log"][:-400]
@@ -98,6 +104,7 @@ class Stack:
         except Exception as exc:                                  # noqa: BLE001
             traceback.print_exc()
             self._set(stack="error", error=f"{type(exc).__name__}: {exc}")
+            self.finished.put(self.snapshot())
 
     def _serve_episodes(self):
         os.environ["ROS_DOMAIN_ID"] = str(self.domain)
@@ -135,6 +142,8 @@ class Stack:
                 run = self.requests.get()
                 while not self.requests.empty():            # only the latest request
                     run = self.requests.get()
+                if run is None:                             # shut down
+                    return
                 self.cancel.clear()
                 spec = run["spec"]
                 if spec != current:
@@ -157,6 +166,7 @@ class Stack:
                     traceback.print_exc()          # one bad run must not take the stack down
                     self._set(stack="ready", error=f"{type(exc).__name__}: {exc}")
                 episode += 1
+                self.finished.put(self.snapshot())
         finally:
             self._stop(procs, node)
             node.destroy_node()
@@ -407,6 +417,14 @@ def main(argv=None) -> int:
     parser.add_argument("--fps", type=float, default=8.0, help="rendered frames per second")
     parser.add_argument("--run", default=None,
                         help="start one preset at launch, e.g. 'drop,full,off'")
+    text = parser.add_argument_group("--text: one run in the terminal, no web page")
+    text.add_argument("--text", action="store_true")
+    text.add_argument("--fault", default="drop", choices=list(FAMILIES))
+    text.add_argument("--spec", default="full", choices=list(run_e1b.ARMS))
+    text.add_argument("--policy", default="off", choices=["off", "detect", "recover"])
+    text.add_argument("--seed", type=int, default=0)
+    text.add_argument("--speed", type=float, default=50.0,
+                      help="simulated seconds per wall second (the web page uses 2)")
     args = parser.parse_args(argv)
     if not 0 <= args.domain <= 101:
         parser.error("--domain must be 0..101 (ROS 2 domain IDs)")
@@ -414,6 +432,8 @@ def main(argv=None) -> int:
         print("G1SIM_ASSETS is not set: run sim/fetch_assets.sh DIR and export it "
               "(the Docker image and run.py do this).", file=sys.stderr)
         return 2
+    if args.text:
+        return run_text(args)
     options = {"fault": list(FAMILIES), "spec": list(run_e1b.ARMS),
                "policy": ["off", "detect", "recover"], "presets": PRESETS}
     stack = Stack(args.domain, Path(args.logdir), fps=args.fps)
@@ -430,6 +450,44 @@ def main(argv=None) -> int:
         server.serve_forever()
     except KeyboardInterrupt:
         print("stopping", flush=True)
+    return 0
+
+
+def run_text(args) -> int:
+    """The same stack -- evaluator and monitor as ROS 2 processes -- for one run, printing
+    the tick log. What sim/demo_e1b.py --no-view prints, but over DDS."""
+    from demo_common import HEADER
+    policy = "off" if args.spec == "closed_loop" else args.policy
+    print(f"starting the evaluator and the monitor ({args.spec} spec) as ROS 2 processes, "
+          f"ROS_DOMAIN_ID {args.domain}", flush=True)
+    stack = Stack(args.domain, Path(args.logdir), fps=0,
+                  echo=lambda line: print(line, flush=True))
+    first = [True]
+
+    def echo(line):                       # the run's first line describes it
+        print(line, flush=True)
+        if first[0]:
+            first[0] = False
+            print("\n" + HEADER, flush=True)
+    stack.echo = echo
+    stack.submit({"fault": args.fault, "spec": args.spec, "policy": policy,
+                  "seed": args.seed, "speed": args.speed})
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    try:
+        while True:
+            state = stack.finished.get()
+            if state.get("result") or state.get("error") or state["stack"] == "error":
+                break
+    except KeyboardInterrupt:
+        return 130
+    print(f"\nROS 2 graph: {', '.join(state['graph'].get('nodes', []))}")
+    if state.get("error"):
+        print(f"error: {state['error']}", file=sys.stderr)
+        return 1
+    print(state["result"], flush=True)
+    stack.requests.put(None)              # let the ROS thread stop its nodes
+    stack.thread.join(timeout=20)
     return 0
 
 

@@ -22,6 +22,10 @@ on:
       - .github/workflows/demo-image.yml
   workflow_dispatch:
 
+concurrency:                      # one publisher of :latest at a time; the newest push wins
+  group: demo-image-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write

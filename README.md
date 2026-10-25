@@ -8,6 +8,25 @@ going wrong.
 The engine is skill-agnostic: navigation and manipulation differ only in their
 generated spec, not in any code here.
 
+## Run the demo: one command
+
+```bash
+docker run --rm -p 8080:8080 ghcr.io/pinhas019/ltlmonitor-demo     # any machine with Docker
+python3 run.py                                                      # from a clone: Docker if present, else sets itself up once
+```
+
+Then open **http://localhost:8080**. In it: the simulated G1 doing fetch-and-deliver
+live, the monitor's phase, its inferred "held", verdict and alarms next to the
+simulator's ground truth, the ROS 2 graph, and one button per demo scenario.
+
+What runs, either way: the evaluator and the monitor as their own ROS 2 processes,
+talking over DDS, and the simulated robot and task as the driver node. Nothing else to
+install: no GPU, display or ROS setup on the host.
+- **`python3 run.py` without Docker** (Linux or macOS) sets up `./.ltl` on the first
+  run (micromamba, ROS 2 Humble, Spot, MuJoCo, the Unitree model; a few minutes, ~2.5 GB) and
+  starts at once after that.
+- **Terminal only:** `python3 run.py --text -- --fault drop --spec flat`.
+
 ## Start here
 
 | document | what it answers |
