@@ -1,0 +1,271 @@
+% A 10-minute talk, in plain words, for the supervisor meeting.
+% Build: cd docs/talk && pdflatex talk.tex && pdflatex talk.tex
+% Every number is from the E1 / E1b results (docs/e1/, docs/e1b_ros/results.md),
+% produced by sim/e1/summarize_e1.py; slide 9 is one demo run and says so.
+\documentclass[aspectratio=169,11pt]{beamer}
+\usetheme{default}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+
+\definecolor{ink}{HTML}{14213D}
+\definecolor{acc}{HTML}{1F5FAE}
+\definecolor{bad}{HTML}{B5503C}
+\definecolor{mut}{HTML}{5B6472}
+\definecolor{soft}{HTML}{EEF1F5}
+\setbeamercolor{normal text}{fg=ink}
+\setbeamercolor{frametitle}{fg=ink}
+\setbeamercolor{title}{fg=ink}
+\setbeamercolor{structure}{fg=acc}
+\setbeamerfont{frametitle}{size=\LARGE,series=\bfseries}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{itemize items}{\color{acc}\textbullet}
+\setbeamertemplate{footline}{\hfill\color{mut}\scriptsize\insertframenumber\,/\,\inserttotalframenumber\hspace{1.2em}\vspace{0.8em}}
+\setlength{\parskip}{0.4em}
+
+\newcommand{\key}[1]{\textbf{\color{acc}#1}}
+\newcommand{\pic}[1]{\par\vspace{0.3em}{\footnotesize\color{mut}#1}}
+
+\title{Watching a robot do its job}
+\subtitle{A monitor that knows the stages of a task}
+\author{Pinhas Nehoray Aburmad\\[0.2em]{\small Supervisor: Prof.\ Ronen Brafman}}
+\institute{Ben-Gurion University of the Negev}
+\date{Progress meeting, October 2026}
+
+\begin{document}
+
+% 1 -------------------------------------------------------------------------
+\begin{frame}[plain]
+\begin{columns}[c]
+\column{0.52\textwidth}
+{\Huge\bfseries Watching a robot\\[0.15em] do its job\par}
+\vspace{0.6em}
+{\Large\color{acc} A monitor that knows\\ the stages of a task\par}
+\vspace{1.6em}
+{\large Pinhas Nehoray Aburmad\par}
+{\color{mut} Supervisor: Prof.\ Ronen Brafman\\ Ben-Gurion University of the Negev\\ Progress meeting, October 2026\par}
+\column{0.46\textwidth}
+\includegraphics[width=\linewidth]{figures/robot_title.png}
+\pic{Unitree G1 humanoid in the MuJoCo simulator.}
+\end{columns}
+\end{frame}
+
+% 2 -------------------------------------------------------------------------
+\begin{frame}{The problem: robots fail silently}
+\begin{columns}[c]
+\column{0.48\textwidth}
+\begin{itemize}
+\item A robot does a task step by step: walk, pick up, carry, put down.
+\item Things go wrong: the box slips, the grasp misses, someone pushes it.
+\item Often the robot \textbf{does not know}. It reports ``done'' anyway.
+\item We want an \key{independent watcher} that notices, \key{as soon as it happens}.
+\end{itemize}
+\column{0.50\textwidth}
+\includegraphics[width=\linewidth]{figures/robot_false_success.png}
+\pic{The robot is at the drop-off (blue) and reports success.\\ The box (yellow) is still lying on the floor behind it.}
+\end{columns}
+\end{frame}
+
+% 3 -------------------------------------------------------------------------
+\begin{frame}{Background: what is a runtime monitor?}
+\begin{columns}[c]
+\column{0.55\textwidth}
+\begin{itemize}
+\item A \textbf{separate program} that only listens to the robot's messages: where it is, what its laser sees, where the box is.
+\item It checks \textbf{rules over time}, written in \key{LTL} (linear temporal logic):\\
+``\emph{always} stay upright'', ``\emph{eventually} deliver the box''.
+\item A tool (Spot) turns each rule into a small \textbf{state machine} (automaton). Every second the monitor takes one step.
+\item The catch: ``eventually'' \textbf{never fails early}. It can always still happen later.
+\end{itemize}
+\column{0.42\textwidth}
+\centering
+\includegraphics[width=0.95\linewidth]{figures/aut_fell_over.png}
+\pic{The rule ``always upright'' as an automaton: stay in 0 while upright; one fall moves to 1 (red) for good.}
+\end{columns}
+\end{frame}
+
+% 4 -------------------------------------------------------------------------
+\begin{frame}{Our idea: give the monitor the stages of the task}
+\begin{itemize}
+\item Split the task into \key{stages} (``progress states''), like the steps of a recipe.
+\item Each stage has its own rules: what must \textbf{stay true}, when it \textbf{ends}, and a \textbf{time limit}.
+\item Example: \emph{while carrying, the robot must hold the box.} A drop breaks this rule at once.
+\end{itemize}
+\vspace{0.6em}
+\centering
+\begin{tikzpicture}[
+  st/.style={draw=mut,rounded corners=4pt,fill=soft,minimum width=2.25cm,minimum height=1.25cm,align=center,font=\small},
+  hot/.style={st,draw=acc,line width=1.2pt,fill=acc!10},
+  arr/.style={-{Stealth[length=2.5mm]},thick,mut},
+  flt/.style={-{Stealth[length=2.2mm]},dashed,draw=bad}]
+\node[st] (w) {\textbf{Walk to box}\\ $\le$ 45 s};
+\node[st,right=0.45cm of w] (g) {\textbf{Grasp}\\ $\le$ 10 s};
+\node[hot,right=0.45cm of g] (c) {\textbf{Carry}\\ $\le$ 60 s\\ \color{acc}must hold box};
+\node[st,right=0.45cm of c] (p) {\textbf{Place}\\ $\le$ 10 s};
+\node[st,right=0.45cm of p,fill=green!8] (d) {\textbf{Done}};
+\node[st,below=0.75cm of c,fill=bad!12,draw=bad,minimum width=8cm] (f) {\color{bad}\textbf{Fault:} a rule broke, too slow, or no progress};
+\draw[arr] (w)--(g); \draw[arr] (g)--(c); \draw[arr] (c)--(p); \draw[arr] (p)--(d);
+\foreach \n in {w,g,c,p} \draw[flt] (\n.south) -- (f.north -| \n.south);
+\end{tikzpicture}
+\pic{The four stages the monitor generated for ``fetch and deliver''.}
+\end{frame}
+
+% 5 -------------------------------------------------------------------------
+\begin{frame}{Method: how the monitor is built and run}
+\centering
+\vspace{0.4em}
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+  bx/.style={draw=mut,rounded corners=4pt,fill=soft,minimum height=1.6cm,text width=2.6cm,align=center,font=\small},
+  arr/.style={-{Stealth[length=2.5mm]},thick,mut}]
+\node[bx] (t) {\textbf{Task in plain words}\\ ``walk to the box, pick it up, \ldots''};
+\node[bx,right=0.5cm of t] (l) {\textbf{An LLM}\\ writes the stages and the LTL rules};
+\node[bx,right=0.5cm of l] (s) {\textbf{Spot}\\ turns rules into automata};
+\node[bx,right=0.5cm of s,draw=acc,line width=1.2pt,fill=acc!10] (m) {\textbf{Monitor}\\ one step per second};
+\node[bx,right=0.5cm of m,fill=bad!10,draw=bad] (a) {\textbf{Alarm}\\ report, stop or re-plan};
+\node[bx,below=0.9cm of m,text width=4.2cm] (r) {\textbf{Robot messages} (ROS 2)\\ position, laser, box position};
+\draw[arr] (t)--(l); \draw[arr] (l)--(s); \draw[arr] (s)--(m); \draw[arr] (m)--(a); \draw[arr] (r)--(m);
+\end{tikzpicture}}
+\vspace{0.9em}
+\begin{itemize}
+\item The rules are generated from the description \textbf{in one try} and checked automatically.
+\item The monitor is its \textbf{own program}. It reads only sensor messages and \textbf{never asks the robot's planner} how it is doing.
+\end{itemize}
+\end{frame}
+
+% 6 -------------------------------------------------------------------------
+\begin{frame}{Test bed: a humanoid in a physics simulator}
+\begin{itemize}
+\item Unitree \textbf{G1} humanoid in \textbf{MuJoCo}, walking with Unitree's own controller.
+\item We \key{inject faults on purpose}: push, slip, weak legs, stall, dropped box, failed grasp, \ldots
+\item Each run is judged by the simulator's \textbf{true outcome}, which the monitor never sees.
+\item Main comparison: the monitor \key{with stages} vs.\ the same rules \key{without stages} (``flat'').
+\end{itemize}
+\vspace{0.4em}
+\centering
+\includegraphics[width=0.31\linewidth]{figures/frame_push_1_walking.png}\hfill
+\includegraphics[width=0.31\linewidth]{figures/frame_push_2_pushed.png}\hfill
+\includegraphics[width=0.31\linewidth]{figures/frame_push_3_down.png}
+\pic{Walking \quad$\rightarrow$\quad pushed \quad$\rightarrow$\quad on the floor: the monitor flags the fall within 1 second.}
+\end{frame}
+
+% 7 -------------------------------------------------------------------------
+\begin{frame}{Experiment 1: a short walk \hfill{\normalsize\color{mut}1800 runs}}
+\begin{columns}[c]
+\column{0.40\textwidth}
+\begin{itemize}
+\item Only two stages, and both check the same thing, so stages \textbf{added little}: stalls caught 15 vs.\ 14 of 15.
+\item What mattered was measuring \key{progress from the robot's own sensors}. Without that check: \textbf{1 of 15} stalls caught.
+\item The planner keeps saying ``moving'' while the robot is stuck.
+\end{itemize}
+\textbf{Lesson:} never trust the planner's own report.
+\column{0.58\textwidth}
+\includegraphics[width=\linewidth]{figures/stall.png}
+\pic{Top: the planner commands 0.5 m/s, the robot has stopped. Bottom: the monitor's own measure of progress drops, and it raises ``no progress''.}
+\end{columns}
+\end{frame}
+
+% 8 -------------------------------------------------------------------------
+\begin{frame}{Experiment 2: fetch and deliver \hfill{\normalsize\color{mut}3360 runs, over ROS 2}}
+\begin{columns}[c]
+\column{0.42\textwidth}
+\begin{itemize}
+\item Walk to a box, grasp, carry, place: \textbf{four stages}.
+\item Dropped box: alarm after \key{1 s} with stages, 14 s without.
+\item Failed grasp: \key{4 s} vs.\ 19 s.
+\item Earlier in \textbf{20 of 20} runs (p $= 1.9\cdot10^{-6}$).
+\item Without stages the monitor notices only when the robot claims ``done''.
+\end{itemize}
+\column{0.56\textwidth}
+\includegraphics[width=\linewidth]{figures/chart_latency.png}
+\pic{Median over 20 runs of each fault.}
+\end{columns}
+\end{frame}
+
+% 9 -------------------------------------------------------------------------
+\begin{frame}{Inside one run: the stage catches the drop}
+\begin{columns}[c]
+\column{0.40\textwidth}
+\begin{itemize}
+\item \textbf{17 s:} Carry starts. From now on the box must be held.
+\item \textbf{21.6 s:} the box drops.
+\item \textbf{\color{bad}22 s: alarm.} The Carry rule broke.
+\item The plain LTL automaton is \textbf{still in state 3} (``carrying''): ``eventually'' can still come true.
+\end{itemize}
+\textbf{The stage did the catching.}
+\column{0.58\textwidth}
+\includegraphics[width=\linewidth,height=0.68\textheight,keepaspectratio]{figures/automaton_card.png}
+\pic{From the live demo (one run): the stages on top, the LTL automaton below; current stage and state lit.}
+\end{columns}
+\end{frame}
+
+% 10 ------------------------------------------------------------------------
+\begin{frame}{Does catching early matter? Yes, when time matters}
+\begin{columns}[c]
+\column{0.40\textwidth}
+\begin{itemize}
+\item With no deadline, re-planning fixes things later: every monitor ends at about \textbf{82--84\%}.
+\item With a deadline: \key{64\%} delivered with stages vs.\ 36\% without. LTL alone: also 36\%.
+\item Hand-written checks inside the robot program: 81\%. But someone had to \textbf{foresee each fault and code it}.
+\end{itemize}
+\column{0.58\textwidth}
+\includegraphics[width=\linewidth]{figures/chart_deadline.png}
+\pic{160 runs per bar, all fault types.}
+\end{columns}
+\end{frame}
+
+% 11 ------------------------------------------------------------------------
+\begin{frame}{Faults nobody wrote a check for}
+\begin{columns}[c]
+\column{0.46\textwidth}
+\begin{itemize}
+\item New faults that the hand-written checks do not cover: the \textbf{wrong drop-off place}, and passing \textbf{too close} to walls.
+\item Hand-written checks alone: \textbf{\color{bad}40 of 40} failed \textbf{silently}.
+\item Adding our monitor: \key{0 of 40} silent, at no cost elsewhere.
+\item Missed by everyone: going slowly and detours that stay inside the time limits.
+\end{itemize}
+\column{0.52\textwidth}
+\includegraphics[width=\linewidth]{figures/robot_wrong_dropoff.png}
+\pic{The robot put the box down far from the drop-off pad (blue) and reports success. The monitor flags it.}
+\end{columns}
+\end{frame}
+
+% 12 ------------------------------------------------------------------------
+\begin{frame}{What we learned}
+\begin{columns}[c]
+\column{0.47\textwidth}
+\begin{itemize}
+\item \key{Stages catch a failure when it happens}, not at the end.
+\item Early detection \textbf{pays off when time matters}.
+\item The monitor is \textbf{generated from plain words}, needs no task code, and catches faults nobody planned for.
+\item Progress must come from the \textbf{robot's own sensors}, not the planner.
+\end{itemize}
+\column{0.51\textwidth}
+\includegraphics[width=\linewidth]{figures/demo_page.png}
+\pic{Everything runs live in one command:\\ \texttt{docker run --rm -p 8080:8080 ghcr.io/pinhas019/ltlmonitor-demo}}
+\end{columns}
+\end{frame}
+
+% 13 ------------------------------------------------------------------------
+\begin{frame}{To be done}
+\centering
+\vspace{0.6em}
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+  bx/.style={draw=mut,rounded corners=4pt,fill=soft,minimum height=3.1cm,text width=3.3cm,align=center,font=\small},
+  arr/.style={-{Stealth[length=2.5mm]},thick,mut}]
+\node[bx,draw=acc,fill=acc!10] (a) {\textbf{1. Fix what we found}\\[0.2em] time limits from normal runs; progress toward each stage's own goal; restart at the current stage};
+\node[bx,right=0.45cm of a] (b) {\textbf{2. Wider tests}\\[0.2em] more skills, several generated specs per skill, more faults};
+\node[bx,right=0.45cm of b] (c) {\textbf{3. Real G1 robot}\\[0.2em] record runs, calibrate, compare monitor on and off};
+\node[bx,right=0.45cm of c] (d) {\textbf{4. Paper 2}\\[0.2em] learned sensing from a camera, inside the stages};
+\draw[arr] (a)--(b); \draw[arr] (b)--(c); \draw[arr] (c)--(d);
+\end{tikzpicture}}
+\vspace{1em}
+\begin{itemize}
+\item \textbf{Honest limits today:} the grasp is simulated (the G1 model has no arms), the box position comes from a simple stand-in for a camera, and thresholds are not yet calibrated.
+\end{itemize}
+\end{frame}
+
+\end{document}
