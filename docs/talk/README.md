@@ -1,7 +1,7 @@
 # Supervisor talk (10 minutes, plain words)
 
-`talk.pdf` is the deck: 13 slides plus one backup (the POMDP view), one picture each: the problem, background (runtime
-monitoring, LTL), the idea (stages), the method, the test bed, Experiments 1 and 2, the
+`talk.pdf` is the deck: 14 slides, one picture each: the problem, background (runtime
+monitoring, LTL), the idea (stages), the model behind it (a POMDP), the method, the test bed, Experiments 1 and 2, the
 deadline and unanticipated-fault results, what we learned, and what is left to do.
 
 Rebuild (needs TeX Live with Beamer and TikZ; on Ubuntu: `texlive-latex-recommended
