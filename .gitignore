@@ -139,3 +139,4 @@ scratch/
 
 # Agent worktrees — transient, never committed
 .claude/worktrees/
+.ltl/

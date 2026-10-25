@@ -28,14 +28,7 @@ for p in (HERE / "e1", HERE / "e1" / "carry", HERE, HERE.parent, HERE.parent / "
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-WHY = {
-    "phase:Carry:invariant": "Carry phase broken: the object must be held while carrying",
-    "TIMEOUT": "phase took longer than its time budget",
-    "completion_unverified": "executor claims success; the monitor does not confirm it",
-    "terminal_failure": "no progress for 10 s: the task has failed",
-    "fell_over": "the robot fell",
-    "collision_imminent": "an obstacle is dangerously close",
-}
+from demo_common import HEADER, WHY, TickView, result_line  # noqa: E402,F401
 
 
 def main(argv=None) -> int:
@@ -75,7 +68,7 @@ def main(argv=None) -> int:
           f"({task['dropoff'][0]:.1f}, {task['dropoff'][1]:.1f}).")
     faults = task["scenario"].get("faults", []) + task.get("task_faults", [])
     print("Injected: " + (", ".join(f["type"] for f in faults) or "nothing") + "\n")
-    print(f"{'t':>4}  {'monitor phase':<14} {'held?':<6} {'monitor says':<60} truth (sim)")
+    print(HEADER)
 
     view = {"viewer": None, "wall0": None, "status": ("", "")}
 
@@ -107,39 +100,18 @@ def main(argv=None) -> int:
         if ahead > 0:
             time.sleep(ahead)
 
-    fired_seen = {"n": 0, "sim": set(), "alarm": False}
+    tv = TickView(task, args.spec)
 
     def on_tick(seq, verdict, name, ex, s, link):
-        for ev in ex.fired[fired_seen["n"]:]:
-            print(f"      ** fault injected: {ev['type']} at {ev['t']:.1f} s")
-        fired_seen["n"] = len(ex.fired)
-        for f in task["scenario"].get("faults", []):
-            if f["type"] not in fired_seen["sim"] and s.time >= f["onset_s"]:
-                fired_seen["sim"].add(f["type"])
-                print(f"      ** fault injected: {f['type']} at {f['onset_s']:.1f} s")
+        for line in tv.fault_events(ex, s):
+            print(f"      ** {line}")
         sensors = getattr(getattr(link, "monitor", None), "sensors", {}) or {}
-        held = sensors.get("holding")
-        if args.spec == "closed_loop":                  # no monitor in this deployment:
-            name, verdict, held = None, None, None      # show only the executor's checks
-            for c in ex.rechecks[fired_seen.setdefault("rc", 0):]:
-                name = f"executor check: {c['reason']}"
-            fired_seen["rc"] = len(ex.rechecks)
-        fired_seen["alarm"] = fired_seen["alarm"] or bool(name)
-        phase = (verdict or {}).get("phase") or ("(stopped)" if fired_seen["alarm"] else "(idle)")
-        if args.spec == "closed_loop":
-            phase = "(no monitor)"
-        says = f"!! {WHY.get(name, name)}" if name else (verdict or {}).get("verdict", "")
-        truth = ("fell" if s.fell else "holding" if s.holding else "not holding") + \
-            f", {ex.status}"
-        print(f"{seq:>3}s  {phase:<14} {('yes' if held else 'no') if held is not None else '?':<6}"
-              f" {says:<60} {truth}")
-        if name:
-            view["alarm"] = f"{seq} s: {WHY.get(name, name)}"
+        f = tv.tick(seq, verdict, name, ex, s, sensors.get("holding"))
+        print(f["line"])
         view["status"] = (
             "spec\nscenario\nt\nmonitor phase\nheld (inferred)\nverdict\nlast alarm",
-            f"{args.spec}\n{task['name']}\n{seq} s\n{phase}\n"
-            f"{('yes' if held else 'no') if held is not None else '?'}\n"
-            f"{(verdict or {}).get('verdict', '-')}\n{view.get('alarm', 'none')}")
+            f"{args.spec}\n{task['name']}\n{seq} s\n{f['phase']}\n{f['held']}\n"
+            f"{f['verdict']}\n{f['alarm'] or 'none'}")
         view["dirty"] = True
 
     made = []
@@ -155,10 +127,7 @@ def main(argv=None) -> int:
     finally:
         for link in made:
             link.end()
-    said = ("executor reported " + rec["timing"]["executor"] if args.spec == "closed_loop"
-            else f"monitor's own conclusion: {rec['timing']['monitor_outcome']}")
-    print(f"\nGround truth: {'DELIVERED' if rec['success'] else 'FAILED'} ({rec['cause']}) at "
-          f"{rec['elapsed_s']:.0f} s; {said}.")
+    print("\n" + result_line(rec, args.spec))
     if view["viewer"] is not None:
         print("Close the window to exit.")
         while view["viewer"].is_running():

@@ -47,3 +47,9 @@ output/
 scratch/
 *.jsonl
 *.bag
+*.jsonl.gz
+
+# run.py's local environment (micromamba, the conda env, the Unitree assets): about a
+# gigabyte, per machine, and the root Dockerfile builds its own. papers/ is PDFs.
+.ltl/
+papers/

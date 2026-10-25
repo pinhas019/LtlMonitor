@@ -1,0 +1,89 @@
+# The one-command demo image: build it, prove it works, publish it.
+#
+#   docker run --rm -p 8080:8080 ghcr.io/pinhas019/ltlmonitor-demo     # then http://localhost:8080
+#
+# The image is the whole stack (Dockerfile): the evaluator and the monitor as ROS 2
+# processes, the simulated G1 doing fetch-and-deliver, and the web view. It is pushed
+# only after the same image passed, inside the container: the simulator tests, the
+# terminal demo, and a full run of the stack driven over HTTP (tools/ci/stack_smoke.py).
+# The monitor's own suite runs in tests.yml, in its pinned image.
+name: demo image
+
+on:
+  push:
+    branches: [main, claude/monitoring-paper-submission-1ryynf]
+    paths:
+      - Dockerfile
+      - environment.yml
+      - run.py
+      - sim/**
+      - skill_monitor/**
+      - tools/ci/stack_smoke.py
+      - .github/workflows/demo-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/ltlmonitor-demo
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (amd64, loaded for testing)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ltl-demo:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Simulator tests inside the image
+        run: >
+          docker run --rm ltl-demo:ci
+          python -m pytest -q -p no:launch_testing -p no:launch_ros sim/tests
+
+      - name: Terminal demo inside the image
+        run: |
+          docker run --rm ltl-demo:ci python sim/demo_e1b.py --no-view | tee demo.txt
+          grep -q "Carry phase broken" demo.txt
+          grep -q "FAILED (false_arrival)" demo.txt
+
+      - name: The whole stack, driven over HTTP
+        run: |
+          docker run -d --name stack -p 8080:8080 ltl-demo:ci
+          python3 tools/ci/stack_smoke.py --url http://localhost:8080 --timeout 900
+      - name: Stack logs
+        if: always()
+        run: docker logs stack 2>&1 | tail -100 || true
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish (amd64 + arm64)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

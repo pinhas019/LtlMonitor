@@ -1,0 +1,18 @@
+# The demo stack's environment: ROS 2 Humble (RoboStack), Spot, MuJoCo, Pillow.
+# Used by the Dockerfile and by `python3 run.py`. linux-64, linux-aarch64, osx-64 and
+# osx-arm64 all resolve (Spot has no Windows build: use Docker there).
+channels:
+  - robostack-staging
+  - conda-forge
+dependencies:
+  - python=3.11
+  - ros-humble-ros-base
+  - spot
+  - pyyaml
+  - numpy<2
+  - pillow
+  - matplotlib
+  - pytest
+  - pip
+  - pip:
+      - mujoco==3.15.0
