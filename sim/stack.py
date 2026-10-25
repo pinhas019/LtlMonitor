@@ -325,7 +325,8 @@ for(const k of ["fault","spec","policy"]){const s=document.getElementById(k);for
 document.getElementById("spec").value="full";document.getElementById("fault").value="drop";
 const P=document.getElementById("presets");
 for(const [label,fault,spec,policy] of OPT.presets){const b=document.createElement("button");b.textContent=label;
-b.onclick=()=>run({fault,spec,policy,seed:+document.getElementById("seed").value,speed:+document.getElementById("speed").value});P.appendChild(b)}
+b.onclick=()=>{Object.assign(document.getElementById("fault"),{value:fault});Object.assign(document.getElementById("spec"),{value:spec});
+Object.assign(document.getElementById("policy"),{value:policy});go()};P.appendChild(b)}
 function go(){run({fault:fault.value,spec:spec.value,policy:policy.value,seed:+seed.value,speed:+speed.value})}
 function run(r){fetch("/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(r)})}
 const L={t:"t (s)",phase:"monitor phase",held:"held (inferred)",verdict:"verdict",alarm:"last alarm",truth:"truth (simulator)"};
