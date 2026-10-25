@@ -8,6 +8,8 @@
 \usepackage{lmodern}
 \usepackage{graphicx}
 \usepackage{tikz}
+\usepackage{array}
+\usepackage{appendixnumberbeamer}
 \usetikzlibrary{arrows.meta,positioning}
 
 \definecolor{ink}{HTML}{14213D}
@@ -266,6 +268,46 @@
 \begin{itemize}
 \item \textbf{Honest limits today:} the grasp is simulated (the G1 model has no arms), the box position comes from a simple stand-in for a camera, and thresholds are not yet calibrated.
 \end{itemize}
+\end{frame}
+
+\appendix
+% 14 (backup) ---------------------------------------------------------------
+\begin{frame}{Backup: the model behind it, a POMDP view}
+\begin{columns}[c]
+\column{0.56\textwidth}
+\vspace{0.6em}
+{\footnotesize
+\begin{tabular}{@{}l >{\raggedright\arraybackslash}p{0.85\linewidth}@{}}
+\textbf{S} & hidden: robot, box, \emph{true stage}, fault yes/no\\[0.1em]
+\textbf{O} & ROS 2 messages: position, laser, box position\\[0.1em]
+\textbf{Z} & noise, missed detections; ``held'' is inferred\\[0.1em]
+\textbf{T} & physics, the executor, unannounced faults\\[0.1em]
+\textbf{A} & continue, warn, stop, re-plan\\[0.25em]
+\textbf{R} & on time, early detection, few false alarms
+\end{tabular}}
+\vspace{0.3em}
+{\small
+\begin{itemize}\setlength{\itemsep}{0pt}
+\item \key{Stages make observations informative:} ``not holding'' is normal while walking, a fault while carrying.
+\item \key{Early knowledge pays only with a deadline} (value of information): 64\% vs.\ 36\%.
+\item Today: a \textbf{deterministic belief} and a fixed rule, not a solver. Next: a probabilistic belief and an optimised policy.
+\end{itemize}}
+\column{0.40\textwidth}
+\centering
+\resizebox{!}{0.74\textheight}{%
+\begin{tikzpicture}[
+  bx/.style={draw=mut,rounded corners=4pt,fill=soft,minimum height=1.25cm,text width=3.9cm,align=center,font=\small},
+  arr/.style={-{Stealth[length=2.5mm]},thick,mut}]
+\node[bx,fill=bad!8,draw=bad] (s) {\textbf{Hidden state}\\ true stage, box held?};
+\node[bx,below=0.8cm of s] (o) {\textbf{Observations}\\ noisy ROS 2 messages};
+\node[bx,below=0.8cm of o,draw=acc,line width=1.2pt,fill=acc!10] (b) {\textbf{Belief}\\ stage + automaton states};
+\node[bx,below=0.8cm of b] (a) {\textbf{Action}\\ continue / stop / re-plan};
+\draw[arr] (s)--node[right,font=\scriptsize,color=mut]{Z} (o);
+\draw[arr] (o)--node[right,font=\scriptsize,color=mut]{update} (b);
+\draw[arr] (b)--node[right,font=\scriptsize,color=mut]{policy} (a);
+\draw[arr] (a.west) -- ++(-0.6,0) |- node[pos=0.25,left,font=\scriptsize,color=mut]{T} (s.west);
+\end{tikzpicture}}
+\end{columns}
 \end{frame}
 
 \end{document}
