@@ -39,8 +39,10 @@ the left half to the audience; or just read it beforehand.
 - one to three bullets per main slide, with the same page numbers;
 - time checks;
 - the list of backup pages;
-- the ten mock-defence questions, two lines each. `python3 make_phone_notes.py` turns it into `phone_notes.html` (large
-text, a strip of page numbers to jump, light and dark, a "Keep screen on" button).
+- the ten mock-defence questions, two lines each.
+
+`python3 make_phone_notes.py` turns it into `phone_notes.html` (large text, a strip of page
+numbers to jump, light and dark, a "Keep screen on" button).
 
 Every citation reads `[article name, authors, year]` and the whole citation is a link to
 the article (DOI, PMLR or arXiv). Citations come from the verified entries in `papers/<slug>/bibtex.md`, plus Kaelbling,
