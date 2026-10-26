@@ -15,6 +15,21 @@ stream in detail, the model's predictions, unplanned failures, one run second by
 Experiment 1, the test beds, the demo, and the references. The footer counts only the 13 main
 pages.
 
+`talk.pptx` is the same talk as a PowerPoint file, to present from:
+- **13 visible slides.**
+- **Speaker notes** on every slide: short bullets, time checks, and "If asked" answers.
+- **14 hidden slides** at the end, never shown unless you jump to them:
+  - a divider;
+  - related work in detail;
+  - model predictions and unplanned failures;
+  - one run, second by second;
+  - Experiment 1, the test beds and the demo;
+  - references;
+  - a two-page committee Q&A cheat sheet.
+
+Diagrams and charts are native PowerPoint shapes and charts, so they can be edited.
+`make_pptx.js` builds it: `npm install pptxgenjs@3.12.0`, then `node make_pptx.js`.
+
 `formal_model.md` is the mathematical core: research question and hypotheses, definitions
 (labelling, spec, phase, monitor state and update, verdict), five properties with proofs and
 the measured number each predicts, the POMDP view with the value-of-information argument, and
