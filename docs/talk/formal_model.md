@@ -153,10 +153,12 @@ success when d is tight, and changes nothing when there is no deadline (d = ∞)
 | **H0** | falls caught in 1 tick by every version | as predicted (P5) |
 | Not predicted / missed | slow navigation and detours within the time limits; skipped pick-up; odometry drift | reported; fixes: calibrated limits, progress toward each stage's target |
 
-**How sure, in one sentence each** (no need to say more unless asked):
-- "Stages caught the drop first in 20 of 20 paired runs. If they made no difference, that
-  would be like 20 coin flips all landing heads: about 1 in a million (p = 1.9·10⁻⁶)."
-- "64% vs 36% of 160 runs each; a split that uneven by chance has p = 7·10⁻⁷."
+**How sure — say counts, not tests:** "Stages caught it earlier in all 20 paired runs, later in
+none; for success, 64% vs 36% over 160 runs per version."
+
+*Only if asked about statistics* (backup, don't volunteer):
+- 20 of 20 is like 20 coin flips all landing heads: about 1 in a million (p = 1.9·10⁻⁶).
+- 64% vs 36% of 160 runs each; a split that uneven by chance has p = 7·10⁻⁷.
 
 ---
 

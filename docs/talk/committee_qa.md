@@ -468,6 +468,20 @@ tick for a fixed spec; negligible at 1 Hz.
 
 ## 13. Statistics in plain words (only if asked)
 
+**First line of defence: don't use statistics at all.** The talk shows no p-values. If asked
+"how do you know it isn't chance?" or "these are deterministic seeded runs, what does a p-value
+mean?", say:
+
+> "I don't rest the claim on a statistical test. The claim comes from the model: a broken stage
+> rule fails at the tick it is seen (P1), stated before running anything. The runs check that
+> the implementation behaves as the model says. The seeds change the scenario and the sensor
+> noise, and stages caught the failure earlier in all 20 paired runs, later in none. For
+> success, which really is variable, 160 runs per version: 64% vs 36% with a deadline. I report
+> the counts."
+
+If pushed ("but is it significant?"): "Yes, clearly; the test is in my backup notes, happy to go
+through it after the talk." Then stop. Everything below is **backup, only if pushed**.
+
 **The one idea behind every test:** "If the stages made no difference, how likely is a result
 this lopsided just by luck?" That number is the **p-value**. Small means unlikely to be luck;
 the usual line is 0.05.

@@ -537,7 +537,7 @@
         \item Walk to a box, grasp it, carry it 2.5--4~m, place it. Evaluator and monitor ran as separate ROS~2 programs; the box position came from a noisy detector (2~cm noise, 5\% missed).
         \item Drop: caught 1~s after it happens, because Carry requires holding. Without stages the monitor only notices when the robot claims success, 14~s later.
         \item Failed grasp: caught by the Grasp stage's time limit (4~s vs.\ 19~s).
-        \item Paired by scenario: earlier in 20 of 20 runs, later in none (sign test $p = 1.9\cdot10^{-6}$).
+        \item Paired by scenario: stages caught it earlier in all 20 runs, later in none.
     \end{itemize}}
 \end{frame}
 
@@ -586,7 +586,7 @@
     \note{
     \begin{itemize}
         \item On an alarm the robot re-plans. With no deadline, every monitor ends at 82--84\% success, because a late re-plan still works.
-        \item With a deadline of 1.5$\times$ the normal time: 64\% with stages vs.\ 36\% without ($p = 7\cdot10^{-7}$). LTL alone (no stages): 36\%.
+        \item With a deadline of 1.5$\times$ the normal time: 64\% with stages vs.\ 36\% without. LTL alone (no stages): 36\%.
         \item This is the ``value of information'' from the POMDP slide: early knowledge pays only when time matters.
         \item Hand-written checks inside the robot program do better (81\%), because the program knows its own state. But an engineer had to foresee each failure: see the next slide.
     \end{itemize}}
@@ -633,7 +633,7 @@
     \note{
     \begin{itemize}
         \item Each hypothesis was written down before the run; the table is the answer to each.
-        \item ``How sure'': stages were first in 20 of 20 paired runs --- by chance that is like 20 coin flips all heads, about 1 in a million. The 64\% vs.\ 36\% split (160 runs each) has $p = 7\cdot10^{-7}$.
+        \item How sure: earlier in every one of the 20 paired runs; 64\% vs.\ 36\% over 160 runs per version. Report counts, not tests.
         \item The misses are reported, with their reason: progress means ``closer to where the robot walks'' and the time limits are generous. Fix: progress toward each stage's own target, calibrated limits.
     \end{itemize}}
 \end{frame}
