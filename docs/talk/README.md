@@ -9,6 +9,11 @@ LTL); the idea (stages); the mathematical model (a POMDP); the method; the first
 second; the deadline and unplanned-failure results; what we learned; and what is next
 (MiniGrid → MuJoCo → Isaac Sim → real G1).
 
+`committee_qa.md` is the full committee question bank: how to answer, cards to memorise
+(contribution, numbers, definitions), and ~70 likely questions across the whole work
+(method, formal soundness, the LLM, experiments and statistics, results, MiniGrid, future,
+curveballs) with short, honest answers.
+
 `related_work_prep.md` is the committee prep sheet: every cited paper in more depth (method,
 result, gap, how we differ), the platforms, all our numbers in one place, and likely
 committee questions with short, honest answers.
