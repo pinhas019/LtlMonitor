@@ -1,13 +1,19 @@
 # Supervisor talk (10 minutes, plain words)
 
-`talk.pdf` is "Skill progress monitoring": 18 slides plus a references page (Beamer, Madrid,
-14pt, Noto Sans), one picture each, in plain words: the problem; related work as **two
+`talk.pdf` is "Skill progress monitoring": 22 slides plus a references page (Beamer, Madrid,
+14pt, Noto Sans), one picture each, in plain words: the problem; the research question and hypotheses; related work as **two
 streams**, skill description (words, logic, demonstrations, code) and skill monitoring (state
 machines, LLMs, VLMs, hybrids), each with examples and what is missing; background (monitors,
-LTL); the idea (stages); the mathematical model (a POMDP); the method; the first test bed
+LTL); the idea (stages); the formal model; what the model predicts vs. what we measured; the
+decision view (a POMDP); the method; the first test bed
 (continuous MiniGrid + MAAOS); the MuJoCo G1 test bed; Experiments 1 and 2; one run second by
-second; the deadline and unplanned-failure results; what we learned; and what is next
+second; the deadline and unplanned-failure results; hypotheses and results; what we learned; and what is next
 (MiniGrid → MuJoCo → Isaac Sim → real G1).
+
+`formal_model.md` is the mathematical core: research question and hypotheses, definitions
+(labelling, spec, phase, monitor state and update, verdict), five properties with proofs and
+the measured number each predicts, the POMDP view with the value-of-information argument, and
+the assumptions.
 
 `committee_qa.md` is the full committee question bank: how to answer, cards to memorise
 (contribution, numbers, definitions), and ~70 likely questions across the whole work
@@ -38,4 +44,4 @@ fonts-noto-core`.
 
 The two bar charts come from `tools/charts.py` (values from `docs/e1b_ros/results.md`,
 produced by `sim/e1/summarize_e1.py`); the screenshots are from the live demo page
-(`python3 run.py`). Slide 14's times ("One run, second by second") are one demo run, and it says so.
+(`python3 run.py`). Slide 17's times ("One run, second by second") are one demo run, and it says so.

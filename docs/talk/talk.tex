@@ -90,6 +90,49 @@
     \end{itemize}}
 \end{frame}
 
+% --- RESEARCH QUESTION ---
+\begin{frame}{Research question}
+    \begin{columns}[c]
+        \begin{column}{0.52\textwidth}
+            \small
+            \key{RQ:} Does giving the monitor the \textbf{stages} of a skill make it catch failures earlier, and does that improve success?
+            \vspace{0.1cm}
+
+            \footnotesize
+            \begin{itemize}
+                \item \textbf{H1:} stage failures are caught \textbf{earlier}.
+                \item \textbf{H2:} with a deadline, \textbf{more tasks succeed}; without one, no change.
+                \item \textbf{H3:} it catches failures that \textbf{hand-written checks} miss.
+                \item \textbf{H0:} for failures every stage shares (falls), \textbf{no change}.
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.46\textwidth}
+            \centering
+            \resizebox{\linewidth}{!}{
+            \begin{tikzpicture}[x=1cm, y=1cm, font=\Large]
+                \draw[-{Stealth[length=3mm]}, very thick, mut] (0,0) -- (11,0) node[right, color=mut]{time};
+                \draw[line width=2pt, bad] (1,-0.35) -- (1,0.35);
+                \node[below, color=bad] at (1,-0.4) {fault};
+                \draw[line width=2pt, acc] (2,0) -- (2,1.3);
+                \node[above, color=acc] at (2,1.3) {alarm, stages};
+                \draw[line width=2pt, mut] (9.5,0) -- (9.5,1.3);
+                \node[above, color=mut] at (9.5,1.3) {alarm, no stages};
+                \draw[dashed, very thick, mut] (6,-1.1) -- (6,1.0);
+                \node[below, color=mut] at (6,-1.1) {deadline};
+            \end{tikzpicture}
+            }
+            \pic{Latency $\ell$ = time from the fault to the alarm. Re-planning must finish before the deadline.}
+        \end{column}
+    \end{columns}
+    \note{
+    \begin{itemize}
+        \item One question, three hypotheses, and one null expectation stated before running.
+        \item H1 is about \emph{when}: latency $\ell$ from fault to alarm. H2 is about \emph{outcome}: early only matters if there is a deadline (value of information). H3 is about \emph{coverage} beyond what engineers foresaw.
+        \item H0 is important for credibility: we say in advance where stages should \emph{not} help (falls break ``upright'', which every stage checks).
+        \item The picture: with stages the alarm comes right after the fault; without, only at the end --- after the deadline.
+    \end{itemize}}
+\end{frame}
+
 % --- TWO STREAMS ---
 \begin{frame}{Related work: two streams}
     \centering
@@ -233,8 +276,75 @@
     \end{itemize}}
 \end{frame}
 
+% --- FORMAL MODEL ---
+\begin{frame}{Formal model: specification and monitor}
+    \small
+    \setlength{\parskip}{2pt}
+    \begin{columns}[c]
+        \begin{column}{0.60\textwidth}
+            \textbf{Labelling:} each tick, $\sigma_t = L(o_t) \subseteq AP$ (true facts from sensors).
+
+            \textbf{Spec:} $S = \langle AP, \Phi, M, \Pi, \mathit{succ}, \mathit{fail} \rangle$: LTL task rules $\Phi$, safety rules $M$, phases $\Pi$.
+
+            \textbf{Phase:} $\pi_i = \langle \mathit{enter}_i, \mathit{inv}_i, \mathit{prog}_i, \mathit{exit}_i, T_i, k_i \rangle$.
+
+            \textbf{Monitor state:} $m = \langle i, c, v, q_1 \dots q_n \rangle$ (phase, time in it, progress misses, rule states).
+
+            \textbf{Update on} $\sigma$: every rule steps, $q_j \leftarrow \delta_j(q_j, \sigma)$; \textbf{fault} if $\sigma \not\models \mathit{inv}_i$ \emph{or} $c \ge T_i$ \emph{or} $v \ge k_i$; next phase if $\sigma \models \mathit{exit}_i$.
+        \end{column}
+        \begin{column}{0.38\textwidth}
+            \centering
+            \resizebox{\linewidth}{!}{
+            \begin{tikzpicture}[
+                bx/.style={draw=mut, rounded corners=4pt, fill=soft, minimum height=1.1cm, text width=5.2cm, align=center},
+                arr/.style={-{Stealth[length=2.5mm]}, thick, mut}]
+                \node[bx] (o) {robot messages $o_t$};
+                \node[bx, below=0.6cm of o] (l) {labels $\sigma_t = L(o_t)$};
+                \node[bx, below=0.6cm of l, draw=acc, line width=1.4pt, fill=acc!10] (m) {phase check: $\mathit{inv}_i$, $T_i$, $k_i$\\ rules: $q_j \leftarrow \delta_j(q_j, \sigma_t)$};
+                \node[bx, below=0.6cm of m, fill=bad!10, draw=bad] (v) {verdict $\to$ action};
+                \draw[arr] (o) -- (l); \draw[arr] (l) -- (m); \draw[arr] (m) -- (v);
+            \end{tikzpicture}
+            }
+            \pic{One tick of the monitor (1 Hz).}
+        \end{column}
+    \end{columns}
+    \note{
+    \begin{itemize}
+        \item Labelling $L$: the evaluator turns the messages of one second into true/false facts. Example: holding $\Leftrightarrow$ box $\ge$ 0.3~m high and $\le$ 0.5~m from the base.
+        \item Spec: the LLM writes all of it --- facts, LTL rules, safety rules, phases, end conditions.
+        \item Phase: enter, invariant (must hold all the time), progress, exit, time limit $T_i$, progress-miss limit $k_i$ (3 here).
+        \item Update, in words: every rule takes one step; the current phase fails if its invariant is false, or its time is up, or progress failed $k$ times; it moves on when its exit holds.
+        \item This is exactly what the code does (monitor\_node.py: ``hard invariant --- immediate failure''). Full write-up: formal\_model.md.
+    \end{itemize}}
+\end{frame}
+
+% --- WHAT THE MODEL PREDICTS ---
+\begin{frame}{Model predictions vs.\ measurements}
+    \footnotesize
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.40\linewidth} >{\raggedright\arraybackslash}p{0.28\linewidth} >{\raggedright\arraybackslash}p{0.26\linewidth}@{}}
+        \textbf{\small Property (from the model)} & \textbf{\small Prediction} & \textbf{\small Measured} \\ \hline
+        \textbf{P1.} A broken stage invariant fails \emph{at the tick it is seen}. & Drop caught at once. & \key{1 tick} (20/20) \\
+        \textbf{P2.} ``Eventually'' rules have \emph{no failing state}: any prefix can still succeed. & LTL alone misses the drop until the end. & LTL only: 14 ticks \\
+        \textbf{P3.} A stuck stage fails within its time limit $T_i$. & Failed grasp caught by Grasp's 10~s. & \key{4 ticks} vs.\ 19 \\
+        \textbf{P4.} ``Holding'' is false before the grasp, so it cannot be a whole-task rule. & Flat spec sees the drop only at the end. & Flat: 14 ticks \\
+        \textbf{P5.} Rules every stage shares are in the flat spec too. & Falls: no difference. & 1 tick, all versions \\ \hline
+    \end{tabular}
+    \vspace{0.15cm}
+
+    \small \key{The results follow from the model}; they are not a lucky outcome.
+    \note{
+    \begin{itemize}
+        \item P1 proof: the invariant is checked every tick and fails on the first false tick. Only the labelling delay remains.
+        \item P2 proof: for $\varphi = F(a_1 \wedge F(a_2 \wedge \dots))$, any finite run that has not finished can still be extended to finish (re-grasp, deliver). So no finite run is a ``bad prefix'' and LTL$_3$ says ``?'' (Bauer et al.\ 2011). Checked: Spot's automaton has 6 states, one accepting, no rejecting state.
+        \item P3 proof: the time-in-phase counter grows by one per tick and the phase fails at $T_i$.
+        \item P4: the flat invariant is ``upright and not too close'' --- no ``holding''.
+        \item Honest: phases do not add expressiveness; ``G(grasped $\to$ (holding U near\_dropoff))'' is LTL. The point is that stages make such rules explicit, so the LLM writes them.
+    \end{itemize}}
+\end{frame}
+
 % --- THE MATHEMATICAL MODEL ---
-\begin{frame}{The mathematical model: a POMDP}
+\begin{frame}{The decision view: a POMDP}
     \begin{columns}[c]
         \begin{column}{0.58\textwidth}
             \small
@@ -250,7 +360,9 @@
             \]
             \vspace{-0.2cm}
 
-            \key{Today:} the guess is one point (stage + rule states); the update is one rule step.
+            \key{Today:} a point belief (stage + rule states).
+
+            \key{Value of info:} on time needs $\ell + r \le d$.
         \end{column}
         \begin{column}{0.40\textwidth}
             \centering
@@ -503,6 +615,26 @@
         \item Wrong drop-off: the robot's own idea of the drop-off is wrong, so its own check passes and it reports success. Too close: the navigator grazes obstacles.
         \item Hand-written checks alone: 40 of 40 failed silently. Adding our monitor: 0 of 40, at no measurable cost elsewhere.
         \item Missed by everyone: running slowly, or a detour, that stay inside the time limits. Our prediction for ``slow'' was wrong, and we say so.
+    \end{itemize}}
+\end{frame}
+
+% --- HYPOTHESES -> RESULTS ---
+\begin{frame}{Hypotheses and results}
+    \small
+    \renewcommand{\arraystretch}{1.35}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.30\linewidth} >{\raggedright\arraybackslash}p{0.46\linewidth} >{\raggedright\arraybackslash}p{0.18\linewidth}@{}}
+        \textbf{Hypothesis} & \textbf{Result} & \textbf{Verdict} \\ \hline
+        H1: earlier detection & drop 1 vs.\ 14~s; grasp 4 vs.\ 19~s; 20/20 runs & \key{supported} \\
+        H2: more on-time success & 64\% vs.\ 36\% with a deadline; 82\% vs.\ 84\% without & \key{supported} \\
+        H3: beyond hand-written checks & 40/40 missed $\to$ 0/40 & \key{supported} \\
+        H0: falls unchanged & 1~s in every version & as predicted \\
+        Not caught & too slow, detours, skipped pick-up & {\color{bad}reported} \\ \hline
+    \end{tabular}
+    \note{
+    \begin{itemize}
+        \item Each hypothesis was written down before the run; the table is the answer to each.
+        \item ``How sure'': stages were first in 20 of 20 paired runs --- by chance that is like 20 coin flips all heads, about 1 in a million. The 64\% vs.\ 36\% split (160 runs each) has $p = 7\cdot10^{-7}$.
+        \item The misses are reported, with their reason: progress means ``closer to where the robot walks'' and the time limits are generous. Fix: progress toward each stage's own target, calibrated limits.
     \end{itemize}}
 \end{frame}
 

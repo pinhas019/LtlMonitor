@@ -411,3 +411,89 @@ that tells you *which step* went wrong and *when* — not a score.
 The problem is a POMDP; the monitor today is a deterministic approximation: the belief is a
 single point (stage + automaton states), the update is one automaton step, the policy a fixed
 rule. Adding probabilities is Paper 2.
+
+---
+
+## 12. Attacks on the formal model (see `formal_model.md` for the full write-up)
+
+**Q: State your model formally.**
+Each tick, a labelling L maps the robot's messages to the set of true propositions σₜ ⊆ AP.
+The spec is S = ⟨AP, Φ, M, Π, succ, fail⟩: LTL task rules, safety rules, phases, end
+conditions. A phase is ⟨enter, inv, prog, exit, T, k⟩. The monitor state is ⟨phase i, time in
+phase c, progress misses v, automaton states q⟩; on each σ every automaton steps, and the phase
+faults if its invariant is false, or c ≥ T, or v ≥ k, and advances when its exit holds.
+
+**Q: What does the model guarantee?**
+Four properties, each a few lines from the definitions:
+P1, a broken stage invariant is reported at the tick it is observed;
+P2, the ordered "eventually" task rule can never fail on a finite run (any unfinished run can
+still finish), so LTL alone cannot catch a mid-task failure;
+P3, a stuck stage fails within its time limit;
+P4, the flat spec cannot contain "holding", because holding is false before the grasp.
+Each one predicted a measured number before we looked: 1 tick; LTL-only 14 ticks; 4 ticks;
+flat 14 ticks.
+
+**Q: Prove P2.**
+φ = F(a₁ ∧ F(a₂ ∧ … F aₖ)). Take any finite run u that has not satisfied φ. Extend u with a
+continuation in which a₁ … aₖ become true in order (re-grasp, deliver). The extension satisfies
+φ, so u is not a bad prefix; LTL₃ gives "?" until φ is satisfied. Spot's automaton confirms it:
+6 states, one accepting, no rejecting state.
+
+**Q: Phases are just syntactic sugar for LTL.**
+In expressiveness, yes, and I say so: G(grasped → (holding U near_dropoff)) is LTL, and time
+limits fit a timed logic. The claim is not expressiveness. It is that organising the spec by
+stages makes these *conditional* rules explicit, so a language model writes them; the flat spec
+generated from the same description did not contain them, and that is exactly the difference
+we measured.
+
+**Q: P1 assumes perfect labels. With real perception it breaks.**
+P1 is about the monitor: given the labels, detection is immediate. Wrong labels give wrong
+verdicts — that is the grounding problem, and it is the subject of Paper 2. Today we model it
+partly: 2 cm noise and 5% missed detections, with a missed detection keeping the last value.
+
+**Q: Your "belief" isn't Bayesian; the POMDP is decorative.**
+The POMDP defines the problem; the monitor is a deterministic belief filter. If the labels are
+correct and stage changes are determined by the labels, the belief over (stage, rule states) is
+a point mass and our update *is* the exact one. With noisy labels it is an approximation, and
+the policy is a fixed rule rather than optimised. The POMDP is also where the deadline result
+comes from: on-time success needs ℓ + r ≤ d, so lowering ℓ only matters when d is tight —
+which is the 64% vs 36% (deadline) vs 82% vs 84% (no deadline) pattern.
+
+**Q: What is the time complexity per tick?**
+One automaton step per rule (a table lookup over a small automaton: 6 states for the task rule,
+2 per safety rule) plus evaluating a few Boolean formulas for the current phase. Constant per
+tick for a fixed spec; negligible at 1 Hz.
+
+---
+
+## 13. Statistics in plain words (only if asked)
+
+**The one idea behind every test:** "If the stages made no difference, how likely is a result
+this lopsided just by luck?" That number is the **p-value**. Small means unlikely to be luck;
+the usual line is 0.05.
+
+**Sign test — "who caught it first?"** Same 20 scenarios, run with and without stages; in
+each pair, which caught the drop first? Stages won 20 of 20. With no real difference each pair
+is a coin flip; 20 heads in a row is (1/2)²⁰ ≈ 1 in a million, ×2 for "either version could
+win" = **1.9·10⁻⁶** — exactly our number. *Paired* because both versions face the same scenario,
+so its luck cancels.
+
+**Fisher's exact test — "is one success rate really higher?"** Put the counts in a 2×2 table
+(delivered / not × with / without stages) and ask how likely so uneven a split is if stages
+didn't matter. "Exact" = it counts every possible split; right for small numbers.
+64% vs 36% → p = 7·10⁻⁷ (real). Stall recovery 6/20 vs 9/20 → p = 0.51 (could be luck: we
+claim nothing). 132 vs 136 of 160 → p = 0.65 ("no measurable cost").
+
+**Wilson interval — an error bar for a percentage.** 20/20 successes does not mean exactly
+100%; the true rate is plausibly 84–100%. Better than "± x%" near 0% or 100%.
+
+**Size vs. sureness.** The numbers (1 s vs 14 s; 64% vs 36%) say *how big*; p says *how sure*.
+
+**If asked:**
+- *Why these tests?* "Our outcomes are success counts and paired runs: Fisher for counts (exact
+  for small samples), the sign test for pairs (count who won each pair), Wilson for error bars."
+- *Why 20 seeds?* "Enough to see large effects like ours clearly; small effects, like the stall
+  case, we cannot resolve, and we say so."
+- *Did you correct for many comparisons?* "Our key p-values (1.9·10⁻⁶, 7·10⁻⁷) stay significant
+  under any reasonable correction: even 0.05 split over 50 tests is 0.001."
+- *"Not significant" means no effect?* "No — it means not shown with 20 runs."
