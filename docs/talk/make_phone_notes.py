@@ -93,7 +93,7 @@ def section_id(title):
     if m:
         k = m.group(1)
         return ("s" + k) if k.isdigit() else k.lower(), k
-    return "start", None
+    return ("start" if title.startswith("Before") else title.split()[0].lower()), None
 
 
 def build(md):
@@ -128,7 +128,7 @@ def build(md):
             label = title.split(" · ", 1)[1] if key else title
             num = f'<span class="num">{key}</span>' if key else ""
             out.append(f'<section id="{sid}"><h2>{num}<span>{inline(label)}</span></h2>')
-            chips.append((sid, key or "Start"))
+            chips.append((sid, key or sid.capitalize()))
             in_section = True
             continue
         if line.startswith("### "):

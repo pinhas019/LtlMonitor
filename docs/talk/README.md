@@ -1,14 +1,19 @@
 # Supervisor talk (10 minutes, plain words)
 
-`talk.pdf` is "Skill progress monitoring": 22 slides plus a references page (Beamer, Madrid,
-14pt, Noto Sans), one picture each, in plain words: the problem; the research question and hypotheses; related work as **two
-streams**, skill description (words, logic, demonstrations, code) and skill monitoring (state
-machines, LLMs, VLMs, hybrids), each with examples and what is missing; background (monitors,
-LTL); the idea (stages); the formal model; what the model predicts vs. what we measured; the
-decision view (a POMDP); the method; the first test bed
-(continuous MiniGrid + MAAOS); the MuJoCo G1 test bed; Experiments 1 and 2; one run second by
-second; the deadline and unplanned-failure results; hypotheses and results; what we learned; and what is next
-(MiniGrid → MuJoCo → Isaac Sim → real G1).
+`talk.pdf` is "Skill progress monitoring", a 10–12 minute talk: 13 main pages (Beamer, Madrid,
+14pt, Noto Sans) in plain words. The main pages cover:
+- the problem, and the research question and hypotheses;
+- related work as **two streams**: skill description and skill monitoring;
+- background (monitors, LTL) and the idea (stages);
+- the formal model and the decision view (a POMDP);
+- the method, and the fetch-and-deliver experiment;
+- whether catching early matters, hypotheses and results, and what is next (MiniGrid → MuJoCo →
+  Isaac Sim → real G1).
+
+After the main talk come **backup slides** for questions (from PDF page 15): each related-work
+stream in detail, the model's predictions, unplanned failures, one run second by second,
+Experiment 1, the test beds, the demo, and the references. The footer counts only the 13 main
+pages.
 
 `formal_model.md` is the mathematical core: research question and hypotheses, definitions
 (labelling, spec, phase, monitor state and update, verdict), five properties with proofs and
@@ -29,10 +34,12 @@ and its notes on the right (more detail on every cited paper, what to say, where
 number comes from). Present from it with a two-screen viewer such as `pdfpc`, which shows
 the left half to the audience; or just read it beforehand.
 
-`phone_notes.md` is the version to keep on a phone while presenting `talk.pdf`: one short
-block of bullets per PDF page (same numbers), an "If asked" pointer where a committee question
-fits, a card of rules and numbers up front, and the ten mock-defence questions with short
-answers at the end. `python3 make_phone_notes.py` turns it into `phone_notes.html` (large
+`phone_notes.md` is what to keep on a phone while presenting `talk.pdf`. It has:
+- a card of rules and numbers up front;
+- one to three bullets per main slide, with the same page numbers;
+- time checks;
+- the list of backup pages;
+- the ten mock-defence questions, two lines each. `python3 make_phone_notes.py` turns it into `phone_notes.html` (large
 text, a strip of page numbers to jump, light and dark, a "Keep screen on" button).
 
 Every citation reads `[article name, authors, year]` and the whole citation is a link to

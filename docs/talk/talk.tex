@@ -30,6 +30,7 @@
 
 % --- THIS TALK ---
 \usepackage{array}
+\usepackage{appendixnumberbeamer} % the page total counts only the main talk
 \definecolor{acc}{HTML}{1F5FAE}
 \definecolor{bad}{HTML}{B5503C}
 \definecolor{mut}{HTML}{5B6472}
@@ -166,51 +167,7 @@
         \item The field moves in two streams. (1) \textbf{How do we describe a skill?} In words, in logic, by showing videos or demonstrations, or in code. (2) \textbf{How do we watch the skill run} using that description? With state machines (formal), with an LLM that reasons in text, with a vision model trained on failures, or a mix.
         \item Most papers improve one stream: better translation from words to logic, or a better failure detector.
         \item Our path (blue): describe the skill in plain words; an LLM writes LTL rules \emph{and} the stages; the monitor runs them as state machines on the robot's own sensors. So the description \emph{is} the monitor.
-        \item Next two slides: each stream, with examples and what each way is missing. Details: prep sheet \S2--3.
-    \end{itemize}}
-\end{frame}
-
-% --- STREAM 1 ---
-\begin{frame}{Stream 1: describing a skill}
-    \scriptsize
-    \renewcommand{\arraystretch}{1.2}
-    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.16\linewidth} >{\raggedright\arraybackslash}p{0.50\linewidth} >{\raggedright\arraybackslash}p{0.27\linewidth}@{}}
-        \textbf{\small Way} & \textbf{\small Examples} & \textbf{\small\color{bad}What is missing} \\ \hline
-        Natural language & {\tiny \paper{https://proceedings.mlr.press/v229/liu23d.html}{Grounding Complex Natural Language Commands for Temporal Tasks in Unseen Environments}{Liu et al.}{2023}\newline \paper{https://doi.org/10.1007/978-3-031-37703-7_18}{nl2spec: Interactively Translating Unstructured Natural Language to Temporal Logics with LLMs}{Cosler et al.}{2023}\newline \paper{https://arxiv.org/abs/2305.07766}{NL2TL: Transforming Natural Languages to Temporal Logics using LLMs}{Chen et al.}{2023}\newline \paper{https://doi.org/10.1609/aaai.v37i13.27068}{NL2LTL: A Python Package for Converting Natural Language Instructions to LTL Formulas}{Fuggitti, Chakraborti}{2023}\newline \paper{https://arxiv.org/abs/2512.16770}{GinSign: Grounding Natural Language Into System Signatures for Temporal Logic Translation}{English et al.}{2025}} & Made for planning or writing specs; no stages; words must be tied to sensors \\
-        Formal logic (LTL, STL) & {\tiny \paper{https://doi.org/10.1145/2000799.2000800}{Runtime Verification for LTL and TLTL}{Bauer, Leucker, Schallhart}{2011}\newline \paper{https://doi.org/10.1007/s10009-023-00720-3}{RTAMT: Runtime Robustness Monitors with Application to CPS and Robotics}{Yamaguchi, Hoxha, Ničković}{2024}} & An expert writes every rule; flat rules, no stages \\
-        Videos / demos & {\tiny \paper{https://proceedings.neurips.cc/paper_files/paper/2018/hash/74934548253bcab8490ebd74afed7031-Abstract.html}{Learning Task Specifications from Demonstrations}{Vazquez-Chanlatte et al.}{2018}\newline \paper{https://arxiv.org/abs/2310.07899}{RoboCLIP: One Demonstration is Enough to Learn Robot Policies}{Sontakke et al.}{2023}} & Need examples; the result is hard to read or edit \\
-        Hand-written code & {\tiny Our baseline: checks written inside the robot program (Experiment 2)} & Someone must foresee every failure \\ \hline
-    \end{tabular}
-    \note{
-    \begin{itemize}
-        \item \textbf{Natural language $\to$ logic.} Lang2LTL (CoRL 2023): route commands to LTL, GPT-4 finds the places, a small T5 writes the formula; works in new cities. nl2spec (CAV 2023): LLM translation with sub-translations a human can fix (16/36 alone, 31/36 with a human). NL2TL (EMNLP 2023): lifted translation with a fine-tuned T5, 28k pairs. NL2LTL (AAAI 2023 demo): picks one of a few fixed patterns; a demo paper, no benchmark of its own. GinSign (2025): grounds the placeholder words to a real system's signature; 100\% predicate F1 on its three domains. All target planning or spec writing; none adds stages or watches a running robot.
-        \item \textbf{Formal logic by experts.} LTL (Bauer et al.) and STL with robustness (RTAMT). Precise, but someone must write every rule, and the rules are flat.
-        \item \textbf{Videos / demonstrations.} Vazquez-Chanlatte et al. (NeurIPS 2018) infer a logical specification from demonstrations (maximum-entropy likelihood, search over candidates). RoboCLIP (NeurIPS 2023) uses one video or text description and a pretrained video-language model as a reward; 2--3$\times$ better zero-shot than other imitation methods. They need examples, and the result is hard to read or edit.
-        \item \textbf{Code.} Our hand-written checks baseline: strong on what was foreseen (81\% on time), silent on what was not (40/40). Prep sheet \S2.
-    \end{itemize}}
-\end{frame}
-
-% --- STREAM 2 ---
-\begin{frame}{Stream 2: monitoring a skill}
-    \scriptsize
-    \renewcommand{\arraystretch}{1.2}
-    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.16\linewidth} >{\raggedright\arraybackslash}p{0.50\linewidth} >{\raggedright\arraybackslash}p{0.27\linewidth}@{}}
-        \textbf{\small Way} & \textbf{\small Examples} & \textbf{\small\color{bad}What is missing} \\ \hline
-        State machines & {\tiny \paper{https://doi.org/10.1145/2000799.2000800}{Runtime Verification for LTL and TLTL}{Bauer, Leucker, Schallhart}{2011}\newline \paper{https://doi.org/10.1007/978-3-030-63486-5_40}{ROSMonitoring: A Runtime Verification Framework for ROS}{Ferrando et al.}{2020}\newline \paper{https://doi.org/10.1007/s10009-023-00720-3}{RTAMT: Runtime Robustness Monitors with Application to CPS and Robotics}{Yamaguchi, Hoxha, Ničković}{2024}\newline \paper{https://arxiv.org/abs/2604.22384}{Reelay: Online Temporal Logic Monitoring Framework}{Ulus}{2026}\newline \paper{https://doi.org/10.1007/978-3-642-29860-8_15}{Runtime Verification with State Estimation}{Stoller et al.}{2011}} & No stages: ``eventually'' waits to the end; rules by hand \\
-        LLM reasoning & {\tiny \paper{https://proceedings.mlr.press/v229/liu23g.html}{REFLECT: Summarizing Robot Experiences for Failure Explanation and Correction}{Liu, Bahety, Song}{2023}} & Slow; can be wrong; says ``wrong'', not ``where'' \\
-        VLM / learned & {\tiny \paper{https://proceedings.iclr.cc/paper_files/paper/2025/hash/70a06501001e1820fd1eb9ee821302d2-Abstract-Conference.html}{AHA: A Vision-Language-Model for Detecting and Reasoning Over Failures in Robotic Manipulation}{Duan et al.}{2025}\newline \paper{https://arxiv.org/abs/2510.01642}{FailSafe: Reasoning and Recovery from Failures in VLA Models}{Lin et al.}{2025}\newline \paper{https://arxiv.org/abs/2606.23085}{Foresight: Failure Detection for Long-Horizon Robotic Manipulation}{Zhang et al.}{2026}} & Need training data; black box \\
-        Hybrid & {\tiny \paper{https://arxiv.org/abs/2605.12651}{Runtime Monitoring of Perception-Based Autonomous Systems via Embedding Temporal Logic}{Kapoor et al.}{2026}} & Facts not human-readable \\ \hline
-    \end{tabular}
-    \vspace{0.05cm}
-
-    \small
-    \key{Our gap:} rules made from plain words \textbf{+} task stages \textbf{+} only the robot's own sensors.
-    \note{
-    \begin{itemize}
-        \item \textbf{State machines.} Bauer et al. (TOSEM 2011): LTL$_3$, true / false / ``?'', smallest monitor, earliest verdict; we build on it. ROSMonitoring (TAROS 2020): ROS topics $\to$ monitor nodes, any logic as the oracle. RTAMT (STTT 2024): STL with robustness, ROS integration, Toyota HSR case study. Reelay (2026): fast past-time logic monitoring, about a million messages per log in benchmarks. Stoller et al. (RV 2011): an HMM fills gaps in observation and gives the probability a property holds. None knows the task's stages; all need rules written by hand.
-        \item \textbf{LLM reasoning.} REFLECT (CoRL 2023): summarises sensor data into a text history; an LLM explains why a task failed and suggests a fix (RoboFail dataset). Our MiniGrid pilot measured the risk: a free-text LLM judge gave $+0$ while the LTL monitor gave $+1.00$.
-        \item \textbf{VLM / learned.} AHA (ICLR 2025): a VLM fine-tuned on generated failures; beats GPT-4o by 10.3\%. FailSafe (2025): failures made in simulation, a VLM proposes fixes. Foresight (2026): world-model latents + conformal alarm. All need failure data and give no readable reason.
-        \item \textbf{Hybrid.} Embedding TL (2026): logic whose facts are distances to reference images in an embedding space. Prep sheet \S3.
+        \item Each stream in detail, with examples and what each way is missing: backup slides. Prep sheet \S2--3.
     \end{itemize}}
 \end{frame}
 
@@ -318,31 +275,6 @@
     \end{itemize}}
 \end{frame}
 
-% --- WHAT THE MODEL PREDICTS ---
-\begin{frame}{Model predictions vs.\ measurements}
-    \footnotesize
-    \renewcommand{\arraystretch}{1.3}
-    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.40\linewidth} >{\raggedright\arraybackslash}p{0.28\linewidth} >{\raggedright\arraybackslash}p{0.26\linewidth}@{}}
-        \textbf{\small Property (from the model)} & \textbf{\small Prediction} & \textbf{\small Measured} \\ \hline
-        \textbf{P1.} A broken stage invariant fails \emph{at the tick it is seen}. & Drop caught at once. & \key{1 tick} (20/20) \\
-        \textbf{P2.} ``Eventually'' rules have \emph{no failing state}: any prefix can still succeed. & LTL alone misses the drop until the end. & LTL only: 14 ticks \\
-        \textbf{P3.} A stuck stage fails within its time limit $T_i$. & Failed grasp caught by Grasp's 10~s. & \key{4 ticks} vs.\ 19 \\
-        \textbf{P4.} ``Holding'' is false before the grasp, so it cannot be a whole-task rule. & Flat spec sees the drop only at the end. & Flat: 14 ticks \\
-        \textbf{P5.} Rules every stage shares are in the flat spec too. & Falls: no difference. & 1 tick, all versions \\ \hline
-    \end{tabular}
-    \vspace{0.15cm}
-
-    \small \key{The results follow from the model}; they are not a lucky outcome.
-    \note{
-    \begin{itemize}
-        \item P1 proof: the invariant is checked every tick and fails on the first false tick. Only the labelling delay remains.
-        \item P2 proof: for $\varphi = F(a_1 \wedge F(a_2 \wedge \dots))$, any finite run that has not finished can still be extended to finish (re-grasp, deliver). So no finite run is a ``bad prefix'' and LTL$_3$ says ``?'' (Bauer et al.\ 2011). Checked: Spot's automaton has 6 states, one accepting, no rejecting state.
-        \item P3 proof: the time-in-phase counter grows by one per tick and the phase fails at $T_i$.
-        \item P4: the flat invariant is ``upright and not too close'' --- no ``holding''.
-        \item Honest: phases do not add expressiveness; ``G(grasped $\to$ (holding U near\_dropoff))'' is LTL. The point is that stages make such rules explicit, so the LLM writes them.
-    \end{itemize}}
-\end{frame}
-
 % --- THE MATHEMATICAL MODEL ---
 \begin{frame}{The decision view: a POMDP}
     \begin{columns}[c]
@@ -389,7 +321,7 @@
         \item The formula, right to left: move the old guess forward with how the world changes ($T$), then weigh each state by how well it explains what we saw ($Z$).
         \item Why stages help: the stage is part of $s$. ``Not holding'' fits ``walking'' but not ``carrying'', so in Carry one observation shows the failure.
         \item Honest: today the guess is one point, the update one automaton step, the action a fixed rule. No probabilities yet (last step of ``To be done'').
-        \item Value of information: early knowledge helps only if it changes the outcome; tested with deadlines in Experiment 2.
+        \item Value of information: early knowledge helps only if it changes the outcome; tested with deadlines in the experiment.
     \end{itemize}}
 \end{frame}
 
@@ -421,7 +353,291 @@
         \item The LLM (Claude) wrote the whole spec in one try; automatic checks made sure it loads and that every fact it uses can be measured. It was saved before any experiment ran.
         \item An ``evaluator'' turns the raw messages into true/false facts each second, e.g.\ ``holding the box'' is inferred from where the box is relative to the robot.
         \item Evaluator and monitor are separate ROS~2 programs, exactly as on a real robot.
-        \item The monitor never reads the planner's own status: a test enforces this. (Experiment 1 shows why.)
+        \item The monitor never reads the planner's own status: a test enforces this. (The walking experiment in the backup shows why.)
+    \end{itemize}}
+\end{frame}
+
+% --- EXPERIMENT 2 ---
+\begin{frame}{Experiment: fetch and deliver (3360 runs)}
+    \begin{columns}[c]
+        \begin{column}{0.42\textwidth}
+            \begin{itemize}
+                \item G1 humanoid in \textbf{MuJoCo}, over ROS~2.
+                \item Box dropped: caught after \key{1~s} with stages, 14~s without.
+                \item Grasp failed: \key{4~s} vs.\ 19~s.
+                \item Earlier in \textbf{all 20} runs.
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.56\textwidth}
+            \centering
+            \includegraphics[width=\linewidth]{figures/chart_latency.png}
+            \pic{Middle value (median) of 20 runs for each failure.}
+        \end{column}
+    \end{columns}
+    \note{
+    \begin{itemize}
+        \item Unitree G1 in MuJoCo, walking with Unitree's own controller. Failures are injected at known times; success is judged by the simulator's truth, which the monitor never sees. (A first walking experiment, 1800 runs, is in the backup.)
+        \item Walk to a box, grasp it, carry it 2.5--4~m, place it. Evaluator and monitor ran as separate ROS~2 programs; the box position came from a noisy detector (2~cm noise, 5\% missed).
+        \item Drop: caught 1~s after it happens, because Carry requires holding. Without stages the monitor only notices when the robot claims success, 14~s later.
+        \item Failed grasp: caught by the Grasp stage's time limit (4~s vs.\ 19~s).
+        \item Paired by scenario: stages caught it earlier in all 20 runs, later in none.
+    \end{itemize}}
+\end{frame}
+
+% --- DEADLINE ---
+\begin{frame}{Does catching early matter?}
+    \begin{columns}[c]
+        \begin{column}{0.40\textwidth}
+            \begin{itemize}
+                \item With no time limit: all monitors $\approx$ 82--84\%.
+                \item With a time limit: \key{64\%} with stages, 36\% without.
+                \item Hand-written checks: 81\%, but someone must \textbf{predict every failure}.
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.58\textwidth}
+            \centering
+            \includegraphics[width=\linewidth]{figures/chart_deadline.png}
+            \pic{Tasks finished on time, 160 runs per bar. Early knowledge pays when time matters.}
+        \end{column}
+    \end{columns}
+    \note{
+    \begin{itemize}
+        \item On an alarm the robot re-plans. With no deadline, every monitor ends at 82--84\% success, because a late re-plan still works.
+        \item With a deadline of 1.5$\times$ the normal time: 64\% with stages vs.\ 36\% without. LTL alone (no stages): 36\%.
+        \item This is the ``value of information'' from the POMDP slide: early knowledge pays only when time matters.
+        \item Hand-written checks inside the robot program do better (81\%), because the program knows its own state. But an engineer had to foresee each failure: on failures nobody planned for they missed 40 of 40 (H3 on the next slide; details in the backup).
+    \end{itemize}}
+\end{frame}
+
+% --- HYPOTHESES -> RESULTS ---
+\begin{frame}{Hypotheses and results}
+    \small
+    \renewcommand{\arraystretch}{1.35}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.30\linewidth} >{\raggedright\arraybackslash}p{0.46\linewidth} >{\raggedright\arraybackslash}p{0.18\linewidth}@{}}
+        \textbf{Hypothesis} & \textbf{Result} & \textbf{Verdict} \\ \hline
+        H1: earlier detection & drop 1 vs.\ 14~s; grasp 4 vs.\ 19~s; 20/20 runs & \key{supported} \\
+        H2: more on-time success & 64\% vs.\ 36\% with a deadline; 82\% vs.\ 84\% without & \key{supported} \\
+        H3: beyond hand-written checks & 40/40 missed $\to$ 0/40 & \key{supported} \\
+        H0: falls unchanged & 1~s in every version & as predicted \\
+        Not caught & too slow, detours, skipped pick-up & {\color{bad}reported} \\ \hline
+    \end{tabular}
+    \note{
+    \begin{itemize}
+        \item Each hypothesis was written down before the run; the table is the answer to each.
+        \item How sure: earlier in every one of the 20 paired runs; 64\% vs.\ 36\% over 160 runs per version. Report counts, not tests.
+        \item The misses are reported, with their reason: progress means ``closer to where the robot walks'' and the time limits are generous. Fix: progress toward each stage's own target, calibrated limits.
+    \end{itemize}}
+\end{frame}
+
+% --- TO BE DONE ---
+\begin{frame}{To be done}
+    \centering
+    \resizebox{\linewidth}{!}{
+    \begin{tikzpicture}[
+        bx/.style={draw=mut, rounded corners=4pt, fill=soft, minimum height=1.4cm, text width=4.8cm, align=center},
+        arr/.style={-{Stealth[length=2.5mm]}, thick, mut}]
+        \node[bx, fill=green!8] (a) {\textbf{Continuous MiniGrid}\\ + MAAOS (done)};
+        \node[bx, right=0.5cm of a, draw=acc, line width=1.4pt, fill=acc!10] (b) {\textbf{MuJoCo G1}\\ (now)};
+        \node[bx, right=0.5cm of b] (c) {\textbf{Isaac Sim}\\ (next)};
+        \node[bx, right=0.5cm of c] (d) {\textbf{Real G1}\\ + TRAV navigation};
+        \draw[arr] (a) -- (b); \draw[arr] (b) -- (c); \draw[arr] (c) -- (d);
+    \end{tikzpicture}
+    }
+    \vspace{0.2cm}
+
+    \raggedright
+    \small
+    \begin{itemize}
+        \item \textbf{Fix what we found:} better time limits; progress toward each stage's goal.
+        \item \textbf{More tests:} more tasks, more rule sets, more failures.
+        \item \textbf{The full POMDP:} camera, real probabilities, best decisions.
+    \end{itemize}
+    {\scriptsize \textbf{Limits today:} grasp and camera are simulated; thresholds not tuned.}
+    \note{
+    \begin{itemize}
+        \item Platforms: continuous MiniGrid + MAAOS (pilot, done) $\to$ MuJoCo G1 (now, real dynamics) $\to$ Isaac Sim (richer scenes, cameras, more skills) $\to$ the real G1 with Elias's TRAV navigation app (monitor on vs.\ off).
+        \item What stays the same at every step: one monitor engine, the same sensor vocabulary; only the robot's ``adapter'' changes. The real G1, MuJoCo and Isaac adapters already expose the same sensor schema.
+        \item Fix: time limits from normal runs; progress toward each stage's own target (catches a skipped pick-up); restart at the current stage after re-plan.
+        \item Paper 2, the full POMDP: camera facts with probabilities, a real belief, stop / continue / re-plan by expected cost.
+        \item Limits: the legs-only G1 cannot grasp (box attached); box position from a simulated detector.
+    \end{itemize}}
+\end{frame}
+
+% === BACKUP (not presented; for questions) ===
+\appendix
+\begin{frame}
+    \centering \Huge Backup slides
+    \vspace{0.4cm}
+
+    \normalsize For questions: related work in detail, model predictions, unplanned failures, one run, Experiment 1, test beds, demo, references.
+    \note{Not presented. Jump here only to answer a question.}
+\end{frame}
+
+% --- STREAM 1 ---
+\begin{frame}{Stream 1: describing a skill}
+    \scriptsize
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.16\linewidth} >{\raggedright\arraybackslash}p{0.50\linewidth} >{\raggedright\arraybackslash}p{0.27\linewidth}@{}}
+        \textbf{\small Way} & \textbf{\small Examples} & \textbf{\small\color{bad}What is missing} \\ \hline
+        Natural language & {\tiny \paper{https://proceedings.mlr.press/v229/liu23d.html}{Grounding Complex Natural Language Commands for Temporal Tasks in Unseen Environments}{Liu et al.}{2023}\newline \paper{https://doi.org/10.1007/978-3-031-37703-7_18}{nl2spec: Interactively Translating Unstructured Natural Language to Temporal Logics with LLMs}{Cosler et al.}{2023}\newline \paper{https://arxiv.org/abs/2305.07766}{NL2TL: Transforming Natural Languages to Temporal Logics using LLMs}{Chen et al.}{2023}\newline \paper{https://doi.org/10.1609/aaai.v37i13.27068}{NL2LTL: A Python Package for Converting Natural Language Instructions to LTL Formulas}{Fuggitti, Chakraborti}{2023}\newline \paper{https://arxiv.org/abs/2512.16770}{GinSign: Grounding Natural Language Into System Signatures for Temporal Logic Translation}{English et al.}{2025}} & Made for planning or writing specs; no stages; words must be tied to sensors \\
+        Formal logic (LTL, STL) & {\tiny \paper{https://doi.org/10.1145/2000799.2000800}{Runtime Verification for LTL and TLTL}{Bauer, Leucker, Schallhart}{2011}\newline \paper{https://doi.org/10.1007/s10009-023-00720-3}{RTAMT: Runtime Robustness Monitors with Application to CPS and Robotics}{Yamaguchi, Hoxha, Ničković}{2024}} & An expert writes every rule; flat rules, no stages \\
+        Videos / demos & {\tiny \paper{https://proceedings.neurips.cc/paper_files/paper/2018/hash/74934548253bcab8490ebd74afed7031-Abstract.html}{Learning Task Specifications from Demonstrations}{Vazquez-Chanlatte et al.}{2018}\newline \paper{https://arxiv.org/abs/2310.07899}{RoboCLIP: One Demonstration is Enough to Learn Robot Policies}{Sontakke et al.}{2023}} & Need examples; the result is hard to read or edit \\
+        Hand-written code & {\tiny Our baseline: checks written inside the robot program (our experiment)} & Someone must foresee every failure \\ \hline
+    \end{tabular}
+    \note{
+    \begin{itemize}
+        \item \textbf{Natural language $\to$ logic.} Lang2LTL (CoRL 2023): route commands to LTL, GPT-4 finds the places, a small T5 writes the formula; works in new cities. nl2spec (CAV 2023): LLM translation with sub-translations a human can fix (16/36 alone, 31/36 with a human). NL2TL (EMNLP 2023): lifted translation with a fine-tuned T5, 28k pairs. NL2LTL (AAAI 2023 demo): picks one of a few fixed patterns; a demo paper, no benchmark of its own. GinSign (2025): grounds the placeholder words to a real system's signature; 100\% predicate F1 on its three domains. All target planning or spec writing; none adds stages or watches a running robot.
+        \item \textbf{Formal logic by experts.} LTL (Bauer et al.) and STL with robustness (RTAMT). Precise, but someone must write every rule, and the rules are flat.
+        \item \textbf{Videos / demonstrations.} Vazquez-Chanlatte et al. (NeurIPS 2018) infer a logical specification from demonstrations (maximum-entropy likelihood, search over candidates). RoboCLIP (NeurIPS 2023) uses one video or text description and a pretrained video-language model as a reward; 2--3$\times$ better zero-shot than other imitation methods. They need examples, and the result is hard to read or edit.
+        \item \textbf{Code.} Our hand-written checks baseline: strong on what was foreseen (81\% on time), silent on what was not (40/40). Prep sheet \S2.
+    \end{itemize}}
+\end{frame}
+
+% --- STREAM 2 ---
+\begin{frame}{Stream 2: monitoring a skill}
+    \scriptsize
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.16\linewidth} >{\raggedright\arraybackslash}p{0.50\linewidth} >{\raggedright\arraybackslash}p{0.27\linewidth}@{}}
+        \textbf{\small Way} & \textbf{\small Examples} & \textbf{\small\color{bad}What is missing} \\ \hline
+        State machines & {\tiny \paper{https://doi.org/10.1145/2000799.2000800}{Runtime Verification for LTL and TLTL}{Bauer, Leucker, Schallhart}{2011}\newline \paper{https://doi.org/10.1007/978-3-030-63486-5_40}{ROSMonitoring: A Runtime Verification Framework for ROS}{Ferrando et al.}{2020}\newline \paper{https://doi.org/10.1007/s10009-023-00720-3}{RTAMT: Runtime Robustness Monitors with Application to CPS and Robotics}{Yamaguchi, Hoxha, Ničković}{2024}\newline \paper{https://arxiv.org/abs/2604.22384}{Reelay: Online Temporal Logic Monitoring Framework}{Ulus}{2026}\newline \paper{https://doi.org/10.1007/978-3-642-29860-8_15}{Runtime Verification with State Estimation}{Stoller et al.}{2011}} & No stages: ``eventually'' waits to the end; rules by hand \\
+        LLM reasoning & {\tiny \paper{https://proceedings.mlr.press/v229/liu23g.html}{REFLECT: Summarizing Robot Experiences for Failure Explanation and Correction}{Liu, Bahety, Song}{2023}} & Slow; can be wrong; says ``wrong'', not ``where'' \\
+        VLM / learned & {\tiny \paper{https://proceedings.iclr.cc/paper_files/paper/2025/hash/70a06501001e1820fd1eb9ee821302d2-Abstract-Conference.html}{AHA: A Vision-Language-Model for Detecting and Reasoning Over Failures in Robotic Manipulation}{Duan et al.}{2025}\newline \paper{https://arxiv.org/abs/2510.01642}{FailSafe: Reasoning and Recovery from Failures in VLA Models}{Lin et al.}{2025}\newline \paper{https://arxiv.org/abs/2606.23085}{Foresight: Failure Detection for Long-Horizon Robotic Manipulation}{Zhang et al.}{2026}} & Need training data; black box \\
+        Hybrid & {\tiny \paper{https://arxiv.org/abs/2605.12651}{Runtime Monitoring of Perception-Based Autonomous Systems via Embedding Temporal Logic}{Kapoor et al.}{2026}} & Facts not human-readable \\ \hline
+    \end{tabular}
+    \vspace{0.05cm}
+
+    \small
+    \key{Our gap:} rules made from plain words \textbf{+} task stages \textbf{+} only the robot's own sensors.
+    \note{
+    \begin{itemize}
+        \item \textbf{State machines.} Bauer et al. (TOSEM 2011): LTL$_3$, true / false / ``?'', smallest monitor, earliest verdict; we build on it. ROSMonitoring (TAROS 2020): ROS topics $\to$ monitor nodes, any logic as the oracle. RTAMT (STTT 2024): STL with robustness, ROS integration, Toyota HSR case study. Reelay (2026): fast past-time logic monitoring, about a million messages per log in benchmarks. Stoller et al. (RV 2011): an HMM fills gaps in observation and gives the probability a property holds. None knows the task's stages; all need rules written by hand.
+        \item \textbf{LLM reasoning.} REFLECT (CoRL 2023): summarises sensor data into a text history; an LLM explains why a task failed and suggests a fix (RoboFail dataset). Our MiniGrid pilot measured the risk: a free-text LLM judge gave $+0$ while the LTL monitor gave $+1.00$.
+        \item \textbf{VLM / learned.} AHA (ICLR 2025): a VLM fine-tuned on generated failures; beats GPT-4o by 10.3\%. FailSafe (2025): failures made in simulation, a VLM proposes fixes. Foresight (2026): world-model latents + conformal alarm. All need failure data and give no readable reason.
+        \item \textbf{Hybrid.} Embedding TL (2026): logic whose facts are distances to reference images in an embedding space. Prep sheet \S3.
+    \end{itemize}}
+\end{frame}
+
+% --- WHAT THE MODEL PREDICTS ---
+\begin{frame}{Model predictions vs.\ measurements}
+    \footnotesize
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.40\linewidth} >{\raggedright\arraybackslash}p{0.28\linewidth} >{\raggedright\arraybackslash}p{0.26\linewidth}@{}}
+        \textbf{\small Property (from the model)} & \textbf{\small Prediction} & \textbf{\small Measured} \\ \hline
+        \textbf{P1.} A broken stage invariant fails \emph{at the tick it is seen}. & Drop caught at once. & \key{1 tick} (20/20) \\
+        \textbf{P2.} ``Eventually'' rules have \emph{no failing state}: any prefix can still succeed. & LTL alone misses the drop until the end. & LTL only: 14 ticks \\
+        \textbf{P3.} A stuck stage fails within its time limit $T_i$. & Failed grasp caught by Grasp's 10~s. & \key{4 ticks} vs.\ 19 \\
+        \textbf{P4.} ``Holding'' is false before the grasp, so it cannot be a whole-task rule. & Flat spec sees the drop only at the end. & Flat: 14 ticks \\
+        \textbf{P5.} Rules every stage shares are in the flat spec too. & Falls: no difference. & 1 tick, all versions \\ \hline
+    \end{tabular}
+    \vspace{0.15cm}
+
+    \small \key{The results follow from the model}; they are not a lucky outcome.
+    \note{
+    \begin{itemize}
+        \item P1 proof: the invariant is checked every tick and fails on the first false tick. Only the labelling delay remains.
+        \item P2 proof: for $\varphi = F(a_1 \wedge F(a_2 \wedge \dots))$, any finite run that has not finished can still be extended to finish (re-grasp, deliver). So no finite run is a ``bad prefix'' and LTL$_3$ says ``?'' (Bauer et al.\ 2011). Checked: Spot's automaton has 6 states, one accepting, no rejecting state.
+        \item P3 proof: the time-in-phase counter grows by one per tick and the phase fails at $T_i$.
+        \item P4: the flat invariant is ``upright and not too close'' --- no ``holding''.
+        \item Honest: phases do not add expressiveness; ``G(grasped $\to$ (holding U near\_dropoff))'' is LTL. The point is that stages make such rules explicit, so the LLM writes them.
+    \end{itemize}}
+\end{frame}
+
+% --- UNPLANNED FAILURES ---
+\begin{frame}{Failures nobody planned for}
+    \begin{columns}[c]
+        \begin{column}{0.48\textwidth}
+            \begin{itemize}
+                \item Box left at the wrong place; robot too close to a wall.
+                \item Hand-written checks: \textbf{\color{bad}40 of 40} missed.
+                \item With our monitor: \key{0 of 40} missed.
+                \item Missed by all: too slow, or a long detour.
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.50\textwidth}
+            \centering
+            \includegraphics[width=\linewidth]{figures/robot_wrong_dropoff.png}
+            \pic{The box is far from the drop-off (blue), yet the robot says ``done''. Our monitor catches it.}
+        \end{column}
+    \end{columns}
+    \note{
+    \begin{itemize}
+        \item New failures, one per requirement of the task description that the hand-written checks do not cover. The design and predictions were written down before the run.
+        \item Wrong drop-off: the robot's own idea of the drop-off is wrong, so its own check passes and it reports success. Too close: the navigator grazes obstacles.
+        \item Hand-written checks alone: 40 of 40 failed silently. Adding our monitor: 0 of 40, at no measurable cost elsewhere.
+        \item Missed by everyone: running slowly, or a detour, that stay inside the time limits. Our prediction for ``slow'' was wrong, and we say so.
+    \end{itemize}}
+\end{frame}
+
+% --- ONE RUN ---
+\begin{frame}{One run, second by second}
+    \begin{columns}[c]
+        \begin{column}{0.40\textwidth}
+            \begin{itemize}
+                \item \textbf{21.6~s:} the box drops.
+                \item \textbf{\color{bad}22~s:} the Carry rule breaks. Alarm.
+                \item The plain LTL rule still waits: ``maybe later''.
+            \end{itemize}
+            \textbf{The stage caught it.}
+        \end{column}
+        \begin{column}{0.58\textwidth}
+            \centering
+            \includegraphics[width=\linewidth, height=0.66\textheight, keepaspectratio]{figures/automaton_card.png}
+            \pic{From the live demo (one run). The current stage and state are lit.}
+        \end{column}
+    \end{columns}
+    \note{
+    \begin{itemize}
+        \item This is one run from the live demo page (seed 0), not a statistic.
+        \item Top: the stages, Carry outlined in red. Bottom: the 6-state LTL automaton for ``walk, grasp, carry, place, in order''.
+        \item The automaton is still in state 3 (``holding, carrying''): it has no ``failed'' state, because ``eventually'' can always still come true.
+        \item This is the whole idea in one picture: the stage catches what the LTL rule alone cannot.
+    \end{itemize}}
+\end{frame}
+
+% --- EXPERIMENT 1 ---
+\begin{frame}{Experiment 1: a short walk (1800 runs)}
+    \begin{columns}[c]
+        \begin{column}{0.44\textwidth}
+            \begin{itemize}
+                \item Stages helped \textbf{little} here: 15 vs.\ 14 of 15 stalls caught.
+                \item What mattered: measure progress \key{from the robot's sensors}.
+                \item Without that: only \textbf{1 of 15} caught.
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.54\textwidth}
+            \centering
+            \includegraphics[width=\linewidth]{figures/stall.png}
+            \pic{The planner still says ``go''. The robot has stopped. The monitor sees no progress.}
+        \end{column}
+    \end{columns}
+    \note{
+    \begin{itemize}
+        \item 10 failure types $\times$ 20 seeds $\times$ 3 versions $\times$ 3 reactions = 1800 runs.
+        \item Walking has two stages that check the same things, so stages add little: falls are caught in 1--7~s by every version.
+        \item Stalls are the difference. ``No progress'' is measured from odometry against the goal; without it only 1 of 15 stalls is caught.
+        \item The figure: the planner keeps commanding 0.5~m/s; the robot has stopped. A monitor that trusted the planner would see nothing wrong.
+    \end{itemize}}
+\end{frame}
+
+% --- TEST BED ---
+\begin{frame}{Test bed: a humanoid robot in MuJoCo}
+    \begin{itemize}
+        \item Unitree \textbf{G1} robot in the \textbf{MuJoCo} physics simulator.
+        \item We \key{cause failures on purpose}: push, stall, drop, failed grasp.
+        \item We compare the monitor \key{with stages} and \key{without}.
+    \end{itemize}
+    \vspace{0.1cm}
+    \centering
+    \includegraphics[width=0.3\linewidth]{figures/frame_push_1_walking.png}\hfill
+    \includegraphics[width=0.3\linewidth]{figures/frame_push_2_pushed.png}\hfill
+    \includegraphics[width=0.3\linewidth]{figures/frame_push_3_down.png}
+    \pic{Walking $\rightarrow$ pushed $\rightarrow$ fallen. The simulator knows the truth; the monitor does not.}
+    \note{
+    \begin{itemize}
+        \item The G1 walks with Unitree's own released walking controller.
+        \item Each failure is injected at a known time, so we can measure how fast it is caught.
+        \item ``Without stages'' = the same spec with all stages merged into one (a fair control: same facts, same safety rules).
+        \item Success or failure is judged by the simulator's ground truth, which the monitor never sees.
     \end{itemize}}
 \end{frame}
 
@@ -468,176 +684,6 @@
     \end{itemize}}
 \end{frame}
 
-% --- TEST BED ---
-\begin{frame}{Test bed: a humanoid robot in MuJoCo}
-    \begin{itemize}
-        \item Unitree \textbf{G1} robot in the \textbf{MuJoCo} physics simulator.
-        \item We \key{cause failures on purpose}: push, stall, drop, failed grasp.
-        \item We compare the monitor \key{with stages} and \key{without}.
-    \end{itemize}
-    \vspace{0.1cm}
-    \centering
-    \includegraphics[width=0.3\linewidth]{figures/frame_push_1_walking.png}\hfill
-    \includegraphics[width=0.3\linewidth]{figures/frame_push_2_pushed.png}\hfill
-    \includegraphics[width=0.3\linewidth]{figures/frame_push_3_down.png}
-    \pic{Walking $\rightarrow$ pushed $\rightarrow$ fallen. The simulator knows the truth; the monitor does not.}
-    \note{
-    \begin{itemize}
-        \item The G1 walks with Unitree's own released walking controller.
-        \item Each failure is injected at a known time, so we can measure how fast it is caught.
-        \item ``Without stages'' = the same spec with all stages merged into one (a fair control: same facts, same safety rules).
-        \item Success or failure is judged by the simulator's ground truth, which the monitor never sees.
-    \end{itemize}}
-\end{frame}
-
-% --- EXPERIMENT 1 ---
-\begin{frame}{Experiment 1: a short walk (1800 runs)}
-    \begin{columns}[c]
-        \begin{column}{0.44\textwidth}
-            \begin{itemize}
-                \item Stages helped \textbf{little} here: 15 vs.\ 14 of 15 stalls caught.
-                \item What mattered: measure progress \key{from the robot's sensors}.
-                \item Without that: only \textbf{1 of 15} caught.
-            \end{itemize}
-        \end{column}
-        \begin{column}{0.54\textwidth}
-            \centering
-            \includegraphics[width=\linewidth]{figures/stall.png}
-            \pic{The planner still says ``go''. The robot has stopped. The monitor sees no progress.}
-        \end{column}
-    \end{columns}
-    \note{
-    \begin{itemize}
-        \item 10 failure types $\times$ 20 seeds $\times$ 3 versions $\times$ 3 reactions = 1800 runs.
-        \item Walking has two stages that check the same things, so stages add little: falls are caught in 1--7~s by every version.
-        \item Stalls are the difference. ``No progress'' is measured from odometry against the goal; without it only 1 of 15 stalls is caught.
-        \item The figure: the planner keeps commanding 0.5~m/s; the robot has stopped. A monitor that trusted the planner would see nothing wrong.
-    \end{itemize}}
-\end{frame}
-
-% --- EXPERIMENT 2 ---
-\begin{frame}{Experiment 2: fetch and deliver (3360 runs)}
-    \begin{columns}[c]
-        \begin{column}{0.42\textwidth}
-            \begin{itemize}
-                \item Four stages.
-                \item Box dropped: caught after \key{1~s} with stages, 14~s without.
-                \item Grasp failed: \key{4~s} vs.\ 19~s.
-                \item Earlier in \textbf{all 20} runs.
-            \end{itemize}
-        \end{column}
-        \begin{column}{0.56\textwidth}
-            \centering
-            \includegraphics[width=\linewidth]{figures/chart_latency.png}
-            \pic{Middle value (median) of 20 runs for each failure.}
-        \end{column}
-    \end{columns}
-    \note{
-    \begin{itemize}
-        \item Walk to a box, grasp it, carry it 2.5--4~m, place it. Evaluator and monitor ran as separate ROS~2 programs; the box position came from a noisy detector (2~cm noise, 5\% missed).
-        \item Drop: caught 1~s after it happens, because Carry requires holding. Without stages the monitor only notices when the robot claims success, 14~s later.
-        \item Failed grasp: caught by the Grasp stage's time limit (4~s vs.\ 19~s).
-        \item Paired by scenario: stages caught it earlier in all 20 runs, later in none.
-    \end{itemize}}
-\end{frame}
-
-% --- ONE RUN ---
-\begin{frame}{One run, second by second}
-    \begin{columns}[c]
-        \begin{column}{0.40\textwidth}
-            \begin{itemize}
-                \item \textbf{21.6~s:} the box drops.
-                \item \textbf{\color{bad}22~s:} the Carry rule breaks. Alarm.
-                \item The plain LTL rule still waits: ``maybe later''.
-            \end{itemize}
-            \textbf{The stage caught it.}
-        \end{column}
-        \begin{column}{0.58\textwidth}
-            \centering
-            \includegraphics[width=\linewidth, height=0.66\textheight, keepaspectratio]{figures/automaton_card.png}
-            \pic{From the live demo (one run). The current stage and state are lit.}
-        \end{column}
-    \end{columns}
-    \note{
-    \begin{itemize}
-        \item This is one run from the live demo page (seed 0), not a statistic.
-        \item Top: the stages, Carry outlined in red. Bottom: the 6-state LTL automaton for ``walk, grasp, carry, place, in order''.
-        \item The automaton is still in state 3 (``holding, carrying''): it has no ``failed'' state, because ``eventually'' can always still come true.
-        \item This is the whole idea in one picture: the stage catches what the LTL rule alone cannot.
-    \end{itemize}}
-\end{frame}
-
-% --- DEADLINE ---
-\begin{frame}{Does catching early matter?}
-    \begin{columns}[c]
-        \begin{column}{0.40\textwidth}
-            \begin{itemize}
-                \item With no time limit: all monitors $\approx$ 82--84\%.
-                \item With a time limit: \key{64\%} with stages, 36\% without.
-                \item Hand-written checks: 81\%, but someone must \textbf{predict every failure}.
-            \end{itemize}
-        \end{column}
-        \begin{column}{0.58\textwidth}
-            \centering
-            \includegraphics[width=\linewidth]{figures/chart_deadline.png}
-            \pic{Tasks finished on time, 160 runs per bar. Early knowledge pays when time matters.}
-        \end{column}
-    \end{columns}
-    \note{
-    \begin{itemize}
-        \item On an alarm the robot re-plans. With no deadline, every monitor ends at 82--84\% success, because a late re-plan still works.
-        \item With a deadline of 1.5$\times$ the normal time: 64\% with stages vs.\ 36\% without. LTL alone (no stages): 36\%.
-        \item This is the ``value of information'' from the POMDP slide: early knowledge pays only when time matters.
-        \item Hand-written checks inside the robot program do better (81\%), because the program knows its own state. But an engineer had to foresee each failure: see the next slide.
-    \end{itemize}}
-\end{frame}
-
-% --- UNPLANNED FAILURES ---
-\begin{frame}{Failures nobody planned for}
-    \begin{columns}[c]
-        \begin{column}{0.48\textwidth}
-            \begin{itemize}
-                \item Box left at the wrong place; robot too close to a wall.
-                \item Hand-written checks: \textbf{\color{bad}40 of 40} missed.
-                \item With our monitor: \key{0 of 40} missed.
-                \item Missed by all: too slow, or a long detour.
-            \end{itemize}
-        \end{column}
-        \begin{column}{0.50\textwidth}
-            \centering
-            \includegraphics[width=\linewidth]{figures/robot_wrong_dropoff.png}
-            \pic{The box is far from the drop-off (blue), yet the robot says ``done''. Our monitor catches it.}
-        \end{column}
-    \end{columns}
-    \note{
-    \begin{itemize}
-        \item New failures, one per requirement of the task description that the hand-written checks do not cover. The design and predictions were written down before the run.
-        \item Wrong drop-off: the robot's own idea of the drop-off is wrong, so its own check passes and it reports success. Too close: the navigator grazes obstacles.
-        \item Hand-written checks alone: 40 of 40 failed silently. Adding our monitor: 0 of 40, at no measurable cost elsewhere.
-        \item Missed by everyone: running slowly, or a detour, that stay inside the time limits. Our prediction for ``slow'' was wrong, and we say so.
-    \end{itemize}}
-\end{frame}
-
-% --- HYPOTHESES -> RESULTS ---
-\begin{frame}{Hypotheses and results}
-    \small
-    \renewcommand{\arraystretch}{1.35}
-    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.30\linewidth} >{\raggedright\arraybackslash}p{0.46\linewidth} >{\raggedright\arraybackslash}p{0.18\linewidth}@{}}
-        \textbf{Hypothesis} & \textbf{Result} & \textbf{Verdict} \\ \hline
-        H1: earlier detection & drop 1 vs.\ 14~s; grasp 4 vs.\ 19~s; 20/20 runs & \key{supported} \\
-        H2: more on-time success & 64\% vs.\ 36\% with a deadline; 82\% vs.\ 84\% without & \key{supported} \\
-        H3: beyond hand-written checks & 40/40 missed $\to$ 0/40 & \key{supported} \\
-        H0: falls unchanged & 1~s in every version & as predicted \\
-        Not caught & too slow, detours, skipped pick-up & {\color{bad}reported} \\ \hline
-    \end{tabular}
-    \note{
-    \begin{itemize}
-        \item Each hypothesis was written down before the run; the table is the answer to each.
-        \item How sure: earlier in every one of the 20 paired runs; 64\% vs.\ 36\% over 160 runs per version. Report counts, not tests.
-        \item The misses are reported, with their reason: progress means ``closer to where the robot walks'' and the time limits are generous. Fix: progress toward each stage's own target, calibrated limits.
-    \end{itemize}}
-\end{frame}
-
 % --- WHAT WE LEARNED ---
 \begin{frame}{What we learned}
     \begin{columns}[c]
@@ -660,40 +706,6 @@
         \item Four take-aways, one per line on the slide.
         \item If there is time, show the demo: open http://localhost:8080, click ``Dropped object: full spec'', press Pause at 22~s.
         \item The demo page draws the stages and the automaton live, from the monitor's own ROS~2 messages.
-    \end{itemize}}
-\end{frame}
-
-% --- TO BE DONE ---
-\begin{frame}{To be done}
-    \centering
-    \resizebox{\linewidth}{!}{
-    \begin{tikzpicture}[
-        bx/.style={draw=mut, rounded corners=4pt, fill=soft, minimum height=1.4cm, text width=4.8cm, align=center},
-        arr/.style={-{Stealth[length=2.5mm]}, thick, mut}]
-        \node[bx, fill=green!8] (a) {\textbf{Continuous MiniGrid}\\ + MAAOS (done)};
-        \node[bx, right=0.5cm of a, draw=acc, line width=1.4pt, fill=acc!10] (b) {\textbf{MuJoCo G1}\\ (now)};
-        \node[bx, right=0.5cm of b] (c) {\textbf{Isaac Sim}\\ (next)};
-        \node[bx, right=0.5cm of c] (d) {\textbf{Real G1}\\ + TRAV navigation};
-        \draw[arr] (a) -- (b); \draw[arr] (b) -- (c); \draw[arr] (c) -- (d);
-    \end{tikzpicture}
-    }
-    \vspace{0.2cm}
-
-    \raggedright
-    \small
-    \begin{itemize}
-        \item \textbf{Fix what we found:} better time limits; progress toward each stage's goal.
-        \item \textbf{More tests:} more tasks, more rule sets, more failures.
-        \item \textbf{The full POMDP:} camera, real probabilities, best decisions.
-    \end{itemize}
-    {\scriptsize \textbf{Limits today:} grasp and camera are simulated; thresholds not tuned.}
-    \note{
-    \begin{itemize}
-        \item Platforms: continuous MiniGrid + MAAOS (pilot, done) $\to$ MuJoCo G1 (now, real dynamics) $\to$ Isaac Sim (richer scenes, cameras, more skills) $\to$ the real G1 with Elias's TRAV navigation app (monitor on vs.\ off).
-        \item What stays the same at every step: one monitor engine, the same sensor vocabulary; only the robot's ``adapter'' changes. The real G1, MuJoCo and Isaac adapters already expose the same sensor schema.
-        \item Fix: time limits from normal runs; progress toward each stage's own target (catches a skipped pick-up); restart at the current stage after re-plan.
-        \item Paper 2, the full POMDP: camera facts with probabilities, a real belief, stop / continue / re-plan by expected cost.
-        \item Limits: the legs-only G1 cannot grasp (box attached); box position from a simulated detector.
     \end{itemize}}
 \end{frame}
 
