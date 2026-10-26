@@ -1,11 +1,17 @@
 # Supervisor talk (10 minutes, plain words)
 
-`talk.pdf` is "Skill progress monitoring": 16 slides plus two pages of references (Beamer, Madrid, 14pt,
-Noto Sans), one picture each, in plain words: the problem, related work on two slides (what each line of
-work does and what it is missing), background (monitors, LTL), the idea (stages), the
-mathematical model (a POMDP, and what the monitor computes today), the method, the test
-bed, Experiments 1 and 2, one run second by second, the deadline and unplanned-failure
-results, what we learned, and what is left to do.
+`talk.pdf` is "Skill progress monitoring": 18 slides plus a references page (Beamer, Madrid,
+14pt, Noto Sans), one picture each, in plain words: the problem; related work as **two
+streams**, skill description (words, logic, demonstrations, code) and skill monitoring (state
+machines, LLMs, VLMs, hybrids), each with examples and what is missing; background (monitors,
+LTL); the idea (stages); the mathematical model (a POMDP); the method; the first test bed
+(continuous MiniGrid + MAAOS); the MuJoCo G1 test bed; Experiments 1 and 2; one run second by
+second; the deadline and unplanned-failure results; what we learned; and what is next
+(MiniGrid → MuJoCo → Isaac Sim → real G1).
+
+`related_work_prep.md` is the committee prep sheet: every cited paper in more depth (method,
+result, gap, how we differ), the platforms, all our numbers in one place, and likely
+committee questions with short, honest answers.
 
 `talk_notes.pdf` is the same deck with speaker notes: each page shows the slide on the left
 and its notes on the right (more detail on every cited paper, what to say, where each
@@ -27,4 +33,4 @@ fonts-noto-core`.
 
 The two bar charts come from `tools/charts.py` (values from `docs/e1b_ros/results.md`,
 produced by `sim/e1/summarize_e1.py`); the screenshots are from the live demo page
-(`python3 run.py`). Slide 12's times ("One run, second by second") are one demo run, and it says so.
+(`python3 run.py`). Slide 14's times ("One run, second by second") are one demo run, and it says so.

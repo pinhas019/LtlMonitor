@@ -90,47 +90,73 @@
     \end{itemize}}
 \end{frame}
 
-% --- RELATED WORK 1/2 ---
-\begin{frame}{Related work 1: monitors}
-    \scriptsize
-    \renewcommand{\arraystretch}{1.3}
-    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.52\linewidth} >{\raggedright\arraybackslash}p{0.44\linewidth}@{}}
-        \textbf{\small Work} & \textbf{\small What it does / \color{bad}what is missing} \\ \hline
-        \paper{https://doi.org/10.1145/2000799.2000800}{Runtime Verification for LTL and TLTL}{Bauer, Leucker, Schallhart}{2011}
-            & Checks LTL rules while the system runs: yes / no / not yet.\newline
-              {\color{bad}No task stages: ``eventually'' stays ``not yet'' to the end.} \\
-        \paper{https://doi.org/10.1007/978-3-030-63486-5_40}{ROSMonitoring: A Runtime Verification Framework for ROS}{Ferrando et al.}{2020}\newline
-        \paper{https://doi.org/10.1007/s10009-023-00720-3}{RTAMT: Runtime Robustness Monitors with Application to CPS and Robotics}{Yamaguchi, Hoxha, Ničković}{2024}
-            & Monitors that run next to a robot and read its messages.\newline
-              {\color{bad}Rules written by hand; no idea of task progress.} \\
-        \paper{https://doi.org/10.1007/978-3-642-29860-8_15}{Runtime Verification with State Estimation}{Stoller et al.}{2011}
-            & Guesses a hidden state with a probability model.\newline
-              {\color{bad}Needs that model; no task stages.} \\ \hline
-    \end{tabular}
+% --- TWO STREAMS ---
+\begin{frame}{Related work: two streams}
+    \centering
+    \resizebox{0.97\linewidth}{!}{
+    \begin{tikzpicture}[
+        hd/.style={font=\bfseries\large, text=acc},
+        bx/.style={draw=mut, rounded corners=4pt, fill=soft, minimum height=0.95cm, text width=5.4cm, align=center},
+        us/.style={bx, draw=acc, line width=1.6pt, fill=acc!12},
+        arr/.style={-{Stealth[length=3mm]}, line width=1.6pt, acc}]
+        \node[hd] (h1) at (0, 0.2) {1. Skill description};
+        \node[hd] (h2) at (12, 0.2) {2. Skill monitoring};
+        \node[us, below=0.35cm of h1] (d1) {\textbf{Natural language}};
+        \node[bx, below=0.25cm of d1] (d2) {Formal logic (LTL, STL)};
+        \node[bx, below=0.25cm of d2] (d3) {Videos, demos};
+        \node[bx, below=0.25cm of d3] (d4) {Hand-written code};
+        \node[us, below=0.35cm of h2] (m1) {\textbf{State machines (automata)}};
+        \node[bx, below=0.25cm of m1] (m2) {LLM reasoning};
+        \node[bx, below=0.25cm of m2] (m3) {VLM / learned detectors};
+        \node[bx, below=0.25cm of m3] (m4) {Hybrid (logic + images)};
+        \node[us, text width=3.6cm] (b) at (6, -2.55) {\textbf{Our bridge}\\ an LLM writes\\ LTL rules + stages};
+        \draw[arr] (d1.east) -- (b.north west);
+        \draw[arr] (b.north east) -- (m1.west);
+    \end{tikzpicture}
+    }
+    \vspace{0.1cm}
+
+    \raggedright
+    \small Most work improves \textbf{one} stream. \key{Ours connects them: the description produces the monitor.}
     \note{
     \begin{itemize}
-        \item \textbf{Bauer et al. 2011 (TOSEM):} the standard theory of LTL monitoring (``LTL$_3$''): after each step, true, false or ``?''; the smallest monitor that answers as early as possible. We build on it. Gap: ``eventually deliver'' stays ``?'' to the end; no stages.
-        \item \textbf{ROSMonitoring 2020 (TAROS):} turns ROS topics into monitor nodes; tested on a simulated Mars rover. \textbf{RTAMT 2024 (STTT):} Signal Temporal Logic monitors that say \emph{how much} a rule holds; used with ROS on a Toyota robot. Gap: rules written by hand; no task progress.
-        \item \textbf{Stoller et al. 2011 (RV):} when events are missed, a Hidden Markov Model fills the gaps and gives the probability that a rule holds. Closest to our POMDP view. Gap: needs a probability model; no stages.
+        \item The field moves in two streams. (1) \textbf{How do we describe a skill?} In words, in logic, by showing videos or demonstrations, or in code. (2) \textbf{How do we watch the skill run} using that description? With state machines (formal), with an LLM that reasons in text, with a vision model trained on failures, or a mix.
+        \item Most papers improve one stream: better translation from words to logic, or a better failure detector.
+        \item Our path (blue): describe the skill in plain words; an LLM writes LTL rules \emph{and} the stages; the monitor runs them as state machines on the robot's own sensors. So the description \emph{is} the monitor.
+        \item Next two slides: each stream, with examples and what each way is missing. Details: prep sheet \S2--3.
     \end{itemize}}
 \end{frame}
 
-% --- RELATED WORK 2/2 ---
-\begin{frame}{Related work 2: from words, from data}
+% --- STREAM 1 ---
+\begin{frame}{Stream 1: describing a skill}
     \scriptsize
-    \renewcommand{\arraystretch}{1.3}
-    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.52\linewidth} >{\raggedright\arraybackslash}p{0.44\linewidth}@{}}
-        \textbf{\small Work} & \textbf{\small What it does / \color{bad}what is missing} \\ \hline
-        \paper{https://proceedings.mlr.press/v229/liu23d.html}{Grounding Complex Natural Language Commands for Temporal Tasks in Unseen Environments}{Liu et al.}{2023}\newline
-        \paper{https://doi.org/10.1007/978-3-031-37703-7_18}{nl2spec: Interactively Translating Unstructured Natural Language to Temporal Logics with LLMs}{Cosler et al.}{2023}\newline
-        \paper{https://arxiv.org/abs/2305.07766}{NL2TL: Transforming Natural Languages to Temporal Logics using LLMs}{Chen et al.}{2023}
-            & Turn English sentences into LTL rules.\newline
-              {\color{bad}Used to plan or to write specs, not to watch a running task.} \\
-        \paper{https://arxiv.org/abs/2510.01642}{FailSafe: Reasoning and Recovery from Failures in VLA Models}{Lin et al.}{2025}\newline
-        \paper{https://arxiv.org/abs/2606.23085}{Foresight: Failure Detection for Long-Horizon Robotic Manipulation}{Zhang et al.}{2026}\newline
-        \paper{https://arxiv.org/abs/2605.12651}{Runtime Monitoring of Perception-Based Autonomous Systems via Embedding Temporal Logic}{Kapoor et al.}{2026}
-            & Learn to spot failures from camera images.\newline
-              {\color{bad}Need training data; hard to say why an alarm fired.} \\ \hline
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.16\linewidth} >{\raggedright\arraybackslash}p{0.50\linewidth} >{\raggedright\arraybackslash}p{0.27\linewidth}@{}}
+        \textbf{\small Way} & \textbf{\small Examples} & \textbf{\small\color{bad}What is missing} \\ \hline
+        Natural language & {\tiny \paper{https://proceedings.mlr.press/v229/liu23d.html}{Grounding Complex Natural Language Commands for Temporal Tasks in Unseen Environments}{Liu et al.}{2023}\newline \paper{https://doi.org/10.1007/978-3-031-37703-7_18}{nl2spec: Interactively Translating Unstructured Natural Language to Temporal Logics with LLMs}{Cosler et al.}{2023}\newline \paper{https://arxiv.org/abs/2305.07766}{NL2TL: Transforming Natural Languages to Temporal Logics using LLMs}{Chen et al.}{2023}\newline \paper{https://doi.org/10.1609/aaai.v37i13.27068}{NL2LTL: A Python Package for Converting Natural Language Instructions to LTL Formulas}{Fuggitti, Chakraborti}{2023}\newline \paper{https://arxiv.org/abs/2512.16770}{GinSign: Grounding Natural Language Into System Signatures for Temporal Logic Translation}{English et al.}{2025}} & Made for planning or writing specs; no stages; words must be tied to sensors \\
+        Formal logic (LTL, STL) & {\tiny \paper{https://doi.org/10.1145/2000799.2000800}{Runtime Verification for LTL and TLTL}{Bauer, Leucker, Schallhart}{2011}\newline \paper{https://doi.org/10.1007/s10009-023-00720-3}{RTAMT: Runtime Robustness Monitors with Application to CPS and Robotics}{Yamaguchi, Hoxha, Ničković}{2024}} & An expert writes every rule; flat rules, no stages \\
+        Videos / demos & {\tiny \paper{https://proceedings.neurips.cc/paper_files/paper/2018/hash/74934548253bcab8490ebd74afed7031-Abstract.html}{Learning Task Specifications from Demonstrations}{Vazquez-Chanlatte et al.}{2018}\newline \paper{https://arxiv.org/abs/2310.07899}{RoboCLIP: One Demonstration is Enough to Learn Robot Policies}{Sontakke et al.}{2023}} & Need examples; the result is hard to read or edit \\
+        Hand-written code & {\tiny Our baseline: checks written inside the robot program (Experiment 2)} & Someone must foresee every failure \\ \hline
+    \end{tabular}
+    \note{
+    \begin{itemize}
+        \item \textbf{Natural language $\to$ logic.} Lang2LTL (CoRL 2023): route commands to LTL, GPT-4 finds the places, a small T5 writes the formula; works in new cities. nl2spec (CAV 2023): LLM translation with sub-translations a human can fix (16/36 alone, 31/36 with a human). NL2TL (EMNLP 2023): lifted translation with a fine-tuned T5, 28k pairs. NL2LTL (AAAI 2023 demo): picks one of a few fixed patterns; a demo paper, no benchmark of its own. GinSign (2025): grounds the placeholder words to a real system's signature; 100\% predicate F1 on its three domains. All target planning or spec writing; none adds stages or watches a running robot.
+        \item \textbf{Formal logic by experts.} LTL (Bauer et al.) and STL with robustness (RTAMT). Precise, but someone must write every rule, and the rules are flat.
+        \item \textbf{Videos / demonstrations.} Vazquez-Chanlatte et al. (NeurIPS 2018) infer a logical specification from demonstrations (maximum-entropy likelihood, search over candidates). RoboCLIP (NeurIPS 2023) uses one video or text description and a pretrained video-language model as a reward; 2--3$\times$ better zero-shot than other imitation methods. They need examples, and the result is hard to read or edit.
+        \item \textbf{Code.} Our hand-written checks baseline: strong on what was foreseen (81\% on time), silent on what was not (40/40). Prep sheet \S2.
+    \end{itemize}}
+\end{frame}
+
+% --- STREAM 2 ---
+\begin{frame}{Stream 2: monitoring a skill}
+    \scriptsize
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.16\linewidth} >{\raggedright\arraybackslash}p{0.50\linewidth} >{\raggedright\arraybackslash}p{0.27\linewidth}@{}}
+        \textbf{\small Way} & \textbf{\small Examples} & \textbf{\small\color{bad}What is missing} \\ \hline
+        State machines & {\tiny \paper{https://doi.org/10.1145/2000799.2000800}{Runtime Verification for LTL and TLTL}{Bauer, Leucker, Schallhart}{2011}\newline \paper{https://doi.org/10.1007/978-3-030-63486-5_40}{ROSMonitoring: A Runtime Verification Framework for ROS}{Ferrando et al.}{2020}\newline \paper{https://doi.org/10.1007/s10009-023-00720-3}{RTAMT: Runtime Robustness Monitors with Application to CPS and Robotics}{Yamaguchi, Hoxha, Ničković}{2024}\newline \paper{https://arxiv.org/abs/2604.22384}{Reelay: Online Temporal Logic Monitoring Framework}{Ulus}{2026}\newline \paper{https://doi.org/10.1007/978-3-642-29860-8_15}{Runtime Verification with State Estimation}{Stoller et al.}{2011}} & No stages: ``eventually'' waits to the end; rules by hand \\
+        LLM reasoning & {\tiny \paper{https://proceedings.mlr.press/v229/liu23g.html}{REFLECT: Summarizing Robot Experiences for Failure Explanation and Correction}{Liu, Bahety, Song}{2023}} & Slow; can be wrong; says ``wrong'', not ``where'' \\
+        VLM / learned & {\tiny \paper{https://proceedings.iclr.cc/paper_files/paper/2025/hash/70a06501001e1820fd1eb9ee821302d2-Abstract-Conference.html}{AHA: A Vision-Language-Model for Detecting and Reasoning Over Failures in Robotic Manipulation}{Duan et al.}{2025}\newline \paper{https://arxiv.org/abs/2510.01642}{FailSafe: Reasoning and Recovery from Failures in VLA Models}{Lin et al.}{2025}\newline \paper{https://arxiv.org/abs/2606.23085}{Foresight: Failure Detection for Long-Horizon Robotic Manipulation}{Zhang et al.}{2026}} & Need training data; black box \\
+        Hybrid & {\tiny \paper{https://arxiv.org/abs/2605.12651}{Runtime Monitoring of Perception-Based Autonomous Systems via Embedding Temporal Logic}{Kapoor et al.}{2026}} & Facts not human-readable \\ \hline
     \end{tabular}
     \vspace{0.05cm}
 
@@ -138,11 +164,10 @@
     \key{Our gap:} rules made from plain words \textbf{+} task stages \textbf{+} only the robot's own sensors.
     \note{
     \begin{itemize}
-        \item \textbf{Lang2LTL (CoRL 2023):} English route commands to LTL (GPT-4 finds places, a small model writes the formula); works in new cities. For planning.
-        \item \textbf{nl2spec (CAV 2023):} an LLM translates a sentence to LTL and shows which words became which part, so a person can fix it: 16/36 hard cases alone, 31/36 with a human. For writing specs.
-        \item \textbf{NL2TL (EMNLP 2023):} hides the nouns, then a fine-tuned T5 writes the logic; about 28k training pairs.
-        \item \textbf{FailSafe (2025):} trains a vision-language model on failures made in simulation; up to +22.6 points success for one policy. \textbf{Foresight (2026):} predicts the near future from camera and planned actions; alarm when it looks wrong. \textbf{Embedding TL (2026):} logic over image embeddings; the authors say its facts are not yet human-readable.
-        \item Gap: none makes the monitor from the task description, with stages, from the robot's own sensors.
+        \item \textbf{State machines.} Bauer et al. (TOSEM 2011): LTL$_3$, true / false / ``?'', smallest monitor, earliest verdict; we build on it. ROSMonitoring (TAROS 2020): ROS topics $\to$ monitor nodes, any logic as the oracle. RTAMT (STTT 2024): STL with robustness, ROS integration, Toyota HSR case study. Reelay (2026): fast past-time logic monitoring, about a million messages per log in benchmarks. Stoller et al. (RV 2011): an HMM fills gaps in observation and gives the probability a property holds. None knows the task's stages; all need rules written by hand.
+        \item \textbf{LLM reasoning.} REFLECT (CoRL 2023): summarises sensor data into a text history; an LLM explains why a task failed and suggests a fix (RoboFail dataset). Our MiniGrid pilot measured the risk: a free-text LLM judge gave $+0$ while the LTL monitor gave $+1.00$.
+        \item \textbf{VLM / learned.} AHA (ICLR 2025): a VLM fine-tuned on generated failures; beats GPT-4o by 10.3\%. FailSafe (2025): failures made in simulation, a VLM proposes fixes. Foresight (2026): world-model latents + conformal alarm. All need failure data and give no readable reason.
+        \item \textbf{Hybrid.} Embedding TL (2026): logic whose facts are distances to reference images in an embedding space. Prep sheet \S3.
     \end{itemize}}
 \end{frame}
 
@@ -288,8 +313,51 @@
     \end{itemize}}
 \end{frame}
 
+% --- FIRST TEST BED: MINIGRID + MAAOS ---
+\begin{frame}{First test bed: continuous MiniGrid + MAAOS}
+    \begin{columns}[c]
+        \begin{column}{0.56\textwidth}
+            \small
+            \begin{itemize}
+                \item Box pushing in a \textbf{continuous MiniGrid}, with \textbf{MAAOS} (Fouzi's multi-agent planner; I integrated it).
+                \item One agent, or two agents pushing together.
+                \item Wrong plan or deadlock: monitor + re-plan \key{fixed every seed}.
+                \item A free-text \textbf{LLM judge: no gain}. It says ``wrong'', not \emph{where} in the task.
+                \item No false alarms on clean runs.
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.42\textwidth}
+            \centering
+            \resizebox{0.9\linewidth}{!}{
+            \begin{tikzpicture}[x=0.8cm, y=0.8cm]
+                \foreach \x in {0,...,6} \foreach \y in {0,...,4} \draw[mut!40, fill=soft] (\x,\y) rectangle ++(1,1);
+                \foreach \c in {(2,3),(3,3),(5,0),(6,0)} \fill[bad!70] \c rectangle ++(1,1);
+                \fill[green!55!black!60] (6,4) rectangle ++(1,1);
+                \fill[brown!70] (3.15,1.15) rectangle ++(0.7,0.7);
+                \fill[acc] (1.5,1.5) circle (0.33);
+                \fill[acc] (1.5,0.5) circle (0.33);
+                \node[font=\scriptsize, text=white] at (1.5,1.5) {A};
+                \node[font=\scriptsize, text=white] at (1.5,0.5) {B};
+                \draw[-{Stealth[length=2mm]}, thick, acc] (2.0,1.5) -- (3.1,1.5);
+                \node[font=\scriptsize] at (6.5,4.5) {goal};
+                \node[font=\scriptsize, text=white] at (2.5,3.5) {lava};
+            \end{tikzpicture}
+            }
+            \pic{Two agents (A, B) push a heavy box to the goal and avoid lava.}
+        \end{column}
+    \end{columns}
+    \note{
+    \begin{itemize}
+        \item Our first test bed, now frozen as a pilot. MAAOS is Fouzi's multi-agent project; I integrated it into a continuous version of MiniGrid (agents move and push with continuous dynamics; lava tiles are hazards).
+        \item Tasks: one agent pushes a heavy box to a goal; two agents must reach the box, line up on the same side and push together.
+        \item Scenarios: clean plan, hazard navigation, an injected fault (corrupted plan / coordination deadlock). Arms: monitor off, detect only, detect + re-plan. 10 seeds per cell for the rule-based monitors, 5 for the LLM-backed ones.
+        \item Results: corrupted plan 0 $\to$ every seed with re-plan ($\Delta = +1.00$); deadlock: off fails every seed (80-step budget), LTL + re-plan recovers every seed in about 45 steps. Detect only: $+0.00$ everywhere. Free-text LLM judge: $+0.00$ even with re-plan --- first evidence for stages. Clean runs: 1.00 success, 0 false alarms.
+        \item Honest: scripted reference plans, not the live MAAOS planner; discrete-mode episodes. One spec fault was mine (an over-strict alignment rule), fixed by relaxing the formula; a stronger judge did not help.
+    \end{itemize}}
+\end{frame}
+
 % --- TEST BED ---
-\begin{frame}{Test bed: a humanoid robot in a simulator}
+\begin{frame}{Test bed: a humanoid robot in MuJoCo}
     \begin{itemize}
         \item Unitree \textbf{G1} robot in the \textbf{MuJoCo} physics simulator.
         \item We \key{cause failures on purpose}: push, stall, drop, failed grasp.
@@ -468,46 +536,59 @@
     \centering
     \resizebox{\linewidth}{!}{
     \begin{tikzpicture}[
-        bx/.style={draw=mut, rounded corners=4pt, fill=soft, minimum height=3.4cm, text width=4.6cm, align=center},
+        bx/.style={draw=mut, rounded corners=4pt, fill=soft, minimum height=1.4cm, text width=4.8cm, align=center},
         arr/.style={-{Stealth[length=2.5mm]}, thick, mut}]
-        \node[bx, draw=acc, fill=acc!10] (a) {\textbf{1. Fix what we found}\\[0.2em] better time limits; progress toward each stage's own goal};
-        \node[bx, right=0.5cm of a] (b) {\textbf{2. More tests}\\[0.2em] more tasks, more rule sets, more failures};
-        \node[bx, right=0.5cm of b] (c) {\textbf{3. Real G1 robot}\\[0.2em] record, tune, monitor on vs.\ off};
-        \node[bx, right=0.5cm of c] (d) {\textbf{4. The full POMDP}\\[0.2em] camera, real probabilities, best decisions};
+        \node[bx, fill=green!8] (a) {\textbf{Continuous MiniGrid}\\ + MAAOS (done)};
+        \node[bx, right=0.5cm of a, draw=acc, line width=1.4pt, fill=acc!10] (b) {\textbf{MuJoCo G1}\\ (now)};
+        \node[bx, right=0.5cm of b] (c) {\textbf{Isaac Sim}\\ (next)};
+        \node[bx, right=0.5cm of c] (d) {\textbf{Real G1}\\ + TRAV navigation};
         \draw[arr] (a) -- (b); \draw[arr] (b) -- (c); \draw[arr] (c) -- (d);
     \end{tikzpicture}
     }
-    \vspace{0.3cm}
+    \vspace{0.2cm}
 
     \raggedright
-    {\small \textbf{Limits today:} the grasp is simulated (no arms on this G1), the camera is simulated, the thresholds are not tuned.}
+    \small
+    \begin{itemize}
+        \item \textbf{Fix what we found:} better time limits; progress toward each stage's goal.
+        \item \textbf{More tests:} more tasks, more rule sets, more failures.
+        \item \textbf{The full POMDP:} camera, real probabilities, best decisions.
+    \end{itemize}
+    {\scriptsize \textbf{Limits today:} grasp and camera are simulated; thresholds not tuned.}
     \note{
     \begin{itemize}
-        \item 1: time limits from normal runs; progress toward each stage's own target (would catch a skipped pick-up); after re-plan, restart at the current stage.
-        \item 2: several generated specs per task; more tasks and failures.
-        \item 3: real G1: record, tune thresholds, monitor on vs.\ off.
-        \item 4: full POMDP (Paper 2): camera facts with probabilities, a real belief, stop / continue / re-plan by expected cost.
-        \item Limits: the legs-only G1 cannot grasp (the box is attached); the box position is from a simulated detector.
+        \item Platforms: continuous MiniGrid + MAAOS (pilot, done) $\to$ MuJoCo G1 (now, real dynamics) $\to$ Isaac Sim (richer scenes, cameras, more skills) $\to$ the real G1 with Elias's TRAV navigation app (monitor on vs.\ off).
+        \item What stays the same at every step: one monitor engine, the same sensor vocabulary; only the robot's ``adapter'' changes. The real G1, MuJoCo and Isaac adapters already expose the same sensor schema.
+        \item Fix: time limits from normal runs; progress toward each stage's own target (catches a skipped pick-up); restart at the current stage after re-plan.
+        \item Paper 2, the full POMDP: camera facts with probabilities, a real belief, stop / continue / re-plan by expected cost.
+        \item Limits: the legs-only G1 cannot grasp (box attached); box position from a simulated detector.
     \end{itemize}}
 \end{frame}
 
 % --- REFERENCES ---
 \begin{frame}[allowframebreaks]{References}
-    \scriptsize
+    \tiny
     \begin{itemize}
         \item[] \paper{https://doi.org/10.1145/2000799.2000800}{Runtime Verification for LTL and TLTL}{Bauer, Leucker, Schallhart}{2011}. ACM TOSEM 20.
         \item[] \paper{https://arxiv.org/abs/2305.07766}{NL2TL: Transforming Natural Languages to Temporal Logics using Large Language Models}{Chen, Gandhi, Zhang, Fan}{2023}. EMNLP.
         \item[] \paper{https://doi.org/10.1007/978-3-031-37703-7_18}{nl2spec: Interactively Translating Unstructured Natural Language to Temporal Logics with Large Language Models}{Cosler, Hahn, Mendoza, et al.}{2023}. CAV.
+        \item[] \paper{https://proceedings.iclr.cc/paper_files/paper/2025/hash/70a06501001e1820fd1eb9ee821302d2-Abstract-Conference.html}{AHA: A Vision-Language-Model for Detecting and Reasoning Over Failures in Robotic Manipulation}{Duan et al.}{2025}. ICLR.
+        \item[] \paper{https://arxiv.org/abs/2512.16770}{GinSign: Grounding Natural Language Into System Signatures for Temporal Logic Translation}{English, Walker, Simon, Ewetz}{2025}. arXiv.
         \item[] \paper{https://doi.org/10.1007/978-3-030-63486-5_40}{ROSMonitoring: A Runtime Verification Framework for ROS}{Ferrando, Cardoso, Fisher, Ancona, et al.}{2020}. TAROS.
+        \item[] \paper{https://doi.org/10.1609/aaai.v37i13.27068}{NL2LTL: A Python Package for Converting Natural Language Instructions to LTL Formulas}{Fuggitti, Chakraborti}{2023}. AAAI (demo).
         \item[] \paper{https://doi.org/10.1016/S0004-3702(98)00023-X}{Planning and Acting in Partially Observable Stochastic Domains}{Kaelbling, Littman, Cassandra}{1998}. Artificial Intelligence 101.
         \item[] \paper{https://arxiv.org/abs/2605.12651}{Runtime Monitoring of Perception-Based Autonomous Systems via Embedding Temporal Logic}{Kapoor, Hammer, Kapoor, et al.}{2026}. arXiv.
         \item[] \paper{https://arxiv.org/abs/2510.01642}{FailSafe: Reasoning and Recovery from Failures in Vision-Language-Action Models}{Lin, Duan, Fang, Fox, et al.}{2025}. arXiv.
         \item[] \paper{https://proceedings.mlr.press/v229/liu23d.html}{Grounding Complex Natural Language Commands for Temporal Tasks in Unseen Environments}{Liu, Yang, Idrees, Liang, et al.}{2023}. CoRL.
+        \item[] \paper{https://proceedings.mlr.press/v229/liu23g.html}{REFLECT: Summarizing Robot Experiences for Failure Explanation and Correction}{Liu, Bahety, Song}{2023}. CoRL.
+        \item[] \paper{https://arxiv.org/abs/2310.07899}{RoboCLIP: One Demonstration is Enough to Learn Robot Policies}{Sontakke, Zhang, Arnold, et al.}{2023}. NeurIPS.
         \item[] \paper{https://doi.org/10.1007/978-3-642-29860-8_15}{Runtime Verification with State Estimation}{Stoller, Bartocci, Seyster, Grosu, Havelund, Smolka, Zadok}{2011}. RV, LNCS 7186.
+        \item[] \paper{https://arxiv.org/abs/2604.22384}{Reelay: Online Temporal Logic Monitoring Framework}{Ulus}{2026}. arXiv.
+        \item[] \paper{https://proceedings.neurips.cc/paper_files/paper/2018/hash/74934548253bcab8490ebd74afed7031-Abstract.html}{Learning Task Specifications from Demonstrations}{Vazquez-Chanlatte, Jha, Tiwari, Ho, Seshia}{2018}. NeurIPS.
         \item[] \paper{https://doi.org/10.1007/s10009-023-00720-3}{RTAMT: Runtime Robustness Monitors with Application to CPS and Robotics}{Yamaguchi, Hoxha, Ničković}{2024}. STTT 26.
         \item[] \paper{https://arxiv.org/abs/2606.23085}{Foresight: Failure Detection for Long-Horizon Robotic Manipulation with Action-Conditioned World Model Latents}{Zhang, Lu, Wang, Kang, et al.}{2026}. arXiv.
     \end{itemize}
-    \note{Every entry is a link. Venues and authors come from the verified BibTeX entries in \texttt{papers/}; FailSafe, Foresight and Embedding-TL have no verified venue yet, so they link to arXiv.}
+    \note{Every entry is a link. Sources: the verified BibTeX in \texttt{papers/}; Kaelbling 1998, Stoller 2011, Vazquez-Chanlatte 2018, RoboCLIP, REFLECT and AHA confirmed by web search. FailSafe, Foresight, Embedding-TL, GinSign and Reelay link to arXiv.}
 \end{frame}
 
 \end{document}
