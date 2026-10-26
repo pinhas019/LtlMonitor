@@ -29,6 +29,12 @@ and its notes on the right (more detail on every cited paper, what to say, where
 number comes from). Present from it with a two-screen viewer such as `pdfpc`, which shows
 the left half to the audience; or just read it beforehand.
 
+`phone_notes.md` is the version to keep on a phone while presenting `talk.pdf`: one short
+block of bullets per PDF page (same numbers), an "If asked" pointer where a committee question
+fits, a card of rules and numbers up front, and the ten mock-defence questions with short
+answers at the end. `python3 make_phone_notes.py` turns it into `phone_notes.html` (large
+text, a strip of page numbers to jump, light and dark, a "Keep screen on" button).
+
 Every citation reads `[article name, authors, year]` and the whole citation is a link to
 the article (DOI, PMLR or arXiv). Citations come from the verified entries in `papers/<slug>/bibtex.md`, plus Kaelbling,
 Littman & Cassandra 1998 (POMDPs) and Stoller et al. 2011 (monitoring with state
