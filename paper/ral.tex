@@ -1,12 +1,15 @@
 %% =====================================================================
-%%  Skill-Agnostic Runtime Monitors for Robot Skills
+%%  Phase-Structured Runtime Monitoring of Robot Skills
 %%  Draft for IEEE Robotics and Automation Letters (RA-L)
 %%
-%%  STATUS:  Sections I-III (Introduction, Related Work, Why LTL) are
-%%           drafted for review.  Sections IV-VII are structured
-%%           skeletons grounded in the as-built system; every number
-%%           that is not yet measured is marked with \TODO.
-%%           See paper/README.md for the claim/evidence audit.
+%%  MAIN CLAIM: decomposing a skill's execution into phases improves
+%%  monitoring.  Portability across embodiments and natural-language
+%%  authorship are consequences of the same decomposition, not the
+%%  headline.
+%%
+%%  STATUS: Sections I-III drafted.  IV-VIII are skeletons grounded in
+%%  the as-built system.  Unmeasured quantities are marked \TODO.
+%%  See paper/README.md for the claim/evidence audit.
 %% =====================================================================
 
 \documentclass[letterpaper, 10pt, journal, twoside]{IEEEtran}
@@ -20,8 +23,6 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{xcolor}
 
-% Draft marker: every unmeasured quantity goes through this macro so a
-% grep for TODO finds all of them before submission.
 \newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
 
 \newcommand{\G}{\mathbf{G}}
@@ -29,232 +30,272 @@
 \newcommand{\X}{\mathbf{X}}
 \newcommand{\U}{\mathbin{\mathbf{U}}}
 
-\title{Skill-Agnostic Runtime Monitors: Compiling Free-Form Skill
-Descriptions into Embodiment-Independent LTL Monitors}
+\title{Phases Make Failure Monitorable: Phase-Structured LTL Runtime
+Monitoring of Robot Skills}
 
 \author{\TODO{author block, affiliations, funding, and the RA-L
-copyright/accompanying-video footnotes}}
+copyright / accompanying-video footnotes}}
 
 \begin{document}
 \maketitle
 
 % =====================================================================
 \begin{abstract}
-A robot skill can fail in many more ways than it can succeed, and an
-operator supervising one needs to know, while it runs, where in the
-skill the robot is and which stated requirement is breaking --- not a
-success bit once the episode is over. Runtime verification answers
-exactly this question, yet deployed robots rarely carry a temporal-logic
-monitor, because every such monitor is paid for twice: once in
-authorship, since the propositions and formulas must be written by a
-specialist for each new skill, and again in portability, since those
-propositions are written against whatever state one particular robot
-happens to publish. We argue that these two costs are a single mistake
---- conflating \emph{what must hold}, a property of the skill, with
-\emph{how to measure it}, a property of the embodiment --- and we
-present a monitoring architecture that separates them. A free-language
-description of a skill is compiled, through a generate--validate--repair
-loop against a declared sensor schema, into a skill specification:
-atomic propositions with executable grounding rules, Linear Temporal
-Logic (LTL) formulas, named failure modes, and a sequence of execution
-phases. Embodiment-specific knowledge terminates in a per-robot
-descriptor that the monitor never reads; the monitor and the sensor
-evaluator learn of each other only through latched manifests on the
-wire. The separation is therefore not a convention but a checkable
-invariant, and we check it three ways: schema parity across shipped
-descriptors, a static test that no monitor code reaches the descriptor
-directory, and an end-to-end acceptance test requiring that two
-independent replay paths of one episode yield an identical verdict. We
-further define the monitor's time base explicitly --- one automaton step
-per tick, where a tick is a half-open interval named by the boundary
-that closes it --- and introduce a per-tick \textsc{decided}\,/\,%
-\textsc{undecided} axis, distinct from LTL's inconclusive verdict, so
-that a proposition whose sensors are stale freezes the automaton rather
-than silently reading as false. We evaluate on humanoid navigation with
-a Unitree G1. \TODO{headline quantitative result}
+A runtime monitor for a robot skill is usually given the skill's
+requirements as a flat set of temporal-logic formulas. We show that this
+is not merely coarse but structurally deficient: the formula that states
+a skill's goal is a liveness property, liveness properties have no bad
+prefix, and so a flat specification \emph{cannot be violated by a
+stalled robot at all}. A humanoid wedged against an obstacle leaves the
+monitor permanently inconclusive. Our central claim is that decomposing
+the skill's execution into \emph{phases} repairs this, and that the
+repair is the main reason to reach for temporal logic in the first
+place. Each phase carries a precondition checked on entry, an invariant
+checked every tick, a progress condition with a bounded violation
+budget, an exit condition, and a deadline in ticks. Bounding each
+obligation converts an unmonitorable liveness property into a ladder of
+safety properties, each of which has a bad prefix and is therefore
+detectable on a finite trace; and because each guard belongs to a named
+phase and carries a fault category, a breach arrives already localised
+(which phase, which guard) and already graded into an intervention. The
+phase ladder does not replace Linear Temporal Logic but runs alongside
+it: LTL carries the cross-cutting safety invariants and supplies the
+monotone, permanent violation verdict a supervisor can latch, while the
+phase ladder supplies the bounded obligations and the diagnosis that LTL
+structurally cannot. Two further properties follow from the same
+decomposition rather than being designed separately: because the guards
+are expressed only over declared atomic propositions, the monitor never
+names an embodiment, so the same monitor and specification run on
+hardware, in simulation and on a recorded stream; and because the phase
+structure is a small declarative artifact, it can be authored from a
+free-language description of the skill and validated mechanically. We
+evaluate on humanoid navigation with a Unitree G1, ablating the phase
+ladder against the flat specification of the same mission.
+\TODO{headline result}
 \end{abstract}
 
 \begin{IEEEkeywords}
 Formal methods in robotics and automation, runtime verification,
-failure detection and recovery, software architecture for robotic and
-automation systems, humanoid robots.
+failure detection and recovery, task and motion planning, humanoid
+robots.
 \end{IEEEkeywords}
 
 % =====================================================================
 \section{Introduction}
 % =====================================================================
 
-\IEEEPARstart{A}{robot} skill fails in more ways than it succeeds. A
-humanoid asked to walk a waypoint mission can reach its goal; it can
-also stall against a lip its traversability estimate called flat, wedge
-itself between two obstacles while its planner still reports that it is
-following a path, topple, or arrive somewhere that is not the goal and
-declare success. An operator supervising that skill does not want a
-success bit at the end of the episode. They want to know, while it is
-running, \emph{where in the skill the robot is} and \emph{which stated
-requirement is in the process of breaking}.
+\IEEEPARstart{C}{onsider} a humanoid executing a waypoint navigation
+mission. It is armed, it plans, it walks, and then it wedges itself
+against a lip its traversability estimate called flat. The legs keep
+cycling. The planner keeps reporting that it is following a path. The
+goal is never reached.
 
-That is a runtime verification question, and runtime verification has
-had a good answer for decades: state the requirement in a temporal
-logic, compile it into a monitor, and step the monitor on the observed
-trace~\cite{pnueli1977temporal,vardi1986automata,bauer2011runtime,leucker2009brief}. The machinery is mature, the tooling is
-good~\cite{duretlutz2016spot,falcone2021taxonomy}, and the robotics
-community has built substantially on it, both for synthesising
-controllers with guarantees~\cite{kressgazit2009temporal,kressgazit2018synthesis} and for checking behaviour as it
-happens~\cite{pettersson2005execution}.
+Now ask what a runtime monitor should say. The requirement the skill was
+given is, in Linear Temporal Logic (LTL), something like
+%
+\begin{equation}
+\label{eq:flat}
+\F\big(\mathit{armed} \wedge \F(\mathit{planning} \wedge
+  \F(\mathit{walking} \wedge \F \mathit{finished}))\big),
+\end{equation}
+%
+and this is the form such specifications actually take --- the shipped
+specification for our platform contains exactly this formula. On the
+trace above, a monitor for \eqref{eq:flat} reports
+\textsc{inconclusive}. It reports \textsc{inconclusive} on the next
+tick, and on every tick after that, for as long as anyone cares to
+watch. It is not reporting late. It is reporting correctly, and it will
+never report anything else, because \eqref{eq:flat} is a liveness
+property: at any finite point, $\mathit{finished}$ could still become
+true later. A liveness property has no bad prefix~\cite{manna1990hierarchy},
+and a property with no bad prefix cannot be refuted by a finite
+observation~\cite{bauer2011runtime}.
 
-And yet almost no deployed robot carries such a monitor. The reason is
-not that the theory is inadequate. It is that every monitor is paid for
-twice.
+This is the problem we address. It is not a matter of degree. A flat
+temporal specification of a skill's goal is \emph{not monitorable for
+failure}, and the most common robot failure --- making no progress ---
+is exactly the failure it cannot see.
 
-It is paid for once in \textbf{authorship}. Somebody must write the
-atomic propositions, the formulas, the phase structure and the terminal
-conditions, in a formal language, for this skill. That is a specialist
-act, and its cost scales with the number of skills a robot has. A
-platform with thirty skills does not get thirty monitors; it gets one or
-two, for whichever skills somebody had time to formalise.
+\subsection{Phases make the obligation bounded}
 
-It is paid for again in \textbf{portability}. Those propositions are
-written against the state this particular robot happens to publish ---
-this odometry topic, this planner's status enumeration, these units. So
-the monitor is welded to one embodiment and one software stack. Replace
-the navigation algorithm and the monitor breaks. Move the episode into a
-simulator to replay a counterfactual and the monitor has to be rewritten
-before the replay means anything, which is precisely when you most want
-it to be the same monitor.
+Our claim is that the repair is to decompose the skill's execution into
+\textbf{phases}, and that this decomposition is what makes runtime
+monitoring of a skill work at all.
 
-\subsection{Two couplings, usually conflated}
+A phase is a named stage of the skill carrying five guards and two
+budgets: a \emph{precondition} checked once on entry, an
+\emph{invariant} checked on every tick the phase is active, a
+\emph{progress condition} with a bounded violation budget, an \emph{exit
+condition} that advances the ladder, and a \emph{deadline} in ticks.
+Figure~\ref{fig:two-encodings} shows our platform's navigation mission
+expressed both ways, from the same specification file.
 
-Our claim is that these two costs are one mistake. A monitor for a skill
-depends on two separable things:
+The consequence is formal rather than cosmetic. ``Eventually finish'' is
+a liveness obligation with no bad prefix. ``Leave this phase within
+$k$ ticks'' is a \emph{bounded} obligation: it is a safety property, it
+has bad prefixes of length at most $k$, and it is therefore monitorable
+for violation on a finite trace. The same holds for ``do not fail the
+progress predicate on $m$ consecutive ticks''. Decomposing the skill
+into phases with deadlines performs a \textbf{liveness-to-safety
+conversion}, one phase at a time, and that conversion is precisely what
+turns an undetectable stall into a detected one. On the wedged-humanoid
+trace, the phase ladder reports a progress fault within $m$ ticks of the
+stall beginning, and a timeout fault at the phase's deadline, while the
+flat formula is still inconclusive.
 
-\begin{itemize}
-  \item \textbf{What must hold.} The propositions, their temporal
-  arrangement, the phases the skill passes through, the failure modes
-  that have names and categories. This is a property of the
-  \emph{skill}. It is what a domain expert knows and what a
-  natural-language description of the skill already contains, informally.
+\begin{figure}[t]
+\centering
+\small
+\begin{tabular}{@{}p{0.46\columnwidth}p{0.46\columnwidth}@{}}
+\toprule
+\textbf{Flat LTL (as shipped)} & \textbf{Phase ladder (as shipped)} \\
+\midrule
+One formula:
+\vspace{2pt}
 
-  \item \textbf{How to measure it.} Which topic, which field, which
-  unit yields each proposition's inputs; how samples arriving at
-  different rates are reduced to one value per step; what counts as a
-  fresh sample and what a dead sensor means. This is a property of the
-  \emph{embodiment}. It is what an integrator knows and it has nothing
-  to do with the skill.
-\end{itemize}
+$\F(\mathit{armed} \wedge \F(\mathit{planning}$
+$\wedge\, \F(\mathit{walking} \wedge \F \mathit{finished})))$
+\vspace{4pt}
 
-Existing systems mix these, and the mixing is what makes a monitor
-unportable. If the proposition ``the robot is not making progress'' is
-defined as \texttt{planner.status == STUCK}, then it is simultaneously a
-statement about the skill and a statement about one planner's API, and
-neither can be reused without the other. Worse, it is a statement the
-planner makes about itself: a planner that reports \emph{following}
-while physically wedged renders that failure structurally invisible to
-the monitor. We encountered exactly this on our platform, and it is the
-sharpest argument we know for separating the two.
+Verdict on a stalled trace: \textsc{inconclusive}, forever.
+\vspace{4pt}
 
-\subsection{Approach}
+Diagnosis available: none. The formula names the mission, not the stage.
+&
+Three phases, each with guards and budgets:
+\vspace{2pt}
 
-We keep the two concerns in two artifacts, authored by two different
-people, and we forbid either from reading the other.
+\textsc{planning}: deadline 30, budget 5
+\textsc{tracking}: deadline 120, budget 5
+\textsc{confirm}: deadline 10
+\vspace{4pt}
 
-A \textbf{skill specification} is per skill. It is produced by compiling
-a free-language description of the skill together with a declared sensor
-schema, through a generate--validate--repair loop, into a structured
-document: atomic propositions each carrying an executable grounding
-rule, LTL formulas, named failure modes with fault categories, and a
-sequence of execution phases with preconditions, invariants, progress
-conditions and exit conditions. The validator is a specification
-contract that rejects, mechanically, any proposition whose rule
-references a sensor key the schema does not declare --- which is what
-makes a language model a usable author rather than a liability.
+Verdict on a stalled trace: \textsc{failure} at the budget or the
+deadline, whichever binds first.
+\vspace{4pt}
 
-An \textbf{adapter descriptor} is per embodiment. It is data, not code:
-a declaration of which topic and field feeds which schema key, at what
-nominal rate, with what staleness tolerance, and how multiple samples
-within one step are folded into one value.
+Diagnosis available:
+\texttt{phase:tracking:progress}, category \textsc{progress}
+$\rightarrow$ \textsc{replan}.
+\\
+\bottomrule
+\end{tabular}
+\caption{The same navigation mission, encoded two ways in the same
+specification file. The left column is monitorable for satisfaction but
+not for violation; the right column is monitorable for both, localises
+the breach to a stage and a guard, and grades it into a response.
+\TODO{replace with a proper figure: the two encodings plus an annotated
+stall trace showing the tick at which each reports.}}
+\label{fig:two-encodings}
+\end{figure}
 
-The monitor engine consumes only a specification and an observation
-stream. Neither names an embodiment. Everything embodiment-specific
-terminates at the evaluator that owns the descriptor. The two halves
-learn of each other only through latched manifests published on the
-wire, which means the invariant can be stated sharply:
+\subsection{Phases also localise and grade}
 
-\begin{quote}
-\emph{The monitor never reads an adapter descriptor, and the evaluator
-never reads a skill specification.}
-\end{quote}
+Detectability is the formal argument, but it is not the only one. Three
+further properties come from the same structure.
 
-Stated that way it is checkable, and we check it. Two static tests
-(every shipped descriptor exposes an identical schema key set; no import
-path leads from the monitor package into the descriptor directory) and
-one end-to-end acceptance test: one recorded episode, replayed two ways
---- re-executed in simulation through a different descriptor, and
-replayed as a recorded observation stream straight into the monitor ---
-must produce the same verdict. The agnosticism claim holds by
-construction, and that test is what turns ``by construction'' into
-something a reviewer can fail.
+\textbf{A breach names a stage and a guard.} The phase machine's faults
+are named \texttt{phase:$\langle$name$\rangle$:$\langle$invariant $\vert$
+timeout $\vert$ progress $\vert$ precondition$\rangle$}. An operator is
+not told that a conjunction failed; they are told that the tracking
+phase stopped making progress. This matters because ``where in the
+skill is it'' is the first question anyone asks of a running robot, and
+a product automaton's state is not an answer to it.
 
-\subsection{The time base, and what ``not enough data'' means}
+\textbf{A breach carries a category, and the category chooses the
+response.} Each guard declares a fault category, and the categories
+grade into an intervention ladder --- a safety breach aborts, a timeout
+or progress breach asks for a replan. A monitor that emits a single
+Boolean ``failed'' forces the supervisor to re-derive the severity it
+has just thrown away.
 
-A monitor that steps once per message has a trace that depends on
-transport, so the same episode replayed over a slower link yields a
-different verdict, and the sim-versus-real comparison above compares two
-things that were never comparable. We therefore define the trace
-explicitly. Tick $k$ is the half-open interval $(B_{k-1}, B_k]$ on an
-explicit clock, named by the boundary that \emph{closes} it; samples
-accumulate into the open window and are folded by a per-key declared
-policy when it closes; the automaton steps exactly once per tick,
-whether or not anything arrived. The operator $\X$ therefore means one
-tick later, and nothing else in the system is permitted to define time.
+\textbf{The same proposition can mean different things at different
+stages.} In our mission, $\mathit{walking}$ being false is unremarkable
+during the planning phase and is a progress violation during the
+tracking phase. A flat specification can express this only by encoding
+the stage into the formula --- that is, by reinventing phases inside
+LTL, at the cost of an automaton whose state no longer corresponds to
+anything an operator can read.
 
-Defining the tick exposes a question that a message-driven monitor never
-has to answer: what should the automaton do on a tick where a required
-proposition is \emph{unknowable} because the sensor feeding it is stale?
-Reading it as false fabricates violations out of dropouts. We make
-propositions three-valued, and when a proposition the automaton
-currently needs is unknown we \emph{freeze} --- the automaton does not
-step and the tick is recorded \textsc{undecided}. This is deliberately a
-different axis from LTL's inconclusive verdict: inconclusive is a
-statement about the \emph{trace} (the prefix so far neither proves nor
-refutes the property) and is the normal condition of a healthy liveness
-obligation, whereas undecided is a statement about \emph{observation}.
-Conflating them is tempting and wrong. The honest consequence, which we
-state rather than engineer away, is that a safety property cannot be
-violated during a sensor outage --- epistemically correct, since no
-violation was observed, and it makes the data-health alarm load-bearing
-for safety rather than cosmetic. Every episode verdict therefore carries
-a coverage count: how many of its ticks were undecided.
+\subsection{Why LTL, then, and not phases alone}
+
+Phases supply bounded obligations and diagnosis. They do not supply a
+formal temporal semantics, they do not express requirements that hold
+\emph{across} all stages, and a hand-rolled stage machine has no notion
+of a verdict that cannot be retracted. LTL supplies exactly those three.
+The invariants that matter most on a humanoid --- never let an obstacle
+within \SI{0.25}{\metre}, never stop being upright --- are genuinely
+cross-cutting: they hold in every phase and between phases, and they are
+naturally written $\G\neg\mathit{collision\_risk}$ and
+$\G\,\mathit{upright}$. Compiled to automata, they also give what a
+supervisor needs and a stage machine cannot promise: violation is
+\emph{permanent}, because the automaton enters a non-accepting trap
+state with a self-loop, so a latched safety response never has to worry
+that the verdict will be withdrawn.
+
+So the two layers are not alternatives, and the choice of LTL is not
+incidental to the phase claim --- it is the half of the design that
+makes the other half safe. We run them together, on one tick: the LTL
+automata are the verdict of record for cross-cutting properties, and the
+phase ladder is the bounded, localised, graded account of progress
+through the skill. Each supplies what the other structurally cannot.
+
+\subsection{Two consequences we did not design for}
+
+Two further properties fall out of the decomposition, and we report them
+as consequences rather than as contributions in their own right.
+
+Because every guard is written only over atomic propositions, and
+because each proposition's grounding in sensors is declared separately
+from the specification, nothing in the phase structure names an
+embodiment. The same monitor and the same specification therefore run
+against hardware, against a simulator and against a recorded observation
+stream, and we can check that claim rather than assert it: the monitor
+never reads the per-robot descriptor, the evaluator never reads the
+specification, and one episode replayed two ways must produce one
+verdict.
+
+Because the phase structure is a small declarative artifact over a
+declared vocabulary, it can be generated from a free-language
+description of the skill and then \emph{validated mechanically} --- every
+formula must compile, and every sensor key a guard references must be
+declared in the schema. That validator is what makes a language model an
+acceptable author here. Neither property is the point of the paper, but
+both are evidence that the decomposition is the right one: a structure
+that admits a cheap correctness check and a clean portability argument
+is usually a structure that was cut along the real joint.
 
 \subsection{Contributions}
 
 \begin{enumerate}
-  \item \textbf{A skill-agnostic monitor synthesis pipeline.} A
-  free-language skill description plus a declared sensor schema compiles
-  into a validated skill specification; the monitor engine is unchanged
-  across skills, which differ only in their specification
-  (Section~\ref{sec:system}).
+  \item \textbf{The detectability argument.} We identify that flat
+  temporal specifications of robot skills are not monitorable for
+  failure, show that this is why stalls go undetected, and show that
+  phase decomposition with per-phase deadlines and progress budgets is a
+  liveness-to-safety conversion that repairs it
+  (Section~\ref{sec:why}).
 
-  \item \textbf{Separation of specification from embodiment as a
-  checkable invariant}, rather than as a coding convention, with two
-  static checks and one end-to-end replay-equality acceptance test
-  (Sections~\ref{sec:system} and~\ref{sec:eval}).
+  \item \textbf{A phase structure for monitoring}, with five guard kinds
+  and two budgets per phase, fault names that localise a breach to a
+  stage and a guard, and fault categories that grade it into an
+  intervention ladder --- run \emph{alongside} LTL automata rather than
+  in place of them (Sections~\ref{sec:why} and~\ref{sec:system}).
+
+  \item \textbf{Three-valued propositions with freeze-on-unknown, scoped
+  per phase}, so that a stale sensor suspends only the guards of the
+  active phase, together with the per-tick
+  \textsc{decided}\,/\,\textsc{undecided} axis that keeps a sensor
+  outage from masquerading as a monitoring result
+  (Section~\ref{sec:unknown}).
 
   \item \textbf{An explicit trace semantics} --- half-open ticks, one
-  automaton step per tick, declared per-key fold policies, no catch-up
-  merging --- which is what makes a verdict a function of the data
-  rather than of the machine that processed it, and hence what makes
-  simulation-versus-real comparison meaningful
-  (Section~\ref{sec:semantics}).
+  automaton step per tick --- without which a deadline counted in ticks
+  means nothing (Section~\ref{sec:semantics}).
 
-  \item \textbf{Three-valued propositions with freeze-on-unknown, and
-  the coverage count that keeps it honest}, including the argument that
-  \textsc{decided}\,/\,\textsc{undecided} is a different axis from the
-  three-valued LTL verdict (Section~\ref{sec:ltl}).
-
-  \item \textbf{An evaluation on humanoid navigation} with a Unitree G1,
-  reporting \TODO{the headline result: verdict equality across the two
-  replay paths, coverage, and the per-tick cost}.
+  \item \textbf{An ablation on humanoid navigation} with a Unitree G1,
+  running the flat and phase-structured encodings of one mission over
+  the same recorded episodes, and reporting detection rate, detection
+  latency and diagnostic specificity. \TODO{result}
 \end{enumerate}
 
 % =====================================================================
@@ -262,426 +303,466 @@ a coverage count: how many of its ticks were undecided.
 \label{sec:related}
 % =====================================================================
 
-\subsection{Runtime verification and LTL monitoring}
+\subsection{Runtime verification and monitorability}
 
-Runtime verification checks a single observed execution against a formal
-property, trading model checking's exhaustiveness for applicability to
-systems whose models are unavailable or
-intractable~\cite{leucker2009brief,falcone2021taxonomy}. The canonical
-construction for LTL is automata-theoretic: compile the formula to an
-$\omega$-automaton and track its state as the trace
-arrives~\cite{vardi1986automata}. Because an execution observed at
-runtime is a finite prefix of a potentially infinite word, Bauer,
-Leucker and Schallhart's three-valued semantics --- true, false,
-inconclusive on prefixes --- is the standard
-treatment~\cite{bauer2011runtime}; the alternative is to reinterpret the
-logic over finite traces outright~\cite{degiacomo2013linear}. We build
-directly on this line and use Spot~\cite{duretlutz2016spot} to obtain
-deterministic, complete, state-based B\"uchi automata with
-BDD-encoded transition labels.
+Runtime verification checks one observed execution against a formal
+property~\cite{leucker2009brief,falcone2021taxonomy}, canonically by
+compiling the property to an automaton and tracking its
+state~\cite{vardi1986automata,duretlutz2016spot}. Because an execution
+observed at runtime is a finite prefix, the standard treatment is a
+three-valued semantics over prefixes --- true, false,
+inconclusive~\cite{bauer2011runtime} --- or a logic reinterpreted over
+finite traces~\cite{degiacomo2013linear}. The property class matters
+here more than is usually acknowledged in robotics: in the
+safety/liveness hierarchy~\cite{manna1990hierarchy}, a guarantee
+(co-safety) property such as \eqref{eq:flat} has no bad prefix, and so a
+monitor can only ever confirm it, never refute it. Our premise is this
+fact applied to robot skills, where the goal formula is always of that
+shape.
 
-Recent work in the runtime verification community has pushed on
-anticipation (predicting verdicts before they are forced), on
-monitoring under noisy or partial observation, and on monitoring many
-properties at once. Those concerns are orthogonal to ours and
-complementary: our contribution is not a better monitoring algorithm but
-an architecture that decides \emph{what} the monitor is handed and
-\emph{by whom}. The one point where we touch this literature
-substantively is observation uncertainty, where our freeze-on-unknown
-rule is a deliberately conservative, non-probabilistic choice
-(Section~\ref{sec:ltl}).
+\subsection{Temporal logic for robot tasks, and hierarchy}
 
-\subsection{Temporal logic for robot tasks}
+Temporal logic entered robotics largely through synthesis: construct a
+controller that satisfies a specification by construction, or prove the
+task infeasible~\cite{kressgazit2009temporal,kressgazit2018synthesis}.
+That programme produces behaviour; we watch it, which removes the need
+for an environment model but adds the requirement that the monitor be
+able to \emph{disagree} with the controller.
 
-Temporal logic entered robotics mainly through synthesis: given a
-specification and an abstraction of the robot and its environment,
-construct a controller that satisfies the specification by construction,
-or prove the task infeasible~\cite{kressgazit2009temporal,kressgazit2018synthesis}. That programme is about \emph{producing}
-behaviour. Ours is about \emph{watching} it, which changes the
-constraints in two ways. First, we need no environment model and no
-abstraction of the dynamics, only propositions we can evaluate from
-sensors. Second, we must be able to disagree with the controller: a
-monitor derived from the same artifact that drives the robot cannot
-catch that artifact being wrong.
+Closest in form to our phase ladder is the hierarchical-LTL line, which
+decomposes a flat formula into a task tree because ``as task complexity
+increases, LTL formulas become lengthy'' and
+unwieldy~\cite{xu2024nl2hltl2plan}. The motivation overlaps with ours
+and the conclusion differs in one decisive way: that decomposition
+exists to make \emph{planning and allocation} tractable, and the
+sub-formulas it produces are still LTL, so each one inherits the
+non-monitorability of its class. Our decomposition exists to make
+\emph{monitoring} possible, and the artifacts it attaches to a stage ---
+a deadline, a progress budget, a fault category --- are exactly the ones
+a planning decomposition has no use for and does not carry. Reward
+machines are a further relative, encoding temporally extended tasks as
+automata to structure credit assignment in
+learning~\cite{toroicarte2022reward}; the automaton machinery overlaps,
+the purpose does not.
 
-The classical robotics lineage closest to us is execution
-monitoring~\cite{pettersson2005execution}, which long predates the
-temporal-logic framing and shares our goal --- detect, during execution,
-that a plan is not going as intended. What that literature largely
-lacks, and what we add, is a specification artifact that is separate
-from both the controller and the platform.
+\subsection{Stage and phase structure in monitoring}
+\label{sec:related-phase}
 
-Related but distinct are task-specification formalisms oriented at
-learning, such as reward machines, which encode temporally extended
-tasks as automata to structure credit
-assignment~\cite{toroicarte2022reward}; and behaviour trees, which have
-become the dominant way to \emph{structure} robot behaviour and are
-sometimes used for monitoring as a
-side-effect~\cite{colledanchise2018behavior,iovino2022survey}. A
-behaviour tree is executable, legible and reactive, but it is the
-controller. We return to this in Section~\ref{sec:alternatives}.
+Execution monitoring is an old problem in robotics --- detect, during
+execution, that a plan is not going as intended~\cite{pettersson2005execution}
+--- and that it needs a notion of stage is increasingly recognised. This
+is the literature our claim must be measured against.
 
-\subsection{Acquiring specifications from natural language}
+The sharpest point of comparison is work that treats phase
+identification as a \emph{learning} problem. RoboMonitor states the
+premise almost exactly as we do --- execution monitoring requires
+identifying the current execution phase, detecting failures and
+recognising completion --- and then trains a vision--language monitor to
+predict all three, reaching \SI{93}{\percent} phase accuracy from 52
+labelled episodes~\cite{ajith2026robomonitor}. ConditionNET likewise
+learns preconditions and effects and performs anomaly detection by
+comparing the expected motion phase with the predicted
+one~\cite{sliwowski2025conditionnet}. We take the shared premise as
+support and part company on where the phase comes from. A learned phase
+estimate is itself a source of error, and its characteristic failure is
+instructive: RoboMonitor must actively suppress \emph{spurious phase
+switching}, reducing it from \SI{15.2}{\percent} to \SI{5.0}{\percent}
+with temporal-consistency objectives. In our system the phase is not
+estimated at all. It is a state of a declared machine that advances only
+when a declared exit condition holds, so it is exact by construction and
+spurious switching is structurally impossible; all uncertainty is pushed
+down into the proposition layer, where it is represented explicitly and
+three-valued (Section~\ref{sec:unknown}). The trade is equally clear in
+the other direction: a learned monitor needs no specification, and ours
+does.
 
-The authorship cost we identified in Section~\ref{sec:related} has been
-attacked directly by a now-substantial body of work on translating
-natural language into temporal logic. Lang2LTL grounds complex
-navigational commands into LTL over previously unseen
-environments~\cite{liu2023grounding}; NL2TL trains and evaluates
-language-model translators on a large corpus of paired
-natural-language/temporal-logic
-data~\cite{chen2023nl2tl}; NL2LTL packages the
-translation step as reusable
-software~\cite{fuggitti2023nl2ltl}. A parallel line targets Signal
-Temporal Logic and adds calibrated abstention or semantic verification
-so that an unreliable translation is rejected rather than
-executed~\cite{sundarsingh2025conformalnl2ltl}.
+Behaviour trees give robot behaviour a hierarchy with condition nodes,
+and are the dominant way to structure execution
+today~\cite{colledanchise2018behavior,iovino2022survey}; runtime
+verification has been built around their execution
+context~\cite{colledanchise2021formalizing}. The difference is not
+granularity but independence: a behaviour tree is the controller, so
+monitoring with it cannot catch it being wrong. Our wedged humanoid is
+the concrete case, and we return to it in
+Section~\ref{sec:alternatives}.
 
-We take this line as given rather than as our contribution: our
-describer is an instance of it. Two differences in emphasis matter.
-First, these systems translate a \emph{command} into a formula, whereas
-we compile a \emph{skill description} into a richer artifact --- phases,
-invariants, named failure modes with categories, terminal conditions ---
-because an operator-facing monitor must say where the skill is, not only
-whether a formula holds. Second, and more importantly, a translated
-formula is only as portable as its propositions, and this literature
-generally leaves the propositions' grounding implicit. The question we
-ask is not how to produce a correct formula but what the formula is
-allowed to mention, and who owns that vocabulary.
+Finally, converging evidence arrives from outside robotics. For
+long-horizon LLM agents, DynSTEER argues the granularity point directly
+--- whole-trajectory verification is too coarse to localise a failure,
+atomic-step scoring is too noisy --- and measures the result:
+stage-wise evaluation improves discriminability by over
+\SI{85}{\percent} against whole-trajectory evaluation and permits early
+termination of unrecoverable runs~\cite{shi2026dynsteer}. That is our
+thesis, in a different domain, with numbers. It is also instructively
+different in kind: those stages are compiled into a milestone graph and
+scored by LLM judges, with no formal guards, no deadline semantics and
+no claim of monitorability.
 
-\subsection{Grounding propositions in perception}
+\subsection{Learned monitors, and the self-report trap}
 
-The gap between continuous, high-dimensional sensor data and discrete
-logical propositions is the standing weakness of applied runtime
-verification, and it is receiving direct attention. PerceMon monitors
-spatio-temporal properties over perception-system outputs rather than
-over low-dimensional
-state~\cite{balakrishnan2021percemon}; more recent work embeds temporal
-logic so that propositions can be evaluated in a learned latent space
-rather than against hand-chosen state
-variables~\cite{kapoor2026embedding}. This is the right problem, and our
-architecture is designed to consume such work rather than compete with
-it: in our system a learned detector enters as the grounding rule of
-\emph{one} atomic proposition, and we use it that way --- a
-vision-similarity score grounds the proposition ``visually at goal''.
-What the architecture insists on is that whatever grounds a proposition
-is declared in the embodiment's schema, so that the formula layer
-remains free of it.
+A fast-moving body of work detects failure without a specification, from
+statistical signatures of a policy's own behaviour or a
+vision--language model's judgement of progress~\cite{agia2024unpacking},
+sometimes closing the loop to
+recovery~\cite{periasami2026frames}. These are strongest where ours is
+weakest --- failures obvious to look at and awkward to axiomatise --- and
+weakest where ours is strongest: no named requirement, no monotone
+verdict, and coupling to the embodiment through training data. Our
+architecture admits them in the one role where they cost nothing: a
+learned detector may ground a single atomic proposition, and we use one
+that way. How to ground propositions in raw perception is itself an
+active subject --- monitoring spatio-temporal properties over
+perception outputs rather than low-dimensional
+state~\cite{balakrishnan2021percemon}, or evaluating propositions in a
+learned latent space~\cite{kapoor2026embedding} --- and progress there
+enters our system as a better grounding rule, not as a change to the
+phase structure.
 
-\subsection{Learned runtime monitors for robot policies}
+One finding from the agent literature deserves separate mention because
+it names the trap our platform fell into. Asked whether language-model
+agents can report their own task progress, Wang \emph{et
+al.} find that reliability is stage-dependent and collapses mid-task,
+and conclude that a progress report should be checked against
+independent state rather than treated as control
+authority~\cite{wang2026progressbar}. The robotics instance is exact: our
+navigation stack published \texttt{following} while the robot was
+physically wedged, and five of the eight propositions in our shipped
+specification read that self-report. A monitor that must ask the planner
+whether the planner is stuck is not monitoring the planner. Phase
+deadlines are the structural answer, because elapsed ticks cannot be
+misreported.
 
-A distinct and fast-moving body of work monitors learned policies
-without a formal specification at all, detecting failure from statistical
-signatures of the policy's own behaviour or from a vision-language
-model's judgement of whether the task is progressing. Sentinel
-separates erratic failures, caught by temporal inconsistency in the
-action distribution, from task-progression failures, caught by a VLM,
-and shows the two are complementary~\cite{agia2024unpacking}. Work on
-humanoid loco-manipulation couples such monitoring to recovery, closing
-the loop from detection to a corrective
-skill~\cite{periasami2026frames}.
+\subsection{Specification acquisition from language}
 
-These monitors are strongest exactly where ours is weakest: failures
-that are obvious to look at and awkward to axiomatise. They are weakest
-where ours is strongest. They return a detection, not a named
-requirement, so they cannot tell an operator \emph{which} commitment
-broke; they offer no permanence guarantee, so a latched safety response
-has nothing monotone to latch onto; and they are coupled to the
-embodiment through their training data, which is the coupling this paper
-exists to remove. We regard them as complementary, and the architecture
-makes the complementarity concrete: such a detector is admissible as a
-grounded proposition, not as the verdict.
+That writing formal specifications is a bottleneck has prompted
+substantial work on translating natural language into temporal
+logic~\cite{liu2023grounding,chen2023nl2tl,fuggitti2023nl2ltl}, some of
+it with calibrated abstention so an unreliable translation is rejected
+rather than
+executed~\cite{sundarsingh2025conformalnl2ltl}. We take this line as
+given --- our generator is an instance of it --- and note only that it
+translates a \emph{command} into a formula, whereas what a monitor needs
+authored is the richer phase structure above. That turns out to help
+rather than hinder: a phase ladder over a declared vocabulary is more
+constrained than free-form LTL, and therefore easier to validate
+mechanically.
 
 \subsection{Position}
 \label{sec:position}
 
-Across these lines, three things are consistently present and one is
-consistently missing. Monitoring algorithms for LTL are mature.
-Translation from language into formulas is increasingly reliable.
-Grounding propositions in perception is under active and promising
-attack. What is missing is a statement of \emph{where the embodiment is
-allowed to appear}. In the surveyed systems, propositions are written
-against a fixed state vector belonging to one robot and one stack, or
-are learned from data collected on one robot --- so the monitor inherits
-the platform either way, and ``the same monitor in simulation and on
-hardware'' is a claim nobody is in a position to check. Relatedly, the
-monitor's time base is almost never specified, which means that even
-when the same monitor is run in both places, the two traces need not
-correspond.
-
-This paper is about those two omissions. We contribute no new monitoring
-algorithm and no new translation method. We contribute an architecture
-in which the specification cannot name the embodiment, the embodiment
-cannot name the skill, the trace is a declared function of the data, and
-each of those three statements is enforced by a test rather than by
-discipline.
+Monitoring algorithms for LTL are mature. Phase or stage structure is
+increasingly recognised as necessary for monitoring, and is currently
+obtained either by learning it from labelled
+episodes~\cite{ajith2026robomonitor,sliwowski2025conditionnet}, by
+borrowing it from the controller's own
+hierarchy~\cite{colledanchise2021formalizing}, or by decomposing
+formulas for the benefit of a
+planner~\cite{xu2024nl2hltl2plan}. What is missing is the observation
+that phase structure is not a convenience at all but a
+\emph{monitorability} requirement --- that without bounded per-stage
+obligations the central failure mode of a robot skill is formally
+invisible --- and, following from that, a phase structure designed for
+monitoring: declared rather than learned, carrying deadlines and
+progress budgets rather than only pre- and post-conditions, graded into
+an intervention, and run alongside LTL so that cross-cutting invariants
+keep a permanent verdict.
 
 % =====================================================================
-\section{Why Linear Temporal Logic}
-\label{sec:ltl}
+\section{Why Phases, and Why LTL}
+\label{sec:why}
 % =====================================================================
 
-This section states what we needed from a specification language, why
-LTL supplies it, what it does not supply, and what we considered
-instead. We include it because the choice is load-bearing for the
-architecture: it is LTL's strict separation of the temporal layer from
-the propositional layer that makes the embodiment separation possible at
-all.
+\subsection{What a skill monitor must answer}
 
-\subsection{What the language has to do}
-\label{sec:requirements}
+Four questions, in the order an operator asks them. \textbf{Q1: where in
+the skill is it?} \textbf{Q2: is it still making progress?} \textbf{Q3:
+if something broke, which commitment broke and how badly?} \textbf{Q4:
+can I trust the answer right now?} A flat set of LTL formulas answers
+none of Q1--Q3 well and is silent on Q4. We take them in turn, and the
+structure of this section follows them.
 
-Five requirements, in descending order of how much they constrained the
-choice.
-
-\textbf{R1 --- Express obligations that span the episode.} The
-interesting requirements on a skill are not per-frame predicates. ``The
-robot must never come within \SI{0.25}{\metre} of an obstacle'' is a
-persistence obligation; ``having been armed, it must eventually report
-the mission finished'' is a liveness obligation; ``it must stay upright
-until the goal is visually confirmed'' is an ordering constraint. A
-per-timestep classifier, however accurate, cannot represent any of them.
-
-\textbf{R2 --- Localise a violation to a named requirement.} The
-monitor's output is read by an operator and by a supervisor process that
-must choose a response. ``Something is wrong, confidence 0.83'' supports
-neither. We need the monitor to name the commitment that broke and its
-category, so that a safety violation and a progress violation can be
-treated differently.
-
-\textbf{R3 --- Be mechanically checkable after generation.} If a
-language model authors the specification, the specification language
-must admit a validator strong enough to reject bad output without a
-human reading it. This requirement is easy to overlook and it eliminated
-more candidates than any other.
-
-\textbf{R4 --- Be cheap at the observation rate.} The monitor runs
-alongside perception and control on embedded hardware. Per-step cost
-must be independent of how long the episode has been running.
-
-\textbf{R5 --- Mention nothing about the platform.} This is the
-architectural requirement from Section~\ref{sec:related}. The temporal
-layer must be expressible entirely over opaque symbols, so that the
-mapping from symbols to sensors can live elsewhere and be swapped.
-
-\subsection{LTL, and the monitor it compiles to}
+\subsection{LTL and the monitor it compiles to}
 
 LTL~\cite{pnueli1977temporal} extends propositional logic over a set
-$AP$ of atomic propositions with temporal operators. We use
-$\G\varphi$ (always), $\F\varphi$ (eventually), $\X\varphi$ (next) and
-$\varphi \U \psi$ (until), interpreted over the tick sequence of
-Section~\ref{sec:semantics}, so that $\X$ means exactly one tick later.
-A safety requirement is $\G\neg\mathit{collision\_risk}$; a liveness
-requirement is $\G(\mathit{armed} \rightarrow \F\,\mathit{finished})$.
-This satisfies R1 directly, and R5 by construction: the formula layer
-mentions only elements of $AP$, which are symbols. Nothing in
-$\G\neg\mathit{collision\_risk}$ knows about a depth camera.
+$AP$ with $\G$ (always), $\F$ (eventually), $\X$ (next) and $\U$
+(until), interpreted here over the tick sequence of
+Section~\ref{sec:semantics}, so $\X$ means one tick later. Each formula
+is compiled by Spot~\cite{duretlutz2016spot} into a deterministic,
+complete, state-based B\"uchi automaton with BDD-encoded transition
+labels; a step is one BDD evaluation and one state assignment, so
+per-tick cost is constant in trace length. Two properties earn LTL its
+place. Violation is \emph{permanent} --- a violated formula's automaton
+sits in a non-accepting trap state with a self-loop on $\top$, so the
+verdict is monotone and a supervisor can latch on it. And the formula
+layer mentions only elements of $AP$, which are opaque symbols:
+$\G\neg\mathit{collision\_risk}$ knows nothing about a depth camera,
+which is what later buys portability.
 
-Monitor construction is the automata-theoretic
-one~\cite{vardi1986automata}: each formula is compiled by
-Spot~\cite{duretlutz2016spot} into a deterministic, complete,
-state-based B\"uchi automaton whose transition labels are BDDs over
-$AP$. At runtime a step is one BDD evaluation against the current
-proposition assignment and one state assignment, so per-step cost is
-constant in the length of the trace, which is R4. Determinism and
-completeness matter operationally rather than theoretically: a complete
-automaton has a successor for every assignment, so the monitor never
-has to decide what to do with an unexpected observation.
+\subsection{The detectability gap}
+\label{sec:gap}
 
-Two properties of the construction give us R2 almost for free. First,
-\emph{violation is permanent}: a violated formula's automaton enters a
-non-accepting trap state with a self-loop on $\top$, so the
-\textsc{violated} status is monotone, which is exactly what a supervisor
-needs in order to latch a response without worrying that the verdict
-will retract. Second, \emph{the trapped formula is the diagnosis}. We
-compile each named failure mode as its own formula in addition to the
-product automaton for the whole skill, so when something breaks, the
-monitor does not report that the conjunction failed; it reports that
-\texttt{fell\_over} failed, with the category \textsc{safety} attached.
+What LTL does not give is a failure verdict for the skill's goal.
 
-R3 is where the pairing of LTL with a declared schema does the work.
-Because a formula's only interface to the world is $AP$, and because
-each atomic proposition carries exactly one grounding rule, the
-specification contract can check two things independently and
-mechanically: that every formula parses and compiles under Spot, and
-that every sensor key referenced by any grounding rule is declared in
-the schema. Generated output that violates either is rejected and fed
-back for repair. Neither check needs a human, and neither needs the
-robot.
+Classify the formulas a skill specification actually contains. The
+cross-cutting invariants, $\G\neg\mathit{collision\_risk}$ and
+$\G\,\mathit{upright}$, are \emph{safety} properties: a bad prefix
+exists --- one tick in which the proposition is false --- so they are
+monitorable for violation, and in practice they are the formulas that
+work. The goal formula \eqref{eq:flat} is a \emph{guarantee}
+(co-safety) property~\cite{manna1990hierarchy}. Guarantee properties have
+no bad prefix: for any finite trace, an extension exists that satisfies
+them. In the three-valued semantics~\cite{bauer2011runtime} a monitor for
+\eqref{eq:flat} therefore returns $\top$ or $?$ and never $\bot$.
 
-\subsection{Finite traces, and three values --- then four}
-\label{sec:threevalued}
+The practical reading is blunt. \emph{The formula that states what the
+skill is for is the formula that can never report that the skill
+failed.} A robot that is wedged, circling, or standing still with a goal
+pending produces an infinite run of \textsc{inconclusive} verdicts, and
+no amount of monitoring effort changes that, because the property is not
+monitorable for violation. This is, in our experience, the dominant
+robot failure mode and it is the one a flat specification cannot see.
 
-LTL is interpreted over infinite words, and an episode is a finite
-prefix. The two standard repairs are to give the logic a three-valued
-semantics over prefixes --- $\top$, $\bot$, and \emph{inconclusive}, the
-last meaning the prefix so far neither proves nor refutes the
-property~\cite{bauer2011runtime} --- or to reinterpret the logic over
-finite traces from the start~\cite{degiacomo2013linear}. We take the
-former. A skill monitor is genuinely in the ``prefix so far'' situation
-at every tick, and in this setting \emph{inconclusive is the normal,
-healthy state} of every liveness obligation that has not yet been
-discharged, rather than an error or a degenerate case. Our monitor
-exposes the three statuses as \textsc{accepted}, \textsc{violated} and
-\textsc{inconclusive}.
+Two escapes are available and neither is sufficient alone. One is a
+\emph{terminal failure condition} --- our shipped specification has one,
+and it fires when the planner reports being stuck. That works only when
+the planner admits the problem, which returns us to the self-report
+trap~\cite{wang2026progressbar}: the wedged humanoid was reporting
+\texttt{following}. The other is to \emph{bound the goal formula},
+writing a bounded-eventually $\F_{\leq k}$ instead of $\F$. That is the
+right instinct and we treat it as the serious alternative in
+Section~\ref{sec:alternatives}; the short version is that one global
+bound restores detectability without supplying localisation, per-stage
+invariants, or a cheap automaton.
 
-Defining the tick explicitly, however, surfaces a fourth thing that is
-not a truth value about the trace at all. A proposition's grounding rule
-reads sensor keys; those keys come from sources with declared rates and
-staleness tolerances; a source can be late or dead. So a proposition can
-be \emph{unknowable on this tick}. Resolving that to false is the
-obvious implementation and it is wrong in a specific, dangerous way: an
-invariant such as $\mathit{upright} \wedge \neg\mathit{collision\_risk}$
-then fails whenever odometry drops a beat, and the monitor fabricates a
-safety halt out of a transport hiccup. Resolving it to a sentinel is
-worse, because in a permissive evaluation environment a non-empty
-sentinel is truthy and the invariant fails for the opposite reason.
+\subsection{Phases as bounded obligations}
+\label{sec:phases}
 
-We therefore make propositions three-valued --- \textsc{true},
-\textsc{false}, \textsc{unknown} --- and add a per-tick status
-\textsc{decided}\,/\,\textsc{undecided}, with one rule: if a proposition
-that the automaton's current state requires is \textsc{unknown}, do not
-step; record the tick \textsc{undecided}. The automaton stays
-structurally two-valued, which is deliberate --- it defaults absent
-propositions to false and builds a full BDD cube over $AP$, so there is
-no third value to pass into it --- and freezing preserves that exactly
-rather than forcing a redesign of the automaton layer.
+A phase is a named stage of the skill with five guards and two budgets:
 
-We want to insist that this is a \emph{different axis} from the
-three-valued verdict of~\cite{bauer2011runtime}, because the temptation
-to merge them is strong and the merge destroys information.
-\emph{Inconclusive} is a claim about the trace: the property is still
-open. \emph{Undecided} is a claim about the observation: we could not
-see. A healthy run is inconclusive on its liveness formulas for almost
-all of its length and should be decided on every tick; a run with a dead
-depth camera is undecided and tells you nothing about the property at
-all. Adding a fourth member to the verdict enumeration would let a
-sensor outage masquerade as a monitoring result.
+\begin{itemize}
+  \item \textbf{enter condition} --- when the ladder advances into it;
+  \item \textbf{precondition} --- checked once, on entry; a breach says
+  the skill was started in a state it cannot proceed from;
+  \item \textbf{invariant} --- checked every tick the phase is active;
+  \item \textbf{progress condition} with a \textbf{violation budget}
+  $m$: a breach on $m$ consecutive ticks is a progress fault;
+  \item \textbf{exit condition} --- advances the ladder;
+  \item \textbf{deadline} $k$, in ticks: overstaying is a timeout fault.
+\end{itemize}
 
-Two consequences follow, and we state them rather than hide them. The
-first is epistemic and benign: $\G\neg\mathit{collision\_risk}$
-\emph{cannot be violated during a data outage}, because no collision was
-observed. The second is operational and sharp: freeze-on-unknown without
-an alarm is a way to make safety monitoring silently stop, so the
-data-health signal is load-bearing rather than diagnostic, and the
-episode verdict must carry its coverage --- how many ticks were
-undecided. An episode with 40\,\% undecided ticks that folds to
-``reached goal, full confidence'' is not a result. In the
-simulation-versus-hardware comparison of Section~\ref{sec:eval}, the
-exclusion count \emph{is} the fidelity report.
+The two budgets are what close the gap of Section~\ref{sec:gap}. ``This
+phase is eventually left'' is a guarantee property and unmonitorable.
+``This phase is left within $k$ ticks'' is a bounded obligation --- a
+safety property with bad prefixes of length at most $k$ --- and so is
+``the progress condition does not fail $m$ times consecutively''.
+Decomposing a skill into phases with deadlines therefore replaces one
+unmonitorable guarantee property with a ladder of monitorable safety
+properties, and the episode's outcome becomes a function of guards that
+can actually be refuted: a breached invariant, a failed precondition, an
+exceeded deadline or an exhausted progress budget each end the episode
+as a failure, while the last phase's exit condition ending the ladder is
+success.
+
+It is worth being precise about what is and is not claimed. We have not
+made liveness monitorable --- that is impossible. We have replaced an
+unbounded obligation with a bounded one, which is a different and
+stronger requirement, and the price is that the bounds are now part of
+the specification and must be chosen. We regard that as the right price:
+a deadline is a statement about the skill that the person describing the
+skill knows and can state, whereas an unbounded $\F$ is a statement
+nobody believes --- no operator thinks the robot may take arbitrarily
+long.
+
+\subsection{What else the decomposition buys}
+
+\textbf{Localisation (Q1, Q3).} Every fault the phase machine raises is
+named for its stage and its guard kind, so the monitor reports that the
+tracking phase stopped progressing rather than that a conjunction
+failed. The phase index is also, directly, the answer to Q1, which no
+product automaton's state provides.
+
+\textbf{Grading (Q3).} Each guard declares a fault category, and the
+category selects a rung of an intervention ladder: a safety breach
+halts, a timeout or progress breach requests a replan. The severity
+travels with the fault instead of being re-derived downstream. One
+consequence we had to design around is worth recording because it is
+easy to get wrong: a phase timeout ends the episode while its category
+asks for a replan, so the monitor stops stepping while the supervisor is
+told to carry on --- the robot would be unmonitored exactly while its
+plan is redone. The two statements, ``this episode is over'' and ``stop
+the robot'', are different and must be reconciled explicitly.
+
+\textbf{Context-dependent propositions (Q2).} The same proposition
+carries different weight at different stages:
+$\mathit{walking}$ false is unremarkable while planning and is a
+progress violation while tracking. A flat specification expresses this
+only by encoding the stage into the formula --- reinventing phases inside
+LTL, at the cost of automaton states that mean nothing to an operator.
+
+\textbf{A smaller active guard set.} Only the active phase's guards and
+the propositions the automata currently need are evaluated, and the
+monitor publishes that set each tick. Since some propositions are
+grounded by an expensive model rather than a threshold, narrowing the
+set is not only an efficiency matter but what keeps the slow path off
+the critical path.
+
+\subsection{Why both layers, and not either alone}
+
+Phases without LTL lose the cross-cutting requirements and the monotone
+verdict. The invariants that matter most on a humanoid hold in every
+phase and between phases, and writing them per phase would duplicate
+them once per stage and lose them during transitions; worse, a
+hand-rolled stage machine offers no guarantee that a verdict will not be
+retracted, which is exactly what a latched safety response depends on.
+
+LTL without phases is Section~\ref{sec:gap}.
+
+So the design runs both on one tick, over one proposition assignment:
+the automata are the verdict of record for cross-cutting properties, the
+phase ladder is the bounded, localised, graded account of progress. This
+is why the choice of LTL is not separable from the phase claim. We did
+not pick a temporal logic and then add stages for convenience; we needed
+bounded obligations and a permanent verdict at the same time, and
+neither layer provides both.
+
+\subsection{Trusting the answer: three-valued propositions}
+\label{sec:unknown}
+
+Q4 remains. Guards are evaluated from propositions, propositions are
+grounded in sensor keys, and sensors go stale. Resolving an unknowable
+proposition to false is the obvious implementation and it is wrong in a
+specific way: an invariant such as $\mathit{upright} \wedge
+\neg\mathit{collision\_risk}$ then breaches whenever odometry drops a
+beat, and the monitor manufactures a safety halt out of a transport
+hiccup.
+
+We make propositions three-valued --- \textsc{true}, \textsc{false},
+\textsc{unknown} --- and add a per-tick
+\textsc{decided}\,/\,\textsc{undecided} status with one rule: if a
+proposition required by the active phase's guards or by the automaton's
+current state is \textsc{unknown}, do not step; record the tick
+\textsc{undecided}. The automata stay structurally two-valued, which is
+deliberate, and freezing preserves that rather than forcing a redesign.
+
+Two points are worth stating carefully. First,
+\textsc{undecided} is a \emph{different axis} from LTL's
+\textsc{inconclusive}~\cite{bauer2011runtime}: inconclusive is a claim
+about the trace, and is the normal condition of a healthy obligation;
+undecided is a claim about observation --- we could not see. Merging them
+would let a dead camera masquerade as a monitoring result. Second, the
+phase structure scopes the damage: only the active phase's guards can
+freeze the ladder, so a sensor feeding a later phase's exit condition
+can be stale for the whole of an earlier phase at no cost. Flat
+monitoring has no such scope, because every formula is live at every
+tick.
+
+The honest consequence: $\G\neg\mathit{collision\_risk}$ cannot be
+violated during a data outage. That is epistemically correct --- no
+collision was observed --- and it makes the data-health alarm
+load-bearing for safety rather than decorative. Every episode verdict
+therefore carries a coverage count, how many ticks were undecided; an
+episode with \SI{40}{\percent} undecided ticks folding to ``reached
+goal, full confidence'' is not a result.
 
 \subsection{Alternatives considered}
 \label{sec:alternatives}
 
-\textbf{Signal Temporal Logic and metric variants.} STL interprets
-temporal operators over real-valued, dense-time signals and comes with a
-quantitative robustness semantics~\cite{maler2004monitoring,fainekos2009robustness}, which is the natural home for a requirement
-like ``remain within \SI{0.3}{\metre} of the commanded path for
-\SI{2}{\second}''. We keep the temporal layer Boolean for two reasons.
-First, robustness is a scalar: it answers \emph{how badly}, which is
-valuable, but not \emph{which requirement}, which is R2 and is what the
-operator and the supervisor act on. Second, quantitative semantics adds
-its own calibration burden --- a choice of robustness definition and a
-normalisation across incommensurable units --- on top of the thresholds
-we must calibrate anyway. We instead push the continuous part down into
-the grounding rule, where a threshold is one number in one declared
-place, and we note that STL is the right extension precisely when a
-requirement is about a \emph{margin} rather than an event. Our
-architecture does not preclude it: the temporal layer is replaceable
-without touching the adapter layer, which is the point of the
-separation.
+\textbf{Bounding the flat formula instead
+($\F_{\leq k}$, or metric temporal logic).} This is the strongest
+objection and deserves a direct answer, because it does restore
+detectability. Our answer has three parts. First, \emph{one global
+bound is one bound}: a mission-level deadline catches a stall only once
+the whole mission's budget is spent, whereas per-phase deadlines catch
+it within the stage it happens in --- on our platform, 30 ticks for
+planning against 120 for tracking, which a single number cannot
+express. Second, a bounded formula still does not \emph{localise}: it
+names the mission, not the stage, so Q1 and Q3 go unanswered and the
+per-stage invariants and progress predicates have nowhere to live.
+Third, cost: bounded operators compile to automata with counters, so the
+nested bounded-$\F$ encoding grows with the bounds, while the phase
+ladder is a single integer and a few guard evaluations per tick. Phase
+decomposition is not syntactic sugar for bounded LTL; it is a cheaper
+and more diagnostic factoring of the same obligation.
 
-\textbf{Behaviour trees and finite-state machines.} These are how robot
-behaviour is actually structured today, they are legible, and they are
-reactive~\cite{colledanchise2018behavior,iovino2022survey}. They are
-also the controller. A monitor that is the same artifact as the
-controller --- or that reads the controller's own status enumeration ---
-cannot catch the controller being wrong. The concrete case on our
-platform: the navigation stack published \texttt{following} while the
-robot was physically wedged, and any monitor reading that status was
-structurally blind to the fault, not accidentally blind to it. A
-specification is useful here exactly to the extent that it is an
-\emph{independent} statement of intent.
+\textbf{Signal Temporal Logic.} STL interprets temporal operators over
+real-valued dense-time signals with a quantitative robustness
+semantics~\cite{maler2004monitoring,fainekos2009robustness}, and is the
+natural home for a requirement about a \emph{margin} --- stay within
+\SI{0.3}{\metre} of the path for \SI{2}{\second}. We keep the temporal
+layer Boolean because robustness is a scalar: it answers how badly, not
+which commitment, and the latter is what the intervention ladder acts
+on. The continuous part is pushed down into proposition grounding, where
+a threshold is one declared number. Nothing in the phase structure
+precludes STL guards, which is the obvious extension.
 
-\textbf{Learned failure detectors.} Discussed in
-Section~\ref{sec:related}: no named requirement, no monotone verdict,
-and embodiment coupling through training data. Admissible, and useful,
-as the grounding of a single proposition.
+\textbf{Behaviour trees and finite-state machines.} Legible, reactive,
+and the way robot behaviour is actually
+structured~\cite{colledanchise2018behavior,iovino2022survey,colledanchise2021formalizing}. They are also the controller. A monitor
+that is the controller, or that reads the controller's own status
+enumeration, cannot catch the controller being wrong: our stack
+published \texttt{following} while the robot was wedged, and that
+blindness was structural, not accidental. A specification earns its keep
+by being an \emph{independent} statement of intent.
 
-\textbf{Reward machines and finite-trace automata goals.} Close
-relatives, and the automaton-level machinery overlaps substantially, but
-they are aimed at structuring learning rather than at producing an
-operator-facing, named verdict~\cite{toroicarte2022reward}.
+\textbf{Learned phase estimation.} Discussed in
+Section~\ref{sec:related-phase}: the premise is shared, the phase
+becomes a source of error with spurious switching to suppress, and the
+labels have to come from somewhere. Complementary, and admissible here
+as the grounding of a proposition.
 
-\subsection{What LTL does not give us}
+\subsection{What this does not fix}
 
-Stated plainly, because three of these are where our remaining risk
-lives.
+\emph{The bounds and thresholds are now specification.} A deadline of
+120 ticks and a collision threshold of \SI{0.25}{\metre} are calibration,
+not logic, and a wrong one yields a perfectly verified wrong answer.
+Section~\ref{sec:eval} reports which of ours are measured.
 
-\emph{It does not give the thresholds.} $\G\neg\mathit{collision\_risk}$
-is verified exactly as well whether the proposition triggers at
-\SI{0.25}{\metre} or \SI{2.5}{\metre}. The thresholds live in grounding
-rules, they are calibration rather than logic, and a wrong one produces
-a perfectly verified wrong answer. Section~\ref{sec:eval} reports which
-of ours are measured and which are not.
+\emph{Phases impose a sequence.} Our ladder is a total order over
+stages, which fits navigation and does not fit a skill with concurrent
+or re-enterable stages. A ladder is the simplest structure that closes
+the detectability gap; a partial order would close it too and is the
+natural generalisation. Learned monitors face the same limit from the
+other side: RoboMonitor notes that assigning one global phase per
+timestep cannot express two arms doing different
+things~\cite{ajith2026robomonitor}.
 
-\emph{It does not solve grounding.} The logic is silent on where
-propositions come from. That is the whole subject of
-Section~\ref{sec:system}'s adapter layer and of the three-valued
-extension above.
-
-\emph{It does not express ``where in the skill we are''.} LTL can encode
-phase progress --- the obvious encoding is a nested chain of $\F$
-operators --- but the resulting automaton's state is not something an
-operator can read, and ``which phase are we in'' is the first question
-every operator asks. We therefore keep execution phases as a separate,
-deliberately simple sequential tracker alongside the automata, and
-publish both views. The duplication is intentional: the automata are the
-verdict of record, the phase tracker is the explanation.
-
-\emph{Its $\X$ is only as meaningful as the clock.} Timing bounds in our
-specifications are counted in ticks, not seconds, and that is a sound
-thing to do only because the tick is defined once, in one place, and
-nothing else is allowed to define it. Section~\ref{sec:semantics} is
-therefore not an implementation detail of this section; it is its
-precondition.
+\emph{Deadlines in ticks are only as meaningful as the tick.}
+Section~\ref{sec:semantics} is therefore not an implementation detail of
+this section; it is its precondition.
 
 % =====================================================================
 \section{Trace Semantics}
 \label{sec:semantics}
 % =====================================================================
 
-\TODO{Full section. The content exists in docs/clocking.md and should be
-compressed to roughly one column plus the tick-window figure. The points
-that must survive compression:}
+\TODO{Full section, roughly one column plus the tick-window figure,
+compressed from docs/clocking.md. Points that must survive, now that
+deadlines and progress budgets are counted in ticks:}
 
 \begin{itemize}
   \item Three rates named and never conflated: observation rate (which
   \emph{is} the trace), transport rate, publication rate. Only the first
-  may affect a verdict.
-  \item Tick $k$ is the half-open interval $(B_{k-1}, B_k]$ with
-  $B_k = t_0 + k\Delta$ and $\Delta = 1/\mathit{tick\_hz}$; named by the
-  closing boundary so that pulse, observation and verdict carrying
-  $\mathit{seq}=k$ all describe the same interval. Half-open so every
-  instant belongs to exactly one tick.
-  \item $\mathit{seq}$ counts closed intervals and therefore starts at 1.
-  \item Close is atomic: fold the window by each key's declared policy,
-  commit, run tick-steps, emit the observation, step the automaton once,
-  emit the verdict, open the next window.
-  \item Input is event-driven; the tick is autonomous and never waits
-  for data. A tick with no arrivals is precisely the tick that must
-  report insufficient data. No catch-up merging; a missed pulse is
-  recorded, never folded into its successor.
-  \item Per-key fold policies (\texttt{last} default, \texttt{min} for
-  range-like keys, etc.) and why \texttt{min} on minimum range is a
-  safety decision with a false-positive cost that the three-valued
-  layer is what bounds.
-  \item Clock modes: wall, replay (so replay speed cannot change the
-  tick count and hence cannot change the verdict), manual single-step.
-  \item The residual that is bounded rather than removed: a sample
-  delayed past its boundary lands in the next window, bounded by a
-  declared constant emission delay plus a late-arrival count carried in
-  the verdict.
+  may affect a verdict --- so a deadline of $k$ ticks means the same
+  thing live and on replay.
+  \item Tick $k$ is the half-open interval $(B_{k-1}, B_k]$,
+  $B_k = t_0 + k\Delta$, $\Delta = 1/\mathit{tick\_hz}$, named by the
+  closing boundary. Half-open so every instant belongs to exactly one
+  tick.
+  \item Close is atomic: fold the window per declared per-key policy,
+  commit, run tick-steps, emit observation, step automata once, evaluate
+  the phase guards, emit verdict, open the next window.
+  \item A tick fires even when nothing arrived --- that is the tick that
+  must report insufficient data. No catch-up merging.
+  \item \textbf{Why this section is load-bearing for the phase claim:} a
+  debounce or deadline counted in \emph{messages} rather than ticks
+  means something different on every machine. Our own progress debounce
+  has this bug --- 10 ticks documented, once per message implemented, so
+  \SI{2}{\second} on a \SI{5}{\hertz} topic instead of \SI{10}{\second},
+  and in simulation, where the source publishes only on transitions, it
+  never fires at all. A phase budget is only a specification if the tick
+  is defined.
+  \item Clock modes: wall, replay (replay speed cannot change the tick
+  count, hence cannot change a deadline), manual single-step.
 \end{itemize}
 
 % =====================================================================
@@ -689,44 +770,35 @@ that must survive compression:}
 \label{sec:system}
 % =====================================================================
 
-\TODO{Full section. Grounded in docs/architecture.md, docs/api.md and
+\TODO{Full section, grounded in docs/architecture.md, docs/api.md and
 docs/one\_tick.md. Planned structure:}
 
 \begin{itemize}
-  \item \textbf{A. Artifacts and who authors them.} The four-way split:
-  sensor schema (per robot family, integrator), adapter descriptor (per
-  embodiment, integrator), skill specification (per skill, describer or
-  domain expert), grounding rules (inside the specification). One table,
-  reused from the architecture document, giving for each artifact its
-  author, its consumer, and the topic its manifest travels on.
-  \item \textbf{B. The wire contract.} Built on ROS~2~\cite{macenski2022ros2}:
-  everything a client needs is plain JSON on named topics, so nothing watching a monitor must import
-  the package, share its filesystem, or know the skill. The two latched
-  manifests --- skill and adapter --- are what let the monitor and the
-  evaluator remain ignorant of each other while still validating a
-  pushed specification against the live schema.
-  \item \textbf{C. Specification synthesis.} The
-  generate--validate--repair loop: schema-derived prompt, structured
-  output, contract validation (formulas compile under Spot; every key
-  referenced by a grounding rule is declared), repair on rejection.
-  \item \textbf{D. Hybrid proposition evaluation.} Fast path: a
-  grounding rule of the form ``True when $\langle$expression$\rangle$''
-  is evaluated against the folded sensor values in a restricted
-  environment, sub-millisecond. Slow path: a proposition whose
-  description is not reducible to a threshold is handed to a model on a
-  worker thread, with stale queue draining so a late answer is discarded
-  rather than applied to the wrong tick. The monitor publishes which
-  propositions the current automaton state actually requires, so the
-  evaluator does no work on irrelevant ones.
-  \item \textbf{E. Tiering and the independence it buys.} Monitor
-  instances on the robot tier (safety ladder) and the server tier
-  (verdict of record); the tick index is stamped at the source and
-  travels inside the observation, so the server-tier monitor advances on
-  the received tick rather than on a second clock racing the first.
-  \item \textbf{F. The invariant and its enforcement.} Schema parity
-  across shipped descriptors; no import path from monitor code into the
-  descriptor directory; the forbidden-topic test that keeps the
-  specification free of planner self-report.
+  \item \textbf{A. The specification.} Propositions with grounding
+  rules; cross-cutting LTL formulas; named failure modes with
+  categories; the phase ladder. One figure: the shipped G1 specification,
+  annotated.
+  \item \textbf{B. The phase machine.} Guard evaluation order (enter,
+  precondition, invariant, progress, exit); the two budgets; fault
+  naming; how categories grade into the intervention ladder; what
+  the verdict publishes per tick (active phase, guard truth values,
+  violation counters) so that the phase state is inspectable rather
+  than inferred.
+  \item \textbf{C. Running both layers on one tick.} One proposition
+  assignment feeds the automata and the guards; the automata own
+  cross-cutting verdicts, the ladder owns progress; how the two are
+  reconciled when they disagree, and why the reconciliation happens at
+  the supervisor rather than inside the monitor.
+  \item \textbf{D. Grounding propositions.} Fast path: a rule of the
+  form ``True when $\langle$expression$\rangle$'' over folded sensor
+  values, sub-millisecond. Slow path: a model on a worker thread with
+  stale-queue draining. Why the active-guard set matters here.
+  \item \textbf{E. Separating specification from embodiment.} The
+  per-robot descriptor the monitor never reads; the latched manifests;
+  schema fragments so a non-navigation skill need not adopt navigation
+  keys.
+  \item \textbf{F. Authoring a phase ladder from a description.}
+  Generate, validate against the schema and Spot, repair.
 \end{itemize}
 
 % =====================================================================
@@ -734,123 +806,132 @@ docs/one\_tick.md. Planned structure:}
 \label{sec:eval}
 % =====================================================================
 
-\TODO{Full section --- this is the section the paper is currently
-blocked on. The protocol below is fixed; the numbers are not yet
-collected. See paper/README.md for the blocking list.}
+\TODO{Full section. The protocols are fixed; the numbers are not
+collected. H1 is the paper's main experiment and runs offline on
+recorded episodes --- see paper/README.md.}
 
 \subsection{Platform and task}
 
 \TODO{Unitree G1 humanoid, onboard perception, the TRAV traversability
-navigation stack, waypoint missions in \TODO{environment description}.
-Simulation comparisons use MuJoCo~\cite{todorov2012mujoco} and Isaac
-Lab~\cite{mittal2023orbit}; the superseded navigation baseline the sim
-descriptors were written against was Nav2~\cite{macenski2020marathon}.}
+navigation stack, waypoint missions in \TODO{environment}. Simulation
+comparisons use MuJoCo~\cite{todorov2012mujoco} and Isaac
+Lab~\cite{mittal2023orbit}; the superseded baseline the simulation
+descriptors were written against was
+Nav2~\cite{macenski2020marathon}. Built on ROS~2~\cite{macenski2022ros2}.}
 
-\subsection{H1: the monitor cannot tell the embodiments apart}
+\subsection{H1 (main): phase structure makes failures detectable}
 
-The acceptance test for the central claim. One recorded episode is put
-through two independent paths:
+The ablation the paper turns on. Over one corpus of recorded episodes,
+replay two encodings of the same mission: the flat specification
+(cross-cutting invariants plus the nested-$\F$ goal formula) and the
+phase-structured specification (same invariants, same propositions, plus
+the phase ladder). Both see an identical observation stream, so the
+comparison isolates the encoding.
 
-\begin{enumerate}
-  \item \textbf{Re-execution.} The simulator publishes its own topics,
-  into an evaluator loaded with the simulator's descriptor, into the
-  monitor, live. This exercises the full stack and tests that it is
-  embodiment-independent.
-  \item \textbf{Stream replay.} The recorded observation frames are
-  republished directly into the monitor. This tests that the verdict is
-  a function of the observation stream alone.
-\end{enumerate}
+\TODO{Report, per induced failure class (wedged against an obstacle,
+dead end, circling at constant distance, sensor dropout, toppling):
+(a) \emph{detection rate} --- did any verdict ever report a failure;
+(b) \emph{detection latency} in ticks from failure onset;
+(c) \emph{diagnostic specificity} --- was the reported fault the correct
+stage and guard. The prediction from Section~\ref{sec:gap} is that the
+flat encoding's detection rate on the progress-failure classes is zero,
+not merely worse, except where the planner's self-report happens to fire,
+and that the phase encoding detects at the budget or the deadline.
+Report the self-report cases separately --- they are the ones that
+flatter the flat encoding for the wrong reason.}
 
-Same episode, both paths, same verdict. The comparison is over the full
-verdict record with nothing ignored by default --- including the
-timestamp, since a replay republishes recorded ticks and a timestamp
-that moved means the replay invented a clock. A missing verdict is
-reported separately from a differing one, because a tick the replay
-answered nothing for means the monitor stopped stepping, and reporting
-that as ``every field differs'' buries one failure under a hundred lines
-of noise. \TODO{result: agreement rate, any excluded ticks and why}
+\subsection{H2: the bounds are the cost, so how sensitive are they?}
 
-\subsection{H2: the engine is unchanged across skills}
-
-\TODO{Protocol: generate specifications for $n$ skills from
-free-language descriptions; report (a) that the monitor engine binary
-and container are identical across all of them, (b) generate /
-validate / repair outcome rates against the contract, (c) that every
-shipped descriptor exposes an identical schema key set. Currently
-navigation is the only instantiated skill family, which is the main
-threat to this hypothesis --- see Section~\ref{sec:threats}.}
+\TODO{Sweep the two budgets per phase (deadline $k$, progress budget
+$m$) over the recorded corpus and report the detection-latency /
+false-positive trade-off, since Section~\ref{sec:phases} concedes that
+phase decomposition moves the burden onto chosen bounds. Without this
+the concession is unquantified and a reviewer will say so.}
 
 \subsection{H3: cost}
 
-\TODO{Per-tick monitor cost broken into BDD step, fast-path grounding,
-and the slow-path hit rate; and the fraction of ticks that were
-undecided (coverage), since H1's comparison is only as strong as its
-coverage.}
+\TODO{Per-tick cost split into BDD steps, guard evaluation, fast-path
+grounding, and the slow-path hit rate with and without active-guard
+narrowing; plus coverage (fraction of undecided ticks), since H1 is only
+as strong as its coverage.}
 
-\subsection{H4: faults are detected and named}
+\subsection{H4: the monitor cannot tell the embodiments apart}
 
-\TODO{Induced-failure runs --- wedging, dead ends, sensor dropout,
-toppling --- reporting for each whether the correct named failure mode
-trapped, with what latency in ticks, and at what false-positive rate
-over nominal runs. The planner-self-report propositions still present in
-the current specification must be called out here, because they are
-exactly the propositions H4 cannot test honestly.}
+The consequence claim. One recorded episode through two independent
+paths: re-execution in simulation through a different descriptor, and
+replay of the recorded observation stream straight into the monitor.
+Same episode, both paths, same verdict --- compared over the full verdict
+record with nothing ignored by default, since a replay republishes
+recorded ticks and a timestamp that moved means the replay invented a
+clock. A missing verdict is reported separately from a differing one.
+\TODO{agreement rate, excluded ticks and why}
+
+\subsection{H5: phase ladders can be authored from a description}
+
+\TODO{Generate specifications for $n$ skill descriptions; report
+generate / validate / repair outcome rates against the contract, and
+whether the generated phase ladders detect the H1 failure classes as
+well as the hand-authored one. This is the claim the hand-authored
+reference specification cannot support --- see
+Section~\ref{sec:threats}.}
 
 % =====================================================================
 \section{Threats to Validity}
 \label{sec:threats}
 % =====================================================================
 
-\TODO{To be written up from the engineering record. These are real and
-must appear in the paper rather than be discovered by a reviewer:}
+\TODO{Write up from the engineering record. These are real and belong in
+the paper rather than in a reviewer's report:}
 
 \begin{itemize}
-  \item \textbf{One skill family instantiated.} The skill-agnosticism
-  claim is supported by construction and by the schema-fragment design
-  (an embodiment fragment separate from a navigation fragment, so a
-  manipulation skill need not adopt navigation keys), but navigation is
-  the only family exercised end to end.
   \item \textbf{The reference specification is hand-authored.} The
-  shipped navigation specification is used as an evaluation reference,
-  not as a product of the pipeline; shipping it as the pipeline's output
-  would falsify the authorship claim. The claim must be evaluated on
-  generated specifications.
-  \item \textbf{Residual planner coupling.} Five of the eight atomic
-  propositions in the current navigation specification still read the
-  planner's self-report. The planner-independent redesign --- progress
-  derived from odometry against the commanded goal, with every planner
-  topic forbidden by test --- is designed and not yet deployed. Until it
-  is, the independence claim is architectural rather than demonstrated,
-  and this is the single most important gap.
-  \item \textbf{Uncalibrated thresholds.} Four grounding thresholds
-  (arrival radius, closing-speed epsilon, no-progress debounce window,
-  and the minimum-range height band) require measurement on a recorded
-  run before they can be trusted, and per
-  Section~\ref{sec:ltl} a wrong threshold yields a verified wrong answer.
-  \item \textbf{A debounce counted in messages rather than ticks} makes
-  the same specification behave differently on hardware and in
-  simulation; fixing it turns on a signal that has never been on, so any
-  prior ablation number involving it is non-comparable. This is the
+  shipped navigation specification is the evaluation reference, not a
+  product of the generator; presenting it as generated would falsify H5.
+  \item \textbf{The phase ladder is a total order.} Fits navigation;
+  does not express concurrent or re-enterable stages. A partial order is
+  the natural generalisation and is not implemented.
+  \item \textbf{Bounds are uncalibrated.} Four grounding thresholds
+  (arrival radius, closing-speed epsilon, no-progress debounce, the
+  minimum-range height band) need measurement on a recorded run, and
+  per Section~\ref{sec:phases} the deadlines and budgets are now
+  specification rather than logic.
+  \item \textbf{Residual self-report coupling.} Five of the eight
+  propositions in the current specification read the planner's own
+  status, which is the very trap Section~\ref{sec:gap} names. The
+  planner-independent redesign --- progress derived from odometry against
+  the commanded goal, every planner topic forbidden by test --- is
+  designed and not deployed. H1 must therefore report the self-report
+  cases separately, and until the redesign lands the independence half
+  of the argument is architectural rather than demonstrated.
+  \item \textbf{A debounce counted in messages, not ticks}, so the same
+  specification behaves differently on hardware and in simulation, where
+  it never fires. Fixing it turns on a signal that has never been on, so
+  prior simulation numbers involving it are non-comparable. This is the
   cleanest illustration of why Section~\ref{sec:semantics} exists.
-  \item \textbf{No authentication anywhere in the stack.} The deployment
-  model is a trusted robot tier behind a terminating proxy. Worth one
-  honest sentence rather than silence.
+  \item \textbf{One skill family.} Navigation is the only family
+  exercised end to end.
+  \item \textbf{No authentication in the stack.} The deployment model is
+  a trusted robot tier behind a terminating proxy. One honest sentence,
+  not silence.
 \end{itemize}
 
 % =====================================================================
 \section{Conclusion}
 % =====================================================================
 
-\TODO{To be written once Section~\ref{sec:eval} has numbers. The shape:
-the cost of a runtime monitor is authorship plus portability; both come
-from conflating what must hold with how to measure it; separating them
-into two artifacts that cannot read each other makes natural-language
-authorship safe (because the specification can be validated against a
-declared schema) and makes portability checkable (because verdict
-equality across two replay paths is a test that can fail). What we would
-do next: deploy the planner-independent schema, instantiate a second
-skill family, and extend the temporal layer to STL for margin-shaped
-requirements without touching the adapter layer.}
+\TODO{Write once Section~\ref{sec:eval} has numbers. The shape: the
+formula that says what a skill is for is the formula that can never
+report the skill failed, because it is a guarantee property with no bad
+prefix; so a flat temporal specification is blind to the commonest robot
+failure. Decomposing execution into phases with deadlines and progress
+budgets converts that unmonitorable obligation into a ladder of
+monitorable ones, and the same structure localises a breach to a stage
+and a guard and grades it into a response. LTL is not displaced but
+required alongside, for the cross-cutting invariants and the permanent
+verdict phases cannot promise. Portability and language authorship
+follow from the same decomposition. Next: partial-order phases,
+odometry-derived progress, and STL guards for margin-shaped
+requirements.}
 
 \bibliographystyle{IEEEtran}
 \bibliography{refs}
