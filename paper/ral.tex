@@ -1225,7 +1225,7 @@ parameter can give a guarantee property a bad prefix. That is a property
 of the encoding, not of a tuning choice, and it is the strongest
 available statement of the paper's claim.
 
-Four commitments made before any faulted episode was examined, each
+Six commitments made before any faulted episode was examined, each
 because there is a way to get it wrong. \textbf{The budget $\alpha_0$ is
 fixed in advance}, not chosen once the curves are in hand; selecting it
 afterwards would make the headline a best-of-many report, and we
@@ -1238,7 +1238,16 @@ first tick under both encodings, so pooling it with a stall dilutes
 precisely the effect under test. \textbf{Gate on coverage}: an episode
 whose undecided fraction exceeds a stated bound is excluded and counted,
 or a sensor dropout is reported as a monitoring result
-(Section~\ref{sec:unknown}).
+(Section~\ref{sec:unknown}). \textbf{Establish the nominal set by
+outcome and by review}: an episode counts as nominal only if it both
+terminated successfully and survived manual inspection, and we report
+how many candidates review rejected --- an undetected sub-failure
+surviving into the nominal set inflates the measured false-alarm rate,
+which biases against our own claim rather than for it.
+\textbf{Report delay in both units}: a budget of $k$ ticks is a
+different wall-clock duration at a different tick rate, so
+$\mathit{tick\_hz}$ is held identical across arms, stated with the
+results, and every delay is given in ticks and seconds.
 
 \emph{Why not AUROC}, which much of the neighbouring literature reports:
 it summarises a frame-wise classification and is threshold-free, whereas
@@ -1282,12 +1291,32 @@ self-report fired, since those flatter B1 and B2 for the wrong reason
 
 \subsection{H2: the operating characteristic}
 
-\TODO{Sweep deadline $k$ and progress budget $m$ per phase over the same
-corpus and plot delay against false-alarm rate per class --- the curve
-of which H1 reports one point. This is also what quantifies the price
-Section~\ref{sec:phases} concedes, and a close competitor states that the
-effect of threshold variation is unexplored~\cite{zhou2024codeasmonitor},
-so the curve is a contribution and not only a defence.}
+This is a headline result rather than an ablation, and
+Figure~\ref{fig:roc} carries it. Sweeping the deadline $k$ and the
+progress budget $m$ per phase over the same corpus traces detection
+delay against false-alarm rate, per failure class; H1 reports one point
+on these curves, at the pre-registered budget. Reporting the curve is
+what answers the two objections the design most invites --- that the
+bounds were tuned to the failure set, and that adding a deadline is
+definitionally sufficient to detect timeouts --- because the curve shows
+what the deadline \emph{costs} as well as what it buys. It is also the
+measurement a close competitor states is missing, having to choose
+failure thresholds by hand or from a model's prior with the effect of
+variation left unexplored~\cite{zhou2024codeasmonitor}.
+
+\begin{figure}[t]
+\centering
+\TODO{Figure: detection delay against per-episode false-alarm rate, one
+curve per failure class, points labelled by $(k, m)$. Mark the
+pre-registered $\alpha_0$ with a vertical line and the reported
+operating point on each curve. Overlay B2 and B3 as single points or
+their own curves. B1 appears as a flat line at $\rho = 0$, which is the
+visual statement of Section~\ref{sec:gap}.}
+\caption{The operating characteristic of the phase ladder: what the
+bounds cost in false alarms, against what they buy in detection delay.
+H1's headline is one point on this family of curves.}
+\label{fig:roc}
+\end{figure}
 
 \subsection{H3: execution not wasted}
 
@@ -1297,6 +1326,15 @@ the utility measure that does not require recovery to succeed, which
 matters because an unreachable goal admits no intervention and a
 success-rate-only evaluation would score a perfect monitor at zero.
 DoReMi reports execution time for the same reason~\cite{guo2024doremi}.}
+
+\TODO{Also report here, once per corpus rather than per hypothesis: the
+failure-mode distribution of \emph{induced} against \emph{naturally
+occurring} failures, as Guardian does for synthetic against real
+failures~\cite{pacaud2025guardian}, so a reader can judge how far the
+induced set stands in for the real one; and a provenance table for the
+four grounding thresholds, giving for each whether it was measured from
+this corpus or chosen, since every curve above is conditional on their
+values.}
 
 \subsection{H4: does it raise task success rate?}
 
@@ -1339,7 +1377,14 @@ H7 (authorship): generate specifications for $n$ skill descriptions,
 report generate/validate/repair outcome rates against the two gates of
 Section~\ref{sec:nl}, and test whether a generated ladder detects the H1
 failure classes as well as the hand-authored one --- the claim the
-hand-authored reference cannot support.}
+hand-authored reference cannot support. H7 also carries the only
+evidence we offer for skill-agnosticism beyond construction: a second,
+non-navigation skill exercised \emph{at specification level only} ---
+generated from a description, validated against its schema, and shown to
+compose the shared embodiment fragment without adopting navigation keys.
+That needs no robot and no second corpus, and it tests the authorship and
+vocabulary claims while deliberately not claiming a second monitoring
+result (Section~\ref{sec:threats}).}
 
 % =====================================================================
 \section{Threats to Validity}

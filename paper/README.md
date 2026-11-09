@@ -114,7 +114,7 @@ they are not the fourth value DECIDED/UNDECIDED needs. §IV-F says this.
 |---|---|
 | §I–§IV + bibliography | 7 |
 | + §VI (mechanism) and §VII (metric) | 11 |
-| + §VIII (threats, written out) | **13** |
+| + §VIII (threats) and the remaining mitigations | **13** |
 
 RA-L allows 8 at most.
 
@@ -149,6 +149,40 @@ paper.
 
 A venue with room for the whole argument (T-RO, IJRR) remains open and, at 11
 pages of genuine content, worth weighing rather than treating RA-L as fixed.
+
+---
+
+## Mitigation status — which fixes are in the paper
+
+Every paper-level mitigation from the threat analysis is now incorporated:
+
+| mitigation | where | state |
+|---|---|---|
+| B2/B3 baselines so B1 isn't a straw man | §VII-C | in |
+| Onset ν from signals the monitor never reads | §VII-B, §VIII | in |
+| α₀ pre-registered, full curve published | §VII-B | in |
+| Right-censored delay handled explicitly | §VII-B | in |
+| Stratify by failure class | §VII-B | in |
+| Coverage gating + exclusion count | §VII-B | in |
+| Nominal set by outcome **and** review, rejects reported | §VII-B | in |
+| Delay in ticks **and** seconds, `tick_hz` fixed | §VII-B | in |
+| H2 promoted to a headline figure (Fig. 2) | §VII-D | in |
+| Induced-vs-real failure-mode distribution | §VII-E | in |
+| Threshold provenance table | §VII-E | in |
+| H4 gated on a recovery pre-check | §VII-F | in |
+| Second skill at spec level only | §VII-H (H7) | in |
+| Stage structure conceded as prior art | §III-F, §VIII | in |
+| Bounded LTL concession + B3 as the test | §IV-G | in |
+| BT timeout decorators named | §II-C, Table I | in |
+
+**Two deliberately not applied:**
+
+- **Scope (demote portability/authorship, drop H6/H7).** This is the owner's
+  call and was deferred; it is also the main lever if the paper has to reach 8
+  pages. Not done unilaterally.
+- **Code fixes.** The debounce fix and P12 are *engineering* items on the
+  pre-collection checklist below, not paper edits. P12 needs P2 merged first
+  and has four uncalibrated knobs; neither was touched.
 
 ---
 
