@@ -425,7 +425,9 @@ controller, so a monitor built from it can catch the controller being
 wrong. \textbf{C}heckable: a generated instance can be rejected
 mechanically, with no human and no robot. \textbf{P}ermanent: a
 violation verdict is monotone. \textbf{B}ounded: the formalism forces a
-progress obligation to carry a horizon.}
+progress obligation to carry a horizon; ``dec.'' marks a behaviour
+tree's timeout \emph{decorator}, which bounds a node but is the
+controller aborting itself rather than a verdict.}
 \label{tab:formalisms}
 \begin{tabular}{@{}lccccc@{}}
 \toprule
@@ -433,7 +435,7 @@ formalism & T & I & C & P & B \\
 \midrule
 free-language description                 & ---   & y & \no & \no & \no \\
 FSM / behaviour tree~\cite{colledanchise2018behavior,iovino2022survey}
-                                          & impl. & \no & part & \no & t/o \\
+                                          & impl. & \no & part & \no & dec. \\
 action pre/post-cond.~\cite{sliwowski2025conditionnet}
                                           & act.  & y & y & \no & \no \\
 reward machine~\cite{toroicarte2022reward}& y     & y & y & \no & \no \\
@@ -458,7 +460,12 @@ actually structured, they are legible, reactive and modular, they carry
 condition nodes, and failure handling has been built on exactly that ---
 verifying a tree's existing conditions and adding missing preconditions
 at runtime~\cite{ahmad2025unified,colledanchise2021formalizing}. Our
-phase ladder is deliberately BT-shaped in its sequencing. Three things
+phase ladder is deliberately BT-shaped in its sequencing, and we note
+that a timeout \emph{decorator} already bounds a node's duration, so the
+per-stage horizon of Section~\ref{sec:phases} is not foreign to the
+formalism --- the difference is that a decorator makes the controller
+abort itself, where ours produces a categorised verdict an independent
+supervisor acts on. Three things
 separate them, in descending order of how much they decided the matter.
 
 \emph{First, a behaviour tree does not denote a language of traces.} Its
@@ -926,20 +933,40 @@ goal, full confidence'' is not a result.
 \label{sec:bounded}
 
 Writing $\F_{\leq k}$ instead of $\F$, or moving to a metric logic, does
-restore refutability, and is the objection to answer directly. Our
-answer has three parts. First, \emph{one global bound is one bound}: a
-mission-level deadline catches a stall only once the whole mission's
-budget is spent, whereas per-phase deadlines catch it in the stage where
-it happens --- on our platform 30 ticks for planning against 120 for
-tracking, which a single number cannot express. Second, a bounded
-formula still does not \emph{localise}: it names the mission, not the
-stage, so the per-stage invariants and progress predicates have nowhere
-to live and the diagnosis is no better than before. Third, cost:
-bounded operators compile to automata with counters, so a nested
-bounded-$\F$ encoding grows with the bounds, while the ladder is one
-integer and a few guard evaluations per tick. Phase decomposition is not
-syntactic sugar for bounded LTL; it is a cheaper and more diagnostic
-factoring of the same obligation.
+restore refutability, and is the objection to answer directly. It also
+deserves more credit than a single global deadline: bounded operators
+express per-stage obligations perfectly well, since
+$\G(\mathit{armed} \wedge \neg\mathit{planning} \rightarrow
+\F_{\leq 30}\,\mathit{planning})$ needs no phase machine at all. We
+therefore do not claim that a bounded encoding cannot localise its
+deadlines. Three things separate it from the ladder.
+
+\emph{A progress budget needs a stage to be scoped to.} ``The progress
+condition must not fail on $m$ consecutive ticks \emph{while in this
+stage}'' has a scope, and expressing it requires a proposition that says
+which stage is active. That proposition is a phase machine under another
+name --- ours is declared and inspectable, whereas in a bounded-LTL
+encoding it would sit either in the propositions or, as in our own
+implementation of a debounced progress key, inside the adapter, where it
+is neither declared nor validated. The decomposition does not go away;
+it only stops being visible.
+
+\emph{Cost grows with the bounds.} Bounded operators compile to automata
+carrying counters, so a per-stage bounded encoding of a long mission
+grows with $k$, while the ladder is one integer and a handful of guard
+evaluations per tick regardless of the deadline.
+
+\emph{The stage index is not recoverable.} A set of independent bounded
+formulas gives no single answer to ``which stage is this'', and no one
+place in which to grade a breach into an intervention: each formula
+reports its own violation, and the ordering and mutual exclusion of
+stages are nowhere stated. Phase decomposition is therefore not
+syntactic sugar for bounded LTL, but neither is it strictly more
+expressive --- it is a cheaper, declared and more diagnostic factoring
+of an obligation that bounded LTL can also express. Because that is an
+empirical claim rather than a formal one, bounded per-stage LTL is a
+baseline in Section~\ref{sec:eval} rather than an argument we settle
+here.
 
 \subsection{What this does not fix}
 
@@ -1130,9 +1157,22 @@ Nav2~\cite{macenski2020marathon}. Built on ROS~2~\cite{macenski2022ros2}.}
 \label{sec:metric}
 
 The monitor is a \emph{sequential detector}: each tick it emits continue,
-or stop with a named fault. A faulted episode has an onset tick $\nu$,
-known by construction for induced failures and annotated otherwise. Two
-quantities follow, and neither is meaningful alone:
+or stop with a named fault. A faulted episode has an onset tick $\nu$.
+
+\textbf{How $\nu$ is defined matters more than it appears, and we define
+it from signals the monitor never reads.} The tempting definition --- the
+first tick at which closing speed on the goal falls below a threshold
+and does not recover --- is circular, because our progress condition is
+itself computed from closing speed, so the detector would be scored
+against a label derived from its own input and its measured latency
+would be close to tautological. Instead $\nu$ is the tick at which the
+induced disturbance was applied, where failures are induced; and
+otherwise it is annotated from the recorded video and an external pose
+estimate, neither of which appears in any grounding rule. The
+annotation protocol and inter-annotator agreement are reported with the
+results. \TODO{protocol, agreement}
+
+Two quantities follow, and neither is meaningful alone:
 
 \begin{itemize}
   \item the \textbf{false-alarm rate} $\hat\alpha$ --- the fraction of
@@ -1185,8 +1225,11 @@ parameter can give a guarantee property a bad prefix. That is a property
 of the encoding, not of a tuning choice, and it is the strongest
 available statement of the paper's claim.
 
-Three statistical commitments, each because there is a way to get it
-wrong. \textbf{Delay is right-censored}: undetected episodes have no
+Four commitments made before any faulted episode was examined, each
+because there is a way to get it wrong. \textbf{The budget $\alpha_0$ is
+fixed in advance}, not chosen once the curves are in hand; selecting it
+afterwards would make the headline a best-of-many report, and we
+additionally publish the full curve so the choice is auditable. \textbf{Delay is right-censored}: undetected episodes have no
 finite $d$, so we report $\rho$ separately and the median $d$ over
 detected episodes, never a mean that silently drops non-detections ---
 which would flatter whichever arm detects less often but faster.
@@ -1207,15 +1250,34 @@ we do report.
 
 \subsection{H1 (main): does phase structure make failures detectable?}
 
-Over one corpus of recorded episodes, replay two encodings of the same
-mission --- flat (cross-cutting invariants plus the nested-$\F$ goal
-formula) and phase-structured (same invariants, same propositions, plus
-the ladder). Both see an identical observation stream, so the comparison
-isolates the encoding. \TODO{Report $\rho$ and median/worst-case $d$ per
-failure class (wedged, dead end, circling at constant distance, sensor
-dropout, toppling) at $\alpha_0 = \TODO{budget}$. Report separately the
-episodes in which the planner's own self-report fired, since those are
-the ones that flatter the flat encoding for the wrong reason
+Over one corpus of recorded episodes we replay \emph{four} encodings of
+the same mission. All four see an identical observation stream and share
+the same propositions and cross-cutting invariants, so the comparison
+isolates the encoding alone.
+
+\begin{itemize}
+  \item \textbf{B1 --- flat.} Cross-cutting invariants plus the
+  nested-$\F$ goal formula. Establishes the formal point of
+  Section~\ref{sec:gap}: $\rho = 0$ on progress failures at every
+  budget.
+  \item \textbf{B2 --- flat with a mission deadline.} The same, plus one
+  global timeout. This is what a competent engineer builds without
+  reading this paper, and it is the baseline that keeps B1 from being a
+  straw man.
+  \item \textbf{B3 --- per-stage bounded LTL.} Bounded-$\F$ obligations
+  per stage, with no phase machine --- the strongest formal alternative,
+  and the one Section~\ref{sec:bounded} declines to settle by argument.
+  \item \textbf{C --- the phase ladder.}
+\end{itemize}
+
+\TODO{Report $\rho$ and median/worst-case $d$ per failure class
+(wedged, dead end, circling at constant distance, sensor dropout,
+toppling) at the pre-registered $\alpha_0$. The informative comparisons
+are C against B2 on delay and localisation, and C against B3 on cost and
+inspectability --- if C beat B3 on detection we would expect an
+implementation fault in one of them rather than a result, and we say so
+in advance. Report separately the episodes in which the planner's own
+self-report fired, since those flatter B1 and B2 for the wrong reason
 (Section~\ref{sec:gap}).}
 
 \subsection{H2: the operating characteristic}
@@ -1251,6 +1313,15 @@ successes as RoboMonitor does~\cite{ajith2026robomonitor}.
 monitor, intervention policy and recovery repertoire, and only holding
 the latter two fixed makes the comparison about the first.
 
+One pre-check decides whether this hypothesis is worth running at all.
+If a replan issued at the moment of a stall rarely recovers on this
+platform, arms B, C and D all collapse onto A, and the null result would
+say something about the recovery repertoire rather than about the
+monitor. We therefore measure recovery success on a small set of induced
+stalls first, and if it is low we demote H4 and lead on H3, where the
+monitor's contribution does not depend on recovery succeeding.
+\TODO{pre-check result}
+
 \subsection{H5: cost and coverage}
 
 \TODO{Per-tick cost split into BDD steps, guard evaluation, fast-path
@@ -1275,34 +1346,157 @@ hand-authored reference cannot support.}
 \label{sec:threats}
 % =====================================================================
 
-\TODO{Write up from the engineering record. All real:}
+\TODO{Written against the planned corpus. Re-check every item below
+against the corpus actually collected before submission --- several
+mitigations are commitments that must have been kept.}
 
-\begin{itemize}
-  \item \textbf{The reference specification is hand-authored} ---
-  evaluation reference, not generator output. Presenting it as generated
-  would falsify H5.
-  \item \textbf{The ladder is a total order.} Fits navigation; does not
-  express concurrent or re-enterable stages.
-  \item \textbf{Bounds are uncalibrated.} Four grounding thresholds
-  (arrival radius, closing-speed epsilon, no-progress debounce, the
-  minimum-range height band) need measurement on a recorded run, and
-  per Section~\ref{sec:phases} the deadlines and budgets are now
-  specification rather than logic.
-  \item \textbf{Residual self-report coupling.} Five of eight
-  propositions read the planner's own status, which is the trap
-  Section~\ref{sec:gap} names. The planner-independent redesign ---
-  progress from odometry against the commanded goal, every planner topic
-  forbidden by test --- is designed and not deployed, so H1 must report
-  those cases separately and the independence half of the argument is
-  architectural rather than demonstrated.
-  \item \textbf{A debounce counted in messages, not ticks}, so the same
-  specification behaves differently on hardware and in simulation, where
-  it never fires. Fixing it turns on a signal that has never been on, so
-  prior simulation numbers involving it are non-comparable.
-  \item \textbf{One skill family} exercised end to end.
-  \item \textbf{No authentication in the stack.} The deployment model is
-  a trusted robot tier behind a terminating proxy.
-\end{itemize}
+\subsection{To the claim}
+
+\textbf{Stage structure is prior art; we claim only the horizon.}
+Decomposing execution into stages is widespread --- learned from
+labelled episodes~\cite{ajith2026robomonitor,sliwowski2025conditionnet},
+borrowed from the controller~\cite{colledanchise2021formalizing}, or
+emitted per skill by a language
+model~\cite{guo2024doremi,zhou2024codeasmonitor} --- and we do not claim
+it. What we claim is the bound attached to a stage, and the property-class
+consequence of attaching it. A reader who regards a behaviour tree's
+timeout decorator or a global task timeout as already constituting a
+per-stage horizon will find the contribution narrow; our reply is
+independence and categorisation, and arms B2 and B3 of
+Section~\ref{sec:eval} are where that reply is tested rather than
+asserted.
+
+\textbf{Bounded LTL can express per-stage deadlines, and we do not claim
+otherwise.} Section~\ref{sec:bounded} concedes this and reduces our
+position to three empirical differences: cost, declaredness, and the
+recoverability of a stage index. Arm B3 measures them. We state the
+unfavourable outcome in advance so that it cannot be reported as a
+surprise: if B3 matches the ladder on detection rate and delay, the
+contribution reduces to those three differences, which are real but
+smaller than the paper's framing suggests.
+
+\textbf{The flat baseline is not an engineering baseline.} B1 exists to
+exhibit a property-class fact, not to stand for practice; nobody deploys
+a bare nested-$\F$ formula with no timeout. B2 is the baseline that
+carries the comparison, and B1's result should be read as a statement
+about encodings rather than as a defeat of anyone's system.
+
+\subsection{To the measurement}
+
+\textbf{Planner self-report inside the specification.} Five of the eight
+propositions in the shipped navigation specification read the
+navigation stack's own status --- which is the trap
+Section~\ref{sec:gap} names, present in our own artifact. The
+planner-independent redesign derives progress from odometry against the
+commanded goal and forbids every planner topic by test. It must land
+before the headline corpus is recorded; episodes in which the planner's
+self-report fired are reported as a separate stratum either way.
+Residual: until it lands, the independence half of our argument is
+architectural rather than demonstrated, and any detection B1 or B2 shows
+on a stall is partly the planner's own admission rather than the
+monitor's work.
+
+\textbf{Induced failures need not match the real distribution.} We
+perturb executions to obtain failures at useful density, which is the
+standard criticism of synthetic failure
+data~\cite{duan2025aha,pacaud2025guardian}. Mitigation: we report the
+failure-mode distribution of induced against naturally occurring
+failures, as Guardian does, and report natural failures as their own
+stratum. Residual: the natural sample is small, so the comparison
+bounds the concern rather than removing it.
+
+\textbf{Grounding thresholds are calibration, not logic.} Four of them
+--- arrival radius, the closing-speed epsilon, the no-progress debounce
+and the minimum-range height band --- are measured from the same
+recording that feeds H1, and we report each threshold's provenance.
+Residual: a wrong threshold yields a perfectly verified wrong answer,
+and the operating characteristic of Section~\ref{sec:metric} shifts with
+it, so every curve we report is conditional on the calibrated values.
+
+\textbf{A debounce counted in messages rather than ticks.} The shipped
+progress debounce advances once per incoming message, so the same
+specification means \SI{2}{\second} on a \SI{5}{\hertz} topic where it
+documents \SI{10}{\second}, and in simulation, where the source
+publishes only on transitions, it never fires at all. It is corrected as
+one identifiable commit before any collection. Residual: the fix turns
+on a signal that has never been on, so no simulation figure predating it
+is comparable and we publish none.
+
+\textbf{Coverage gating is itself a selection.} Episodes whose undecided
+fraction exceeds a stated bound are excluded, because a sensor dropout
+reported as a detection result would be worse
+(Section~\ref{sec:unknown}). Residual: gating selects, so we report the
+exclusion count alongside every result and probe the undecided fraction
+early in collection rather than discovering it afterwards.
+
+\subsection{To the metric}
+
+\textbf{Onset definition.} Scoring detection delay against a label
+derived from the detector's own input would be circular, so $\nu$ comes
+from the applied disturbance or from video and an external pose
+estimate, neither of which appears in any grounding rule
+(Section~\ref{sec:metric}). Residual: annotating when a stall
+\emph{began} is a judgement; we report the protocol and
+inter-annotator agreement, and the delay figures should be read with
+that agreement in mind.
+
+\textbf{Choice of false-alarm budget.} $\alpha_0$ is fixed before any
+faulted episode is examined and the full delay-against-false-alarm curve
+is published, so a reader can see the headline's position on it rather
+than taking the operating point on trust.
+
+\textbf{Purity of the nominal set.} Nominal episodes are selected by
+outcome and by manual review, and we report how many candidates were
+rejected. Residual: an undetected sub-failure surviving review inflates
+the measured false-alarm rate --- which biases \emph{against} our
+claim, so the direction of this error is the safe one.
+
+\textbf{Delay is denominated in ticks.} A deadline of $k$ ticks is a
+different wall-clock duration at a different tick rate, so
+$\mathit{tick\_hz}$ is held identical across arms, stated, and all
+delays are reported in both ticks and seconds.
+
+\textbf{Success rate is a joint property.} H4 varies only the monitor,
+holding the intervention policy and recovery repertoire fixed, and
+includes an oracle arm so the result can be expressed as a fraction of
+achievable gain. Residual: if replanning rarely recovers a stall on this
+platform, all monitored arms collapse onto the unmonitored one and the
+null result would describe the recovery repertoire rather than the
+monitor --- which is why a recovery pre-check gates the hypothesis and
+why H3 does not depend on recovery succeeding.
+
+\subsection{To generalisation}
+
+\textbf{One skill family executed.} Navigation is the only family run
+end to end on hardware. A second, non-navigation skill is exercised at
+specification level only --- generated, validated against its schema,
+and shown to compose the shared embodiment fragment without adopting
+navigation keys --- which tests the authorship and schema claims but not
+the monitoring result. Residual: no second family is executed, so
+skill-agnosticism remains supported by construction and by schema parity
+rather than by a second measurement.
+
+\textbf{The reference specification is hand-authored.} It is the
+evaluation reference, not the generator's output, and H7 is run on
+generated specifications only. Presenting the hand-authored
+specification as a product of the pipeline would falsify the authorship
+claim outright.
+
+\textbf{The ladder is a total order.} It fits a waypoint mission and
+cannot express concurrent or re-enterable stages; a partial order would
+close the detectability gap equally and is the natural generalisation.
+Learned monitors meet the same limit from the other side, one global
+phase per timestep being unable to describe two arms doing different
+things~\cite{ajith2026robomonitor}.
+
+\textbf{One robot, one navigation stack.} Results are from a single G1
+with a single traversability planner. The portability argument
+(Section~\ref{sec:system}) is what makes us expect transfer, and H6 is
+the only evidence offered for it.
+
+\textbf{No authentication anywhere in the stack.} The deployment model
+is a trusted robot tier behind a terminating proxy, stated here rather
+than left implied.
 
 % =====================================================================
 \section{Conclusion}

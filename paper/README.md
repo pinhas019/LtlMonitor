@@ -53,7 +53,7 @@ Two things in the repo made this argument available and should not be lost:
 | V. Trace Semantics | skeleton |
 | VI. How the Monitor Works | **drafted** — artifacts, the tick end to end, both layers on one assignment, **fault → category → intervention**, embodiment separation |
 | VII. Evaluation | **metric drafted and defended** (§VII-B); H1–H7 protocols fixed, no numbers |
-| VIII. Threats | skeleton — seven enumerated, all real |
+| VIII. Threats | **drafted** — four groups, each item as threat → mitigation → **residual** |
 | IX. Conclusion | skeleton with intended shape |
 
 18 `\TODO{}` markers. `grep -c '\\TODO{' ral.tex` is the submission gate.
@@ -108,17 +108,22 @@ they are not the fourth value DECIDED/UNDECIDED needs. §IV-F says this.
 
 ---
 
-## Page budget — 11 pages, accepted; the owner trims
+## Page budget — 13 pages, accepted; the owner trims
 
 | | pages |
 |---|---|
 | §I–§IV + bibliography | 7 |
-| + §VI (mechanism) and §VII (metric) written out | **11** |
+| + §VI (mechanism) and §VII (metric) | 11 |
+| + §VIII (threats, written out) | **13** |
 
 RA-L allows 8 at most.
 
-> **Owner's decision (standing): keep the draft at 11 pages. Trimming and
-> cutting are the owner's to do, not a collaborator's.**
+> **Owner's decision (standing): do not trim this draft for length.
+> Trimming and cutting are the owner's to do, not a collaborator's.**
+
+It was 11 pages when that decision was made and is 13 now, because §VIII was
+then written out on request. The instruction is unchanged: report the count,
+do not act on it.
 
 So: **do not trim this paper for length.** Not as a tidy-up, not as a
 "while I was here", not on your own judgement about which argument is
@@ -144,6 +149,73 @@ paper.
 
 A venue with room for the whole argument (T-RO, IJRR) remains open and, at 11
 pages of genuine content, worth weighing rather than treating RA-L as fixed.
+
+---
+
+## Commitments that must be kept BEFORE data collection
+
+These are in the paper as mitigations, so they are promises. Each is free now
+and unfixable afterwards.
+
+- [ ] **Independent onset definition.** ν from the applied disturbance, or from
+      video + external pose. **Never** from closing speed — the progress
+      condition is computed from closing speed, so that label would come from
+      the detector's own input and the latency result would be near-tautological.
+      Report the annotation protocol and inter-annotator agreement.
+- [ ] **P12 lands first.** Five of eight propositions still read planner
+      self-report; running the headline corpus before the redesign leaves the
+      independence claim architectural and contaminates B1/B2's stall detections.
+- [ ] **Fix α₀ in advance**, before looking at any faulted episode. Publish the
+      full curve regardless.
+- [ ] **Fix the message-vs-tick debounce** as one identifiable commit. It also
+      blocks the sim-first route entirely — in sim the signal never fires.
+- [ ] **Probe the undecided fraction** in the first five minutes of the first
+      recording. If high, fix sensing before committing to a long session.
+- [ ] **Recovery pre-check for H4** on ~10 induced stalls. If replan rarely
+      recovers, demote H4 and lead on H3.
+
+---
+
+## Evaluation design, as it now stands
+
+**H1 has four arms, not two** (§VII-C), and the extra two exist to stop B1
+being a straw man:
+
+| arm | what it is | what it is for |
+|---|---|---|
+| B1 | flat nested-F formula | the property-class fact: ρ = 0 at every budget |
+| B2 | flat + one global mission deadline | what a competent engineer builds without this paper — the honest baseline |
+| B3 | per-stage bounded LTL, no phase machine | the strongest formal alternative |
+| C | the phase ladder | ours |
+
+The informative comparisons are **C vs B2** (delay, localisation) and **C vs
+B3** (cost, inspectability). The paper states in advance that *if C beat B3 on
+detection we would suspect an implementation fault rather than claim a result*
+— worth keeping, it is cheap credibility.
+
+---
+
+## Correction applied to §IV-G
+
+The earlier draft's first leg — "one global bound is one bound" — **was wrong
+and is removed.** Bounded LTL expresses per-stage deadlines fine:
+`G(armed ∧ ¬planning → F≤30 planning)` needs no phase machine. An MTL-literate
+reviewer would have said so immediately.
+
+What survives, and what §IV-G now rests on:
+
+1. **A progress budget needs a stage to be scoped to.** "Must not fail m
+   consecutive ticks *while in this stage*" requires a stage indicator — which
+   is a phase machine under another name. In a bounded-LTL encoding it hides in
+   the propositions or (as in our own adapter's debounced progress key) in the
+   adapter, where it is neither declared nor validated. The decomposition does
+   not disappear; it stops being visible.
+2. **Cost grows with the bounds** — counter automata, versus one integer.
+3. **The stage index is not recoverable** from independent formulas, and there
+   is no single place to grade a breach into an intervention.
+
+And the honest concession now in the text: this is an *empirical* claim, not a
+formal one, which is why B3 is a baseline rather than an argument.
 
 ---
 
