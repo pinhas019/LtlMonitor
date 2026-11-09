@@ -46,44 +46,106 @@ Two things in the repo made this argument available and should not be lost:
 | section | state |
 |---|---|
 | Abstract | drafted; one `\TODO` for the headline number |
-| I. Introduction | **drafted** — detectability argument, Figure 1, localise/grade, why LTL too |
-| II. Related Work | **drafted** — six subsections; **II-C is the central one** (stage structure in monitoring) |
-| III. Why Phases, and Why LTL | **drafted** — the detectability gap, phases as bounded obligations, three-valued propositions, alternatives |
-| IV. Trace Semantics | skeleton — now load-bearing, because deadlines are counted in ticks |
-| V. System | skeleton — six subsections, phase machine first |
-| VI. Evaluation | skeleton — **protocols fixed, numbers not collected** |
-| VII. Threats | skeleton — seven enumerated, all real |
-| VIII. Conclusion | skeleton with intended shape |
+| I. Introduction | **drafted** |
+| II. Background | **drafted** — A: how LTL works; B: which finite-prefix semantics (LTL₃); C: ways to declare a skill's requirements, with Table I |
+| III. Related Work | **drafted** — descriptive only; the "why not X" arguments moved to §II-C so they are not made twice |
+| IV. Why Phases | **drafted** — detectability gap, phases as bounded obligations, three-valued propositions, bounding the flat formula |
+| V. Trace Semantics | skeleton — load-bearing, since deadlines are counted in ticks |
+| VI. System | skeleton — six subsections, phase machine first |
+| VII. Evaluation | skeleton — **protocols fixed, numbers not collected** |
+| VIII. Threats | skeleton — seven enumerated, all real |
+| IX. Conclusion | skeleton with intended shape |
 
 16 `\TODO{}` markers. `grep -c '\\TODO{' ral.tex` is the submission gate.
 
+**Table I** is the comparison of declaration methods: rows are free-language
+description, FSM/behaviour tree, action pre/post-conditions, reward machine,
+propositional invariants, STL/MTL, learned detector, LTL, and LTL + phase
+ladder. Columns are the five properties a *monitor* needs — temporal,
+independent of the controller, mechanically checkable, permanent violation
+verdict, bounded obligations. The argument it makes visually: LTL is the only
+row that is temporal, independent, checkable and permanent, and the one column
+it fails is bounded obligations — which is exactly the column the phase ladder
+fills. STL/MTL is the one row that already has bounded obligations, which is
+why §II-C treats it as the honest main alternative rather than dismissing it.
+
 ---
 
-## Page budget — this is now tight
+## Semantics: LTL3, decided in §II-B
 
-RA-L is **6 pages**, extensible to 8 with overlength charges.
+The draft now says **LTL₃** explicitly rather than "LTL", and §II-B is where
+that choice is made and defended. The short version, because the reasoning is
+easy to get backwards:
 
-- Abstract + §I–§III + bibliography: **7 pages**
-- Plus §IV–§VIII *as skeletons*: **8 pages**
+- **LTL₃** (Bauer et al.) evaluates a finite prefix to ⊤/⊥/?, where ⊤ means
+  *every* infinite continuation satisfies φ and ⊥ means *none* does. It still
+  quantifies over infinite continuations, so it is the semantics of a finite
+  **observation of an open-ended run** — not of a trace believed complete.
+  Its three verdicts are exactly `MonitorStatus.{ACCEPTED, VIOLATED,
+  INCONCLUSIVE}` in `skill_monitor/core/automata.py`. We already implement it.
+- **LTLf** (De Giacomo & Vardi) reinterprets the logic over finite traces,
+  where the trace *is* the word. There `F finished` is simply **false** if it
+  never holds. This is what "I assume the trace is finite" actually names.
+- **RV-LTL** (Bauer et al. 2010) refines LTL₃'s single `?` into four values,
+  adding presumably-true / presumably-false.
 
-§III grew by a page in the rewrite because it now carries the contribution,
-which is the right place for the weight but leaves no room. Trim targets, in
-the order I would cut:
+We monitor under LTL₃ online and read the episode fold as finite-trace. The
+load-bearing observation, now a contribution bullet: **the phase structure
+manufactures the finite trace a finite-trace semantics presupposes** — LTLf
+gives a definitive verdict at the last position but cannot say *when the
+trace ends*, and what closes the episode is a phase deadline. So adopting
+LTLf relocates the need for phases rather than removing it, and the phase
+claim does not depend on the semantics choice.
 
-1. **§II-E (specification acquisition)** — now explicitly secondary. Two
-   sentences and a citation cluster is enough.
-2. **§II-F (Position)** — overlaps §I-F. Compress to three sentences.
-3. **§I-E (two consequences we did not design for)** — one paragraph; §II and
-   H4/H5 cover the detail.
-4. **§III-A (the four questions Q1–Q4)** — useful scaffolding, but the Q-labels
-   recur throughout and could be inlined.
-5. **§III-F (why both layers)** — partially restates §I-D. Merge them.
-6. **Figure 1** is a tabular placeholder eating a third of a column; a drawn
-   figure would be tighter and better.
+Why not RV-LTL, which looks like it supplies the missing detection signal:
+presumably-false is not monotone (nothing to latch), it is **constant for
+most of a successful run** (`F finished` is presumably-false on every prefix
+of a *successful* episode until the final tick, so it does not distinguish
+stalled from progressing), and it still never says when to give up.
 
-Do **not** cut: §III-C (the detectability gap), §III-D (phases as bounded
-obligations), the first item of §III-H (bounding the flat formula — see
-below), or §II-C (the competitor analysis). Those four are the paper.
+**One terminology fix applied throughout.** Under the standard definition
+(some extension yields a definitive verdict) `F p` **is** monitorable, and the
+monitorable class is strictly larger than safety ∪ co-safety. What the goal
+formula lacks is a **bad prefix**: it is monitorable *for satisfaction* and
+not *for violation*. The draft now says that everywhere, and the title changed
+from "Monitorable" to "Detectable" for the same reason. An RV reviewer would
+have caught the loose version.
+
+This also retroactively justifies a decision already in `docs/clocking.md`
+("do not add a member to `MonitorStatus`"): that enum is the LTL₃ verdict
+domain, fixed by the semantics. RV-LTL's extra values refine `?` along the
+*trace* axis and say nothing about whether the observation was available, so
+they are not the fourth value DECIDED/UNDECIDED needs. §IV-F says this.
+
+---
+
+## Page budget — the draft does not currently fit RA-L
+
+Measured, not estimated:
+
+| | pages |
+|---|---|
+| §I–§IV (Intro, Background, Related Work, Why Phases) + bibliography | **7** |
+| + §V–§IX **as skeletons** | **9** |
+
+RA-L is 6 pages, 8 absolute maximum with overlength charges. A trim pass
+(compacting the comparison table to one column, cutting the table
+walk-through, Position and spec-acquisition to a few sentences each, merging
+four items in §IV-C into two) did not move the page count, because the
+binding constraint is total material, not slack.
+
+Realistic allocation if every section were written properly: ~9 pages. So
+roughly **one page has to come out of scope, not out of wording.**
+
+The clear candidate is the **portability and authorship material**, which is
+already demoted to consequences: §I-D, H4, H5, §VI-E, §VI-F, and the NL→LTL
+citation cluster. Removing it saves about a page, leaves the paper making
+exactly one claim, and the removed material is a coherent second paper. The
+alternative is a venue with more room (T-RO, IJRR).
+
+Nothing else should be cut: §II-B (semantics), §IV-A (the detectability gap),
+§IV-B (phases as bounded obligations), §IV-G (bounding the flat formula) and
+§III-C (the competitor analysis) are the paper.
 
 ---
 
