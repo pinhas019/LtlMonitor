@@ -568,22 +568,82 @@ with numbers. It is also different in kind: those stages are compiled
 into a milestone graph and scored by LLM judges, with no formal guards,
 no deadline semantics and no claim about property classes.
 
-\subsection{Learned monitors, and the self-report trap}
+\subsection{Failure detection and reasoning with foundation models}
+\label{sec:related-fm}
 
-A fast-moving body of work detects failure without a specification, from
-statistical signatures of a policy's own behaviour or a
-vision--language model's judgement of
+The fastest-moving neighbouring literature detects failure with
+foundation models rather than from a specification. REFLECT summarises
+multisensory experience into a hierarchy and has an LLM explain the
+failure after the fact, contributing the RoboFail
+benchmark~\cite{liu2023reflect}. AHA frames failure reasoning as
+free-form language rather than binary classification and fine-tunes a
+VLM on procedurally perturbed
+demonstrations~\cite{duan2025aha}; Guardian scales synthetic failure
+data further and verifies both proposed plans and subtask
+executions~\cite{pacaud2025guardian}. Closer still to a declarative
+monitor, DoReMi has an LLM emit per-skill \emph{constraints} alongside
+the plan and a VLM check them every \SI{0.2}{\second} during
+execution~\cite{guo2024doremi}, and Code-as-Monitor compiles constraints
+into code over tracked geometric elements, separating constraints that
+must hold \emph{during} a subgoal from those required \emph{on
+completion}~\cite{zhou2024codeasmonitor}. Others detect failure from the
+policy's own statistics or a VLM's judgement of
 progress~\cite{agia2024unpacking}, sometimes closing the loop to
-recovery~\cite{periasami2026frames}. Section~\ref{sec:declaration} gives
-our reading of the trade; architecturally we admit such a detector in
-the one role where it costs nothing, as the grounding of a single atomic
-proposition, and we use one that way. How to ground propositions in raw
-perception is itself active --- monitoring spatio-temporal properties
-over perception outputs rather than low-dimensional
-state~\cite{balakrishnan2021percemon}, or evaluating propositions in a
-learned latent space~\cite{kapoor2026embedding} --- and progress there
-enters our system as a better grounding rule, not as a change to the
-phase structure.
+recovery~\cite{periasami2026frames}. The ancestor of all of this is
+execution monitoring of high-level robot
+programs~\cite{degiacomo1998execution,pettersson2005execution}.
+
+Three observations place our claim against this cluster, and they are
+not the ones we expected.
+
+\textbf{Stage structure is either consumed or produced without a
+horizon.} AHA predicts success \emph{for a given sub-task} from
+keyframes, and Guardian is conditioned on proposed plans or subtasks and
+verifies an execution from its before-and-after
+observations~\cite{duan2025aha,pacaud2025guardian}: both \emph{consume} a
+decomposition someone else supplied. DoReMi and Code-as-Monitor
+\emph{produce} one, and their during-execution and on-completion
+constraints correspond closely to our invariant and exit
+condition~\cite{guo2024doremi,zhou2024codeasmonitor}. But in every case
+the obligations are \emph{state} constraints with no horizon. DoReMi's
+only temporal bound is a global task timeout --- precisely the single
+mission-level bound Section~\ref{sec:bounded} argues against.
+
+\textbf{So the detectability gap survives the cluster.} A robot wedged
+while still holding its object, with no obstacle newly in front of it,
+violates no state constraint; and if its stage has not ended there is no
+boundary at which to notice. Guardian \emph{can} see such a case, and
+tellingly \emph{no progress} is its best-detected class --- but it sees
+it by comparing a subtask's start and end frames once the subtask is
+over. We read that as support rather than refutation: stage boundaries
+are what make progress failure visible, and a per-stage deadline is what
+lets the verdict arrive \emph{inside} the stage instead of at its end.
+
+\textbf{The failure data says the same thing.} AHA's seven synthesised
+modes are action-centric --- incomplete grasp, slip, keyframe
+translation and rotation offsets, missing rotation, wrong action
+sequence, wrong target object --- and include no progress or timeout
+class at all~\cite{duan2025aha}. A literature whose failure datasets
+contain no stalls will not produce detectors that catch them, which is
+one reason we think this gap has gone unremarked.
+
+Two smaller points. These monitors return a VLM judgement, so no verdict
+is monotone and a supervisor has nothing to latch;
+Section~\ref{sec:declaration} gives our reading of that trade, and
+architecturally we admit such a detector in the one role where it costs
+nothing --- grounding a single atomic proposition, which we do use.
+And Code-as-Monitor, having to choose failure thresholds either by hand
+or from a VLM's prior, states that the effect of threshold variation
+remains unexplored~\cite{zhou2024codeasmonitor}; that is exactly our H2
+(Section~\ref{sec:eval}), which makes bound sensitivity a contribution
+rather than only a concession.
+
+How to ground propositions in raw perception is itself
+active~\cite{balakrishnan2021percemon,kapoor2026embedding}, and progress
+there enters our system as a better grounding rule, not as a change to
+the phase structure.
+
+\subsection{The self-report trap}
 
 One finding from the agent literature names the trap our platform fell
 into. Asked whether language-model agents can report their own task
@@ -614,14 +674,19 @@ Monitoring algorithms for LTL are mature, and phase structure is
 increasingly recognised as necessary --- obtained by learning it from
 labelled episodes~\cite{ajith2026robomonitor,sliwowski2025conditionnet},
 by borrowing it from the
-controller~\cite{colledanchise2021formalizing}, or by decomposing
-formulas for a planner~\cite{xu2024nl2hltl2plan}. What is missing is
-that phase structure is not a convenience but a consequence of a
-property-class fact, and, following from it, a phase structure designed
-for monitoring: declared rather than learned, carrying deadlines and
-progress budgets rather than only pre- and post-conditions, graded into
-an intervention, and run alongside LTL so cross-cutting invariants keep
-a permanent verdict.
+controller~\cite{colledanchise2021formalizing}, by decomposing formulas
+for a planner~\cite{xu2024nl2hltl2plan}, or by having a foundation model
+emit per-stage constraints~\cite{guo2024doremi,zhou2024codeasmonitor}.
+Stage structure is therefore not what we claim as novel. What is missing
+across all of it is a \emph{horizon}: the obligations attached to a
+stage are states to maintain, never bounds within which to make
+progress, so the property class never changes and the stall stays
+unrefutable. Our claim is that phase structure is not a convenience but
+a consequence of a property-class fact, and, following from it, a phase
+structure designed for monitoring: declared rather than learned,
+carrying deadlines and progress budgets as well as pre- and
+post-conditions, graded into an intervention, and run alongside LTL so
+cross-cutting invariants keep a permanent verdict.
 
 % =====================================================================
 \section{Why Phases}
@@ -654,7 +719,11 @@ the problem and so returns us to the self-report
 trap~\cite{wang2026progressbar}: the wedged humanoid was reporting
 \texttt{following}. \emph{Bounding the goal formula}, writing
 $\F_{\leq k}$ for $\F$, is the right instinct and is the serious
-alternative; we take it up in Section~\ref{sec:bounded}.
+alternative; we take it up in Section~\ref{sec:bounded}. A third escape,
+widespread in the foundation-model literature, is to attach state
+constraints to each stage and check them continuously
+(Section~\ref{sec:related-fm}); it catches a great deal, but not a robot
+that is stuck while every declared state still holds.
 
 \subsection{Phases as bounded obligations}
 \label{sec:phases}

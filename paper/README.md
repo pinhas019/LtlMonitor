@@ -249,6 +249,27 @@ Key new citations for the phase claim, all verified:
 | `colledanchise2021formalizing` | runtime verification around behaviour-tree execution context |
 | `manna1990hierarchy` | the safety/liveness/guarantee hierarchy the detectability argument rests on |
 
+**The foundation-model failure-detection cluster** (§III-D), traced from primary
+sources, not from other papers' characterisations:
+
+| ref | why it matters |
+|---|---|
+| `duan2025aha` | AHA, ICLR 2025. Predicts success **for a given sub-task** from keyframes — it *consumes* a decomposition. Its seven synthesised failure modes are all action-centric and include **no progress or timeout class at all**, which is a citable reason the gap has gone unremarked |
+| `pacaud2025guardian` | Guardian. Conditioned on **proposed plans or subtasks**; verifies execution from before/after frames. "No progress" is its **best-detected class** — read as support: stage boundaries are what make progress failure visible |
+| `liu2023reflect` | REFLECT, CoRL 2023. Post-hoc failure explanation from a hierarchical experience summary. **RoboFail is REFLECT's dataset, not a separate paper** |
+| `guo2024doremi` | DoReMi, IROS 2024. **Closest in spirit**: LLM emits per-skill constraints, VLM checks them every 0.2 s. But they are *state* constraints, and the only temporal bound is a **global** task timeout — the single mission-level bound §IV-G argues against |
+| `zhou2024codeasmonitor` | Code-as-Monitor. Compiles constraints to code; separates during-execution from on-completion constraints, which **map closely onto our invariant and exit condition**. Also states that **threshold-variation effects remain unexplored** — that is our H2, so bound sensitivity is a contribution, not only a concession |
+| `degiacomo1998execution` | the classical ancestor: execution monitoring of high-level robot programs |
+
+**The positioning this forced, and it is a real change.** Stage structure is *not*
+what to claim as novel — this cluster has plenty of it, produced as well as
+consumed. The defensible gap is narrower and sharper: **none of them attaches a
+horizon to a stage.** The obligations are states to maintain, never bounds within
+which to make progress, so the property class never changes and the stall stays
+unrefutable. §III-F (Position) now says this explicitly, and §IV-A names
+per-stage state constraints as a third escape that "catches a great deal, but not
+a robot that is stuck while every declared state still holds."
+
 arxiv.org and alphaxiv.org are both blocked from this session's network, so
 metadata came via search and the alphaXiv MCP tools rather than abstract
 pages. A session with arXiv allowed could clear the VERIFY list quickly.
