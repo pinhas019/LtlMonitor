@@ -108,36 +108,42 @@ they are not the fourth value DECIDED/UNDECIDED needs. §IV-F says this.
 
 ---
 
-## Page budget — now 11 pages, deliberately
+## Page budget — 11 pages, accepted; the owner trims
 
 | | pages |
 |---|---|
 | §I–§IV + bibliography | 7 |
 | + §VI (mechanism) and §VII (metric) written out | **11** |
 
-RA-L allows 8 at most. **Owner's standing decision: keep drafting at full
-detail and cut later**, once the numbers show which sections earn their space.
-Do not trim for length now — an earlier measured trim pass moved the count by
-zero, so wording is not where the pages are.
+RA-L allows 8 at most.
 
-When the time comes, roughly three pages have to go. In order of what I would
-cut:
+> **Owner's decision (standing): keep the draft at 11 pages. Trimming and
+> cutting are the owner's to do, not a collaborator's.**
+
+So: **do not trim this paper for length.** Not as a tidy-up, not as a
+"while I was here", not on your own judgement about which argument is
+weakest. An earlier measured trim pass moved the page count by zero, so
+wording is not where the pages are — only scope is, and scope is the owner's
+call. If length comes up, report the count and stop.
+
+If the owner later asks for the cut, this is the order I would propose, and it
+is a proposal only:
 
 1. **Portability and authorship as contributions** (§I-E, H6, H7, §VI-E's last
    paragraph, the NL→LTL citation cluster) — about a page, already demoted to
    consequences, and a coherent second paper.
-2. **§VII-B's metric defence** compressed to one paragraph plus a citation to
-   Lorden — the full four-part defence belongs in a journal version.
+2. **§VII-B's metric defence** compressed to one paragraph plus the Lorden
+   citation; the four-part version belongs in a journal variant.
 3. **§VI's tick walkthrough** reduced to a figure with a caption.
 
-Not candidates at any length: §II-B (semantics), §II-C's behaviour-tree answer,
-§IV-A (the detectability gap), §IV-B (phases as bounded obligations), §IV-G
-(bounding the flat formula), §III-C/D (the competitor analysis), and the primary
-metric definition. Those are the paper.
+Not candidates at any length: §II-B (semantics), §II-C's behaviour-tree
+answer, §II-D (proposer/checker), §IV-A (the detectability gap), §IV-B (phases
+as bounded obligations), §IV-G (bounding the flat formula), §III-C/D (the
+competitor analysis), and §VII-B's primary metric definition. Those are the
+paper.
 
-A venue with room for the whole argument (T-RO, IJRR) remains the alternative,
-and at 11 pages of genuine content it is worth weighing seriously rather than
-treating RA-L as fixed.
+A venue with room for the whole argument (T-RO, IJRR) remains open and, at 11
+pages of genuine content, worth weighing rather than treating RA-L as fixed.
 
 ---
 
