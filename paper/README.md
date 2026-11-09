@@ -47,27 +47,16 @@ Two things in the repo made this argument available and should not be lost:
 |---|---|
 | Abstract | drafted; one `\TODO` for the headline number |
 | I. Introduction | **drafted** |
-| II. Background | **drafted** — A: how LTL works; B: which finite-prefix semantics (LTL₃); C: ways to declare a skill's requirements, with Table I |
-| III. Related Work | **drafted** — descriptive only; the "why not X" arguments moved to §II-C so they are not made twice |
-| IV. Why Phases | **drafted** — detectability gap, phases as bounded obligations, three-valued propositions, bounding the flat formula |
-| V. Trace Semantics | skeleton — load-bearing, since deadlines are counted in ticks |
-| VI. System | skeleton — six subsections, phase machine first |
-| VII. Evaluation | skeleton — **protocols fixed, numbers not collected** |
+| II. Background | **drafted** — A: how LTL works · B: which finite-prefix semantics (LTL₃) · C: declaration methods + Table I, with the extended behaviour-tree answer · D: **why author from natural language** |
+| III. Related Work | **drafted** — six subsections; III-C (stage structure) and III-D (the AHA/Guardian/DoReMi/CaM cluster) are the load-bearing ones |
+| IV. Why Phases | **drafted** |
+| V. Trace Semantics | skeleton |
+| VI. How the Monitor Works | **drafted** — artifacts, the tick end to end, both layers on one assignment, **fault → category → intervention**, embodiment separation |
+| VII. Evaluation | **metric drafted and defended** (§VII-B); H1–H7 protocols fixed, no numbers |
 | VIII. Threats | skeleton — seven enumerated, all real |
 | IX. Conclusion | skeleton with intended shape |
 
-16 `\TODO{}` markers. `grep -c '\\TODO{' ral.tex` is the submission gate.
-
-**Table I** is the comparison of declaration methods: rows are free-language
-description, FSM/behaviour tree, action pre/post-conditions, reward machine,
-propositional invariants, STL/MTL, learned detector, LTL, and LTL + phase
-ladder. Columns are the five properties a *monitor* needs — temporal,
-independent of the controller, mechanically checkable, permanent violation
-verdict, bounded obligations. The argument it makes visually: LTL is the only
-row that is temporal, independent, checkable and permanent, and the one column
-it fails is bounded obligations — which is exactly the column the phase ladder
-fills. STL/MTL is the one row that already has bounded obligations, which is
-why §II-C treats it as the honest main alternative rather than dismissing it.
+18 `\TODO{}` markers. `grep -c '\\TODO{' ral.tex` is the submission gate.
 
 ---
 
@@ -119,37 +108,161 @@ they are not the fourth value DECIDED/UNDECIDED needs. §IV-F says this.
 
 ---
 
-## Page budget — measured, and deliberately not acted on yet
+## Page budget — now 11 pages, deliberately
 
 | | pages |
 |---|---|
-| §I–§IV (Intro, Background, Related Work, Why Phases) + bibliography | **7** |
-| + §V–§IX **as skeletons** | **9** |
+| §I–§IV + bibliography | 7 |
+| + §VI (mechanism) and §VII (metric) written out | **11** |
 
-RA-L is 6 pages, 8 absolute maximum with overlength charges. A trim pass
-(compacting Table I to one column, cutting the table walk-through, Position
-and spec-acquisition to a few sentences each, merging four items in §IV-C into
-two) did **not** move the page count: the binding constraint is total
-material, not slack in the wording. Written out properly, every section comes
-to roughly 9 pages, so about one page has to come out of **scope**.
+RA-L allows 8 at most. **Owner's standing decision: keep drafting at full
+detail and cut later**, once the numbers show which sections earn their space.
+Do not trim for length now — an earlier measured trim pass moved the count by
+zero, so wording is not where the pages are.
 
-**Decision (owner, this session): leave it at 9 and keep drafting §V–IX at
-full detail.** Revisit once the evaluation numbers exist and it is visible
-which sections actually earn their space. So:
+When the time comes, roughly three pages have to go. In order of what I would
+cut:
 
-- **Do not trim for length right now.** A future session that starts shaving
-  prose is working on the wrong problem — the measurement above already
-  showed wording is not where the page is.
-- When the time comes, the candidate for the cut is the **portability and
-  authorship material**, already demoted to consequences: §I-D, H4, H5,
-  §VI-E, §VI-F and the NL→LTL citation cluster. That is about a page, it
-  leaves the paper making exactly one claim, and it is a coherent second
-  paper. The alternative is a venue with room for the whole argument (T-RO,
-  IJRR).
-- Not candidates, whatever the page count: §II-B (semantics), §IV-A (the
-  detectability gap), §IV-B (phases as bounded obligations), §IV-G (bounding
-  the flat formula), §III-C (the competitor analysis). Those five are the
-  paper.
+1. **Portability and authorship as contributions** (§I-E, H6, H7, §VI-E's last
+   paragraph, the NL→LTL citation cluster) — about a page, already demoted to
+   consequences, and a coherent second paper.
+2. **§VII-B's metric defence** compressed to one paragraph plus a citation to
+   Lorden — the full four-part defence belongs in a journal version.
+3. **§VI's tick walkthrough** reduced to a figure with a caption.
+
+Not candidates at any length: §II-B (semantics), §II-C's behaviour-tree answer,
+§IV-A (the detectability gap), §IV-B (phases as bounded obligations), §IV-G
+(bounding the flat formula), §III-C/D (the competitor analysis), and the primary
+metric definition. Those are the paper.
+
+A venue with room for the whole argument (T-RO, IJRR) remains the alternative,
+and at 11 pages of genuine content it is worth weighing seriously rather than
+treating RA-L as fixed.
+
+---
+
+## The evaluation metric, and its defence (§VII-B)
+
+**Primary metric: median and worst-case detection delay, with detection rate,
+at the tightest (k, m) whose false-alarm rate on held-out nominal episodes is
+≤ α₀.**
+
+The defence is that this is **not a metric we invented**. A phase deadline plus
+a progress budget is a stopping rule, so the monitor is a *sequential change
+detector*, and that problem class has evaluated such rules since Page's CUSUM
+by a pair of run lengths — to false alarm, and to detection. Lorden made the
+pairing precise (minimise worst-case expected detection delay subject to a
+false-alarm constraint) and CUSUM is minimax optimal under it. We adopt the
+criterion rather than coining one.
+
+Two adaptations stated in the paper because the correspondence is close but not
+exact: episodes are finite, so the analogue of run-length-to-false-alarm is a
+per-episode false-alarm **probability**, measured directly rather than
+approximated as a reciprocal of an expected time; and our detector is not
+likelihood-ratio-derived, so we claim no optimality — only that this is the
+right criterion.
+
+Three further reasons it holds up:
+
+- **Neither half is gameable alone.** Detection rate is maximised by k=m=1,
+  which detects everything and aborts every healthy run. Any paper reporting
+  detection without a false-alarm budget has reported nothing.
+- **H2's bound sweep *is* the operating characteristic**, not a side
+  experiment. Sweeping (k, m) traces delay against false-alarm rate per class;
+  H1 reports one point on it chosen by a stated budget. This is also the answer
+  to the sharpest objection available — "your bounds are tuned to your failure
+  set" — because the curve is reported, not a point. It also turns a concession
+  into a contribution: Code-as-Monitor explicitly states threshold-variation
+  effects are unexplored.
+- **It states the baseline's failure correctly, not unfairly.** The flat
+  encoding's curve on progress failures is *empty*: ρ = 0 at every budget,
+  because no parameter setting gives a guarantee property a bad prefix. That is
+  a property of the encoding, not of tuning.
+
+**Three statistical commitments, each guarding a specific error:**
+
+1. Delay is **right-censored**. Report detection rate separately and median
+   delay over detected episodes — never a mean that silently drops
+   non-detections, which flatters whichever arm detects less often but faster.
+2. **Stratify by failure class.** A topple trips an invariant on tick 1 under
+   both encodings; pooling it with a stall dilutes the effect under test.
+3. **Gate on coverage.** Exclude and count episodes whose undecided fraction
+   exceeds a stated bound, or a sensor dropout gets reported as a result.
+
+**Why not AUROC** (which much of the neighbouring cluster reports): it
+summarises a frame-wise classification and is threshold-free, whereas this is a
+stopping problem where *when* is the whole question. Perfect AUROC firing on the
+last tick is worthless and AUROC cannot distinguish it from firing at onset.
+
+**Secondary metric: execution not wasted** (ticks from onset to episode end).
+This is the utility measure that does not require recovery to succeed — which
+matters because an unreachable goal admits no intervention, so a
+success-rate-only evaluation would score a *perfect* monitor at zero.
+
+**Tertiary: task success rate, four arms** — (A) no monitor, (B) flat, (C)
+phase, (D) oracle fired at ground-truth onset — with the intervention policy and
+recovery repertoire held fixed. Claim is C > B; D bounds what any monitor could
+achieve with this repertoire, so the result reports a *fraction of achievable
+gain* rather than an unanchored percentage. Precedent: DoReMi's oracle arm.
+Stated plainly in the paper: success rate is joint over (monitor, intervention
+policy, recovery repertoire), and only fixing the latter two makes the
+comparison about the first.
+
+---
+
+## Why LTL and not behaviour trees (§II-C)
+
+The old draft rested on "a BT is the controller", which has a hole — you can
+write a monitoring-only BT, and people do (Ahmad et al., CASE 2025, verify BT
+conditions and add missing preconditions at runtime). Three stronger reasons now
+lead, in descending order:
+
+1. **A BT does not denote a language of traces.** Its meaning is its
+   tick-by-tick traversal, so there is no object of which to ask whether it has
+   a bad prefix. The paper's central argument cannot be *stated* in BT
+   formalism, let alone checked. Not a claim about expressive power — about what
+   kind of thing the artifact is.
+2. **No permanence.** A condition node is recomputed each tick and returns
+   success/failure/running; nothing latches. Hand-rolled latching makes
+   monotonicity a property of bookkeeping rather than of the construction, with
+   nothing to appeal to when it is wrong.
+3. **A generated tree is a program.** Validating one is validating a program;
+   validating a generated formula is a compile plus a key-existence check. This
+   is why §II-C and §II-D are not separable.
+
+The practical reason then stands alongside: in robotics a BT is usually *the*
+controller, and the `following`-while-wedged case shows that blindness is
+structural.
+
+---
+
+## Why from natural language (§II-D)
+
+The argument is **proposer / checker**, not "the model is reliable":
+
+- A spec comes from one of three places. **Hand-authored** is the status quo and
+  the reason platforms have monitors for one or two skills, not thirty — cost
+  scales skills × embodiments and is paid by whoever can write temporal logic.
+  **Learned** works (93% phase accuracy from 52 labelled episodes; 49K
+  synthesised pairs) at the cost of annotating per skill and binding the monitor
+  to the embodiment via training data. **Derived from a description** uses the
+  one artifact that already exists.
+- Ambiguity is answered by two mechanical gates, neither needing a human or a
+  robot: every formula must compile under Spot, and every sensor key named by a
+  grounding rule must be declared in the schema. Failure → rejected and
+  repaired. **Ambiguity surfaces as a rejected proposal, not as a monitor that
+  is quietly wrong.**
+- **The phase structure is what makes the gates strong**, and this is where the
+  two streams meet: a ladder over a declared vocabulary is far more constrained
+  than free-form LTL — a sequence of stages, a small fixed set of guard kinds,
+  Boolean expressions over declared keys, two integers. The same decomposition
+  that makes failures refutable makes the specification checkable. One
+  structure, both streams.
+- Residual, stated: the gates cannot catch whether a spec that compiles says
+  what the author *meant*. Mitigation is the round trip — the generator emits
+  prose back from the spec, so the human reviews English, not LTL. And a wrong
+  *threshold* passes both gates and every review, which is why §VII treats the
+  bounds as an object of measurement.
 
 ---
 

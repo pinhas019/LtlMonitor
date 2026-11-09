@@ -448,19 +448,48 @@ LTL~\cite{pnueli1977temporal}             & y     & y & y & y & \no \\
 \end{tabular}
 \end{table}
 
-Most rows fail on a single column and the table says why; three
-deserve comment.
+Most rows fail on a single column and the table says why; two
+deserve extended comment, because they are the alternatives a reader
+will press hardest.
 
-A \textbf{free-language description} is what a domain expert actually
-produces and what our pipeline consumes, but nothing can be checked
-against it: it is an input, not a specification. \textbf{Finite-state
-machines and behaviour trees} are how robot behaviour is actually
-structured, are legible and reactive, and carry condition nodes --- but
-they \emph{are} the controller, and a monitor that is the controller
-cannot catch the controller being wrong. Our wedged humanoid is the
-concrete case: the stack published \texttt{following} while the robot
-was stuck, so a monitor reading that state machine was blind to the
-fault structurally, not accidentally.
+\textbf{Behaviour trees and finite-state machines.} These deserve a
+careful answer rather than a dismissal: they are how robot behaviour is
+actually structured, they are legible, reactive and modular, they carry
+condition nodes, and failure handling has been built on exactly that ---
+verifying a tree's existing conditions and adding missing preconditions
+at runtime~\cite{ahmad2025unified,colledanchise2021formalizing}. Our
+phase ladder is deliberately BT-shaped in its sequencing. Three things
+separate them, in descending order of how much they decided the matter.
+
+\emph{First, a behaviour tree does not denote a language of traces.} Its
+meaning is its tick-by-tick traversal, so there is no object of which
+one can ask whether it has a bad prefix. The central argument of this
+paper --- that the goal obligation is a guarantee property and therefore
+unrefutable, and that bounding it makes it a safety property --- cannot
+be \emph{stated} in behaviour-tree formalism, let alone checked. That is
+not a point about expressive power but about what kind of thing the
+artifact is.
+
+\emph{Second, there is no permanence.} A condition node is recomputed
+every tick and returns success, failure or running; nothing latches. One
+can add latching by hand, per node, but then the monotonicity a
+supervisor relies on is a property of hand-written bookkeeping rather
+than of the construction, and there is nothing to appeal to when it is
+wrong. An LTL automaton's trap state gives it for free
+(Section~\ref{sec:ltl-brief}).
+
+\emph{Third, a generated tree is a program.} Validating one means
+validating a program; validating a generated formula means compiling it
+and checking that the keys it names are declared
+(Section~\ref{sec:nl}). That difference is what makes authorship from a
+description safe, so it is not separable from the previous column.
+
+The practical objection stands alongside the formal ones: in robotics a
+behaviour tree is usually \emph{the controller}, and a monitor that is
+the controller cannot catch the controller being wrong. Our wedged
+humanoid is the case --- the stack published \texttt{following} while the
+robot was stuck, so any monitor reading that state machine was blind to
+the fault structurally, not accidentally.
 
 That leaves the two rows that satisfy almost everything.
 \textbf{STL and MTL}~\cite{maler2004monitoring,fainekos2009robustness}
@@ -484,6 +513,57 @@ column the phase ladder fills. That is the shape of the paper's argument
 in one line: LTL supplies everything a monitor needs except a horizon,
 phases supply the horizon, and the combination is the last row of
 Table~\ref{tab:formalisms}.
+
+\subsection{Why author from a natural-language description}
+\label{sec:nl}
+
+A specification has to come from somewhere, and there are three places.
+It can be \textbf{hand-authored} in the formal language, which is the
+status quo and the reason a platform with thirty skills has monitors for
+one or two: the cost scales with skills times embodiments, and it is paid
+by whoever can write temporal logic. It can be \textbf{learned} from
+labelled failure episodes, which works --- \SI{93}{\percent} phase
+accuracy from 52 labelled episodes~\cite{ajith2026robomonitor}, or
+\num{49000} synthesised failure pairs~\cite{duan2025aha} --- at the cost
+of collecting and annotating those episodes per skill, and of binding
+the monitor to the embodiment through its training data. Or it can be
+\textbf{derived from a description of the skill}, which is the one
+artifact that already exists, because somebody had to say what the skill
+does before anyone built it.
+
+The objection to the third option is that natural language is ambiguous,
+and it is. Our answer is not that the model is reliable. It is that
+\textbf{the model proposes and the contract checks}. Two gates run on
+every generated specification, both mechanical, neither needing a human
+or a robot: every formula must compile under
+Spot~\cite{duretlutz2016spot}, and every sensor key named by any
+grounding rule must be declared in the embodiment's schema. A proposal
+failing either is rejected and fed back for repair. Ambiguity therefore
+surfaces as a rejected proposal rather than as a monitor that is quietly
+wrong, which is the same discipline the calibrated-abstention line
+applies to translation
+itself~\cite{sundarsingh2025conformalnl2ltl,chen2023nl2tl}.
+
+\textbf{And the phase structure is what makes those gates strong.} This
+is where the paper's two concerns meet. A phase ladder over a declared
+vocabulary is a far more constrained artifact than free-form temporal
+logic: a sequence of stages, each carrying a fixed, small set of guard
+kinds, each guard a Boolean expression over declared keys, plus two
+integers. There is correspondingly less room for a generated instance to
+be malformed in a way the gates cannot see. The same decomposition that
+makes failures refutable also makes the specification checkable, which
+we take as evidence it is cut along a real joint rather than as two
+independent conveniences.
+
+What the gates cannot catch is whether a specification that compiles and
+type-checks says what the author \emph{meant}. We mitigate rather than
+solve this: the generator also emits a prose description back from the
+specification it produced, so the human reviews English rather than LTL,
+and a mismatch is visible without reading a formula. The residual is
+real and is stated again in Section~\ref{sec:threats}. A wrong
+\emph{threshold}, in particular, passes both gates and every review ---
+which is why Section~\ref{sec:eval} treats the bounds as an object of
+measurement rather than a detail.
 
 % =====================================================================
 \section{Related Work}
@@ -914,46 +994,128 @@ deadlines and progress budgets are counted in ticks:}
 \end{itemize}
 
 % =====================================================================
-\section{System}
+\section{How the Monitor Works}
 \label{sec:system}
 % =====================================================================
 
-\TODO{Full section, grounded in docs/architecture.md, docs/api.md and
-docs/one\_tick.md. Planned structure:}
+\subsection{Artifacts, and who authors each}
 
-\begin{itemize}
-  \item \textbf{A. The specification.} Propositions with grounding
-  rules; cross-cutting LTL formulas; named failure modes with
-  categories; the phase ladder. One figure: the shipped G1
-  specification, annotated.
-  \item \textbf{B. The phase machine.} Guard evaluation order; the two
-  budgets; fault naming; how categories grade into the intervention
-  ladder; what the verdict publishes per tick (active phase, guard truth
-  values, violation counters) so the phase state is inspectable rather
-  than inferred.
-  \item \textbf{C. Running both layers on one tick.} One proposition
-  assignment feeds automata and guards; why the two are reconciled at
-  the supervisor rather than inside the monitor.
-  \item \textbf{D. Grounding propositions.} Fast path: a rule of the
-  form ``True when $\langle$expression$\rangle$'' over folded sensor
-  values, sub-millisecond. Slow path: a model on a worker thread with
-  stale-queue draining. Why the active-guard set matters here.
-  \item \textbf{E. Separating specification from embodiment.} The
-  per-robot descriptor the monitor never reads; the latched manifests;
-  schema fragments so a non-navigation skill need not adopt navigation
-  keys.
-  \item \textbf{F. Authoring a phase ladder from a description.}
-  Generate, validate against the schema and Spot, repair.
-\end{itemize}
+Four artifacts, deliberately separated by author rather than by module.
+A \textbf{sensor schema} declares, per robot family, the key names a
+specification may mention and what each means; an integrator writes it.
+An \textbf{adapter descriptor} says which topic and field feeds which
+key, at what nominal rate and staleness tolerance, and how several
+samples inside one tick fold to one value; an integrator writes one per
+embodiment. A \textbf{skill specification} carries the atomic
+propositions with their grounding rules, the cross-cutting LTL formulas,
+the named failure modes with categories, and the phase ladder; it is
+generated from a description (Section~\ref{sec:nl}) or written by a
+domain expert, per skill. The \textbf{grounding rules} live inside the
+specification. \TODO{one figure: the shipped G1 specification, annotated
+with the four artifact boundaries.}
+
+\subsection{One tick, end to end}
+
+The monitor is driven by an external clock, not by message arrival
+(Section~\ref{sec:semantics}). On each pulse, atomically:
+
+\begin{enumerate}
+  \item \textbf{Fold.} Each key's samples from the closing window reduce
+  to one value by that key's declared policy. A key with no sample holds
+  its previous value, and a per-source freshness record says whether it
+  is stale rather than steady.
+  \item \textbf{Ground.} The propositions the monitor asked for are
+  evaluated against the folded values. A rule of the form ``True when
+  $\langle$expression$\rangle$'' is evaluated directly in a restricted
+  environment, in well under a millisecond. A proposition whose
+  description is not reducible to a threshold goes to a model on a
+  worker thread; the queue is drained when a newer request arrives, so a
+  late answer is discarded rather than applied to the wrong tick. A
+  proposition whose required sources are stale returns
+  \textsc{unknown} rather than false.
+  \item \textbf{Decide decidability.} If a proposition required by the
+  automaton's current state or by the active phase's guards is
+  \textsc{unknown}, the tick is \textsc{undecided}: nothing steps, and
+  the verdict says so (Section~\ref{sec:unknown}).
+  \item \textbf{Step the automata.} One BDD evaluation and one state
+  assignment per cross-cutting formula. A formula entering its trap
+  state is \textsc{violated}, permanently.
+  \item \textbf{Step the ladder.} The active phase's guards are consulted
+  in a fixed order --- on entry, \emph{precondition}; then
+  \emph{invariant}; then \emph{progress condition}, incrementing or
+  resetting its violation counter; then \emph{exit condition}, which
+  advances the ladder. The phase's elapsed-tick count is compared with
+  its deadline.
+  \item \textbf{Publish.} One verdict carrying the active phase and
+  index, each formula's status, the evaluated truth of every guard the
+  phase declares, the violation counters, any fault raised with its name
+  and category, the undecided flag, and the episode's terminal value.
+\end{enumerate}
+
+Publishing the guards' evaluated truth matters more than it looks: it is
+what makes the phase state \emph{inspectable} rather than inferred, so
+an operator or a log reader can see which guard was about to break
+without re-deriving it from sensor values.
+
+\subsection{Both layers, one proposition assignment}
+
+The automata and the ladder consume the same assignment on the same
+tick. The automata own the cross-cutting verdict and contribute
+permanence; the ladder owns progress and contributes bounds, names and
+categories. They can disagree --- a phase timeout ends the episode while
+its category asks for a replan --- and the disagreement is reconciled at
+the supervisor rather than inside the monitor, because ``this episode is
+over'' and ``stop the robot'' are different statements and collapsing
+them inside the monitor loses one of them.
+
+\subsection{From a fault to an intervention}
+\label{sec:intervention}
+
+A monitor by itself changes no outcome. The path from detection to a
+better outcome has four links, and the design makes each explicit.
+
+A guard breach produces a \textbf{named fault}, carrying the stage and
+the guard kind. The fault's \textbf{category} is declared in the
+specification: a breached invariant or failed precondition is
+\textsc{safety}; an exceeded deadline is \textsc{timeout}; an exhausted
+progress budget is \textsc{progress}. The category selects a rung of an
+\textbf{intervention ladder} --- continue, warn, replan, halt, abort ---
+graded in exactly one place so that the node actuating the robot
+contains no policy. The \textbf{supervisor} obeys the token, overriding
+the base with a zero-velocity command at halt or above, and also when
+the episode has ended; it enforces nothing until enabled, which is what
+makes a detection-only arm available for the evaluation below.
+
+So the causal claim the paper can make about success rate is narrow and
+worth stating as such: earlier detection helps only where something
+useful can be done earlier. For a stall, a replan issued at the progress
+budget rather than at the mission timeout leaves more of the episode's
+remaining budget to find another route, and spends fewer ticks driving a
+wedged robot. Where a goal is genuinely unreachable, no intervention
+restores success and the gain appears only as execution not wasted ---
+which is why Section~\ref{sec:eval} measures both and does not rest on
+success rate alone.
+
+\subsection{Nothing here names an embodiment}
+
+The monitor's inputs are a specification and an observation stream, and
+neither mentions a topic, a sensor or a robot. Embodiment-specific
+knowledge terminates at the evaluator that owns the descriptor; the two
+halves learn of each other only through latched manifests on the wire,
+which is what lets a monitor run with no adapter present at all --- for
+instance against a recorded stream. Schema fragments keep this from
+collapsing into a navigation-only vocabulary: a descriptor composes an
+embodiment fragment with a task-family fragment, so a manipulation skill
+keeps the former and drops the latter rather than having to adopt
+navigation keys before it can say anything.
 
 % =====================================================================
 \section{Evaluation}
 \label{sec:eval}
 % =====================================================================
 
-\TODO{Full section. Protocols fixed; numbers not collected. H1 is the
-main experiment and runs offline on recorded episodes --- see
-paper/README.md.}
+\TODO{Protocols below are fixed; no numbers are collected yet. H1--H3
+run offline on one recorded corpus.}
 
 \subsection{Platform and task}
 
@@ -964,59 +1126,149 @@ Lab~\cite{mittal2023orbit}; the superseded baseline the simulation
 descriptors were written against was
 Nav2~\cite{macenski2020marathon}. Built on ROS~2~\cite{macenski2022ros2}.}
 
-\subsection{H1 (main): phase structure makes failures detectable}
+\subsection{What we measure, and why}
+\label{sec:metric}
 
-The ablation the paper turns on. Over one corpus of recorded episodes,
-replay two encodings of the same mission: the flat specification
-(cross-cutting invariants plus the nested-$\F$ goal formula) and the
-phase-structured one (same invariants, same propositions, plus the
-ladder). Both see an identical observation stream, so the comparison
-isolates the encoding.
+The monitor is a \emph{sequential detector}: each tick it emits continue,
+or stop with a named fault. A faulted episode has an onset tick $\nu$,
+known by construction for induced failures and annotated otherwise. Two
+quantities follow, and neither is meaningful alone:
 
-\TODO{Report, per induced failure class (wedged, dead end, circling at
-constant distance, sensor dropout, toppling): (a) \emph{detection rate}
---- did any verdict ever report a failure; (b) \emph{detection latency}
-in ticks from onset; (c) \emph{diagnostic specificity} --- was the
-reported fault the correct stage and guard. The prediction from
-Section~\ref{sec:gap} is that the flat encoding's detection rate on the
-progress-failure classes is zero, not merely worse, except where the
-planner's self-report happens to fire --- and those cases must be
-reported separately, since they flatter the baseline for the wrong
-reason.}
+\begin{itemize}
+  \item the \textbf{false-alarm rate} $\hat\alpha$ --- the fraction of
+  \emph{nominal} episodes in which any fault is raised;
+  \item the \textbf{detection delay} $d = t_{\text{detect}} - \nu$ in
+  ticks on faulted episodes, together with the \textbf{detection rate}
+  $\rho$, the fraction of faulted episodes detected at all.
+\end{itemize}
 
-\subsection{H2: how sensitive is the result to the bounds?}
+\noindent\textbf{Primary metric.} \emph{Median and worst-case detection
+delay, with detection rate, at the tightest $(k, m)$ whose false-alarm
+rate on a held-out nominal set satisfies $\hat\alpha \le \alpha_0$.}
 
-\TODO{Sweep deadline $k$ and progress budget $m$ per phase over the
-recorded corpus; report the detection-latency / false-positive
-trade-off. Section~\ref{sec:phases} concedes that phases move the burden
-onto chosen bounds, and without this sweep the concession is
-unquantified.}
+Four reasons this is the right metric rather than one we preferred.
 
-\subsection{H3: cost}
+\emph{It is the established criterion for this problem class.} A phase
+deadline and a progress budget are a stopping rule, so the monitor is a
+sequential change detector, and such rules have been evaluated since
+Page's CUSUM by a pair of run lengths --- to false alarm, and to
+detection~\cite{page1954continuous}. Lorden made the pairing precise:
+minimise worst-case expected detection delay subject to a false-alarm
+constraint, a criterion under which CUSUM is minimax
+optimal~\cite{lorden1971procedures,moustakides1986optimal}. We adopt
+that criterion instead of inventing one. Two adaptations, stated because
+the correspondence is close but not exact: our episodes are finite, so
+the finite-horizon analogue of a run length to false alarm is a
+per-episode false-alarm \emph{probability} rather than an expected time,
+and we measure that probability directly rather than approximating it as
+a reciprocal; and our detector is not derived from a likelihood ratio,
+so we claim no optimality --- only that this is the criterion the
+problem class already has.
+
+\emph{Neither half is gameable alone.} Detection rate is maximised by
+$k = m = 1$, which detects every failure and aborts every healthy run;
+delay is maximised the same way. Constraining one while reporting the
+other cannot be gamed, and any paper reporting detection without a
+false-alarm budget has reported nothing.
+
+\emph{The bound sweep is the operating characteristic, not a side
+experiment.} Sweeping $(k, m)$ traces delay against false-alarm rate,
+per failure class. The headline number is a point on that curve chosen by
+a stated budget --- which is also the answer to the sharpest objection
+available, that the bounds were tuned to the failure set: we report the
+curve rather than a point.
+
+\emph{It states the baseline's failure correctly rather than unfairly.}
+The flat encoding's curve on progress failures is \emph{empty}:
+$\rho = 0$ at every false-alarm budget, because no setting of any
+parameter can give a guarantee property a bad prefix. That is a property
+of the encoding, not of a tuning choice, and it is the strongest
+available statement of the paper's claim.
+
+Three statistical commitments, each because there is a way to get it
+wrong. \textbf{Delay is right-censored}: undetected episodes have no
+finite $d$, so we report $\rho$ separately and the median $d$ over
+detected episodes, never a mean that silently drops non-detections ---
+which would flatter whichever arm detects less often but faster.
+\textbf{Stratify by failure class}: a topple trips an invariant on the
+first tick under both encodings, so pooling it with a stall dilutes
+precisely the effect under test. \textbf{Gate on coverage}: an episode
+whose undecided fraction exceeds a stated bound is excluded and counted,
+or a sensor dropout is reported as a monitoring result
+(Section~\ref{sec:unknown}).
+
+\emph{Why not AUROC}, which much of the neighbouring literature reports:
+it summarises a frame-wise classification and is threshold-free, whereas
+this is a stopping problem in which \emph{when} is the entire question. A
+detector with perfect AUROC that fires on an episode's last tick is
+worthless, and AUROC cannot tell it from one that fires at onset. The
+informative part of that summary here is per-class detection rate, which
+we do report.
+
+\subsection{H1 (main): does phase structure make failures detectable?}
+
+Over one corpus of recorded episodes, replay two encodings of the same
+mission --- flat (cross-cutting invariants plus the nested-$\F$ goal
+formula) and phase-structured (same invariants, same propositions, plus
+the ladder). Both see an identical observation stream, so the comparison
+isolates the encoding. \TODO{Report $\rho$ and median/worst-case $d$ per
+failure class (wedged, dead end, circling at constant distance, sensor
+dropout, toppling) at $\alpha_0 = \TODO{budget}$. Report separately the
+episodes in which the planner's own self-report fired, since those are
+the ones that flatter the flat encoding for the wrong reason
+(Section~\ref{sec:gap}).}
+
+\subsection{H2: the operating characteristic}
+
+\TODO{Sweep deadline $k$ and progress budget $m$ per phase over the same
+corpus and plot delay against false-alarm rate per class --- the curve
+of which H1 reports one point. This is also what quantifies the price
+Section~\ref{sec:phases} concedes, and a close competitor states that the
+effect of threshold variation is unexplored~\cite{zhou2024codeasmonitor},
+so the curve is a contribution and not only a defence.}
+
+\subsection{H3: execution not wasted}
+
+\TODO{Wasted ticks $=$ episode end $- \nu$ on faulted episodes; the
+monitor's saving is the difference against the unmonitored arm. This is
+the utility measure that does not require recovery to succeed, which
+matters because an unreachable goal admits no intervention and a
+success-rate-only evaluation would score a perfect monitor at zero.
+DoReMi reports execution time for the same reason~\cite{guo2024doremi}.}
+
+\subsection{H4: does it raise task success rate?}
+
+Four arms, with the intervention policy and the recovery repertoire held
+fixed so that only the monitor varies: (A) no monitor; (B) flat
+specification; (C) phase-structured specification; (D) an oracle monitor
+fired at ground-truth onset. The claim is $C > B$. Arm D bounds what any
+monitor could achieve with this recovery repertoire, so the result can be
+reported as a fraction of achievable gain rather than an unanchored
+percentage. The ladder follows DoReMi's use of an oracle upper
+bound~\cite{guo2024doremi}, and we report false interventions alongside
+successes as RoboMonitor does~\cite{ajith2026robomonitor}.
+\TODO{numbers} Stated plainly: success rate is a joint property of
+monitor, intervention policy and recovery repertoire, and only holding
+the latter two fixed makes the comparison about the first.
+
+\subsection{H5: cost and coverage}
 
 \TODO{Per-tick cost split into BDD steps, guard evaluation, fast-path
 grounding, and slow-path hit rate with and without active-guard
-narrowing; plus coverage (fraction of undecided ticks), since H1 is only
-as strong as its coverage.}
+narrowing; plus the undecided fraction, since every result above is
+conditioned on coverage.}
 
-\subsection{H4: the monitor cannot tell the embodiments apart}
+\subsection{H6, H7: the two consequences}
 
-One recorded episode through two independent paths: re-execution in
-simulation through a different descriptor, and replay of the recorded
-observation stream straight into the monitor. Same episode, both paths,
-same verdict --- compared over the full verdict record with nothing
-ignored by default, since a replay republishes recorded ticks and a
-timestamp that moved means the replay invented a clock. A missing
-verdict is reported separately from a differing one.
-\TODO{agreement rate, excluded ticks and why}
-
-\subsection{H5: phase ladders can be authored from a description}
-
-\TODO{Generate specifications for $n$ skill descriptions; report
-generate / validate / repair outcome rates against the contract, and
-whether generated ladders detect the H1 failure classes as well as the
-hand-authored one. This is the claim the hand-authored reference
-specification cannot support --- see Section~\ref{sec:threats}.}
+\TODO{H6 (portability): one recorded episode through two independent
+paths --- re-execution in simulation through a different descriptor, and
+replay of the recorded observation stream --- must produce the same
+verdict, compared over the full record with nothing ignored by default.
+H7 (authorship): generate specifications for $n$ skill descriptions,
+report generate/validate/repair outcome rates against the two gates of
+Section~\ref{sec:nl}, and test whether a generated ladder detects the H1
+failure classes as well as the hand-authored one --- the claim the
+hand-authored reference cannot support.}
 
 % =====================================================================
 \section{Threats to Validity}
