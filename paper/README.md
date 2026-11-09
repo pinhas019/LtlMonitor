@@ -119,9 +119,7 @@ they are not the fourth value DECIDED/UNDECIDED needs. §IV-F says this.
 
 ---
 
-## Page budget — the draft does not currently fit RA-L
-
-Measured, not estimated:
+## Page budget — measured, and deliberately not acted on yet
 
 | | pages |
 |---|---|
@@ -129,23 +127,29 @@ Measured, not estimated:
 | + §V–§IX **as skeletons** | **9** |
 
 RA-L is 6 pages, 8 absolute maximum with overlength charges. A trim pass
-(compacting the comparison table to one column, cutting the table
-walk-through, Position and spec-acquisition to a few sentences each, merging
-four items in §IV-C into two) did not move the page count, because the
-binding constraint is total material, not slack.
+(compacting Table I to one column, cutting the table walk-through, Position
+and spec-acquisition to a few sentences each, merging four items in §IV-C into
+two) did **not** move the page count: the binding constraint is total
+material, not slack in the wording. Written out properly, every section comes
+to roughly 9 pages, so about one page has to come out of **scope**.
 
-Realistic allocation if every section were written properly: ~9 pages. So
-roughly **one page has to come out of scope, not out of wording.**
+**Decision (owner, this session): leave it at 9 and keep drafting §V–IX at
+full detail.** Revisit once the evaluation numbers exist and it is visible
+which sections actually earn their space. So:
 
-The clear candidate is the **portability and authorship material**, which is
-already demoted to consequences: §I-D, H4, H5, §VI-E, §VI-F, and the NL→LTL
-citation cluster. Removing it saves about a page, leaves the paper making
-exactly one claim, and the removed material is a coherent second paper. The
-alternative is a venue with more room (T-RO, IJRR).
-
-Nothing else should be cut: §II-B (semantics), §IV-A (the detectability gap),
-§IV-B (phases as bounded obligations), §IV-G (bounding the flat formula) and
-§III-C (the competitor analysis) are the paper.
+- **Do not trim for length right now.** A future session that starts shaving
+  prose is working on the wrong problem — the measurement above already
+  showed wording is not where the page is.
+- When the time comes, the candidate for the cut is the **portability and
+  authorship material**, already demoted to consequences: §I-D, H4, H5,
+  §VI-E, §VI-F and the NL→LTL citation cluster. That is about a page, it
+  leaves the paper making exactly one claim, and it is a coherent second
+  paper. The alternative is a venue with room for the whole argument (T-RO,
+  IJRR).
+- Not candidates, whatever the page count: §II-B (semantics), §IV-A (the
+  detectability gap), §IV-B (phases as bounded obligations), §IV-G (bounding
+  the flat formula), §III-C (the competitor analysis). Those five are the
+  paper.
 
 ---
 
