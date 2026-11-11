@@ -145,9 +145,14 @@ at most $k$, refutable on a finite trace. So is ``the progress
 predicate does not fail on $m$ consecutive ticks''. Phase decomposition
 with deadlines performs a \textbf{guarantee-to-safety conversion}, one
 stage at a time, and that conversion is what turns an unrefutable stall
-into a detected one. On the wedged-humanoid trace the ladder reports a
-progress fault within $m$ ticks of the stall and a timeout fault at the
-deadline, while the flat formula is still inconclusive.
+into a detected one. On the wedged-humanoid trace the ladder reports a timeout fault at the
+phase deadline while the flat formula is still inconclusive. It does
+\emph{not}, as shipped, report the earlier progress fault: the progress
+condition in our specification is itself written over the planner's
+status, so a planner that keeps reporting \texttt{following} keeps it
+satisfied. Only the deadline, which reads nothing, catches this case
+today; the progress budget catches it once progress is derived from
+odometry (Section~\ref{sec:threats}).
 
 \begin{figure}[t]
 \centering
@@ -176,11 +181,11 @@ Three phases, each with guards and budgets:
 \textsc{confirm}: deadline 10
 \vspace{4pt}
 
-On a stalled trace: \textsc{failure} at the budget or the deadline,
-whichever binds first.
+On a stalled trace: \textsc{failure} at the deadline; at the budget
+if progress is sensed independently of the planner.
 \vspace{4pt}
 
-Diagnosis: \texttt{phase:tracking:progress}, category \textsc{progress}
+Diagnosis: \texttt{phase:tracking:timeout}, category \textsc{timeout}
 $\rightarrow$ \textsc{replan}.
 \\
 \bottomrule
@@ -261,8 +266,8 @@ along a real joint.
 \begin{enumerate}
   \item \textbf{The detectability argument}: flat temporal
   specifications of robot skills are not refutable, this is why stalls
-  go undetected, and phase decomposition with deadlines and progress
-  budgets is a guarantee-to-safety conversion that repairs it
+  go undetected, and bounding each stage's obligation is what repairs it, with a proved
+  horizon on time to verdict
   (Section~\ref{sec:why}).
 
   \item \textbf{A phase structure for monitoring}, with five guard kinds
@@ -322,8 +327,13 @@ automaton's state as the observed word arrives. We use
 Spot~\cite{duretlutz2016spot} to obtain deterministic, complete,
 state-based B\"uchi automata with transition labels as BDDs over $AP$,
 so one step is a single BDD evaluation against the current proposition
-assignment plus a state assignment --- constant per tick, independent of
-how long the episode has run or how large the formula was. Completeness
+assignment plus a state assignment --- independent of how long the episode has run. The cost does grow
+with the number of propositions and with the automaton, which can be
+exponential in the formula; our formulas are small. Determinism is
+requested of Spot rather than guaranteed, since not every LTL formula
+has a deterministic B\"uchi automaton, so the specification contract
+should --- and does not yet --- reject a formula whose automaton is not
+deterministic. Completeness
 matters operationally rather than theoretically: a complete automaton
 has a successor for every assignment, so an unexpected observation never
 leaves the monitor undefined.
@@ -368,9 +378,20 @@ into two values by additionally evaluating the prefix as if it were
 complete, yielding a four-valued verdict that distinguishes
 ``presumably true'' from ``presumably false''.
 
-We monitor under \textbf{LTL$_3$}, and its three verdicts are exactly
-the monitor's \textsc{accepted}, \textsc{violated} and
-\textsc{inconclusive}. The reason is that at tick $k$ the monitor
+We monitor under \textbf{LTL$_3$} for the verdict that matters,
+violation. The correspondence with the monitor's three statuses is exact
+on one side only, and we state it rather than claim more.
+\textsc{violated} is LTL$_3$'s $\bot$: the automaton is in a
+non-accepting sink, so no continuation satisfies the formula, and the
+verdict is permanent. It is sound; it is complete only where Spot has
+collapsed every rejecting region to a single sink, which holds for the
+safety formulas we use and is not checked in general.
+\textsc{accepted} is \emph{not} LTL$_3$'s $\top$. It reports that the
+current state is accepting --- for $\G\neg\mathit{collision\_risk}$ from
+the first tick, although the formula can still be violated --- and it
+can revert, so it is closer to RV-LTL's ``presumably true'' than to a
+definitive verdict. Nothing downstream acts on it. The reason LTL$_3$ is
+the right reading for violation is that at tick $k$ the monitor
 genuinely does not know whether the episode continues, and must publish
 a verdict anyway; LTL$_3$ is the semantics of precisely that situation.
 It is also why \textsc{inconclusive} is the \emph{normal, healthy} state
@@ -473,14 +494,16 @@ abort itself, where ours produces a categorised verdict an independent
 supervisor acts on. Three things
 separate them, in descending order of how much they decided the matter.
 
-\emph{First, a behaviour tree does not denote a language of traces.} Its
-meaning is its tick-by-tick traversal, so there is no object of which
-one can ask whether it has a bad prefix. The central argument of this
-paper --- that the goal obligation is a guarantee property and therefore
-unrefutable, and that bounding it makes it a safety property --- cannot
-be \emph{stated} in behaviour-tree formalism, let alone checked. That is
-not a point about expressive power but about what kind of thing the
-artifact is.
+\emph{First, a behaviour tree is an executable, not a declared
+property.} Behaviour trees do have formal semantics, and a tree of
+condition nodes evaluated every tick denotes a state invariant, so this
+is not a claim that they lack trace semantics. It is that the property a
+tree enforces is implicit in its traversal and has to be extracted
+before one can ask which class it belongs to, whereas a formula
+\emph{is} the property. The argument of this paper --- that the goal
+obligation is a guarantee property and therefore unrefutable, and that
+bounding it makes it refutable --- is made directly on the artifact in
+one case and on a derived model of it in the other.
 
 \emph{Second, there is no permanence.} A condition node is recomputed
 every tick and returns success, failure or running; nothing latches. One
@@ -554,10 +577,10 @@ failing it is fed back to the model for repair. The second runs when a
 monitor loads the specification: every formula must compile under
 Spot~\cite{duretlutz2016spot}, and a specification that does not is
 rejected with its problems published rather than adopted. Only the
-first gate is inside the repair loop today. Ambiguity therefore
-surfaces as a rejected proposal rather than as a monitor that is quietly
-wrong, which is the same discipline the calibrated-abstention line
-applies to translation
+first gate is inside the repair loop today. A malformed proposal is therefore rejected rather than run, although
+an ambiguous description can still yield a well-formed specification
+that says the wrong thing, which no gate sees --- the problem the calibrated-abstention line addresses for
+translation
 itself~\cite{sundarsingh2025conformalnl2ltl,chen2023nl2tl}.
 
 \textbf{And the phase structure is what makes those gates strong.} This
@@ -641,8 +664,10 @@ characteristic failure is instructive: RoboMonitor must actively
 suppress \emph{spurious phase switching}, from \SI{15.2}{\percent} to
 \SI{5.0}{\percent}, using temporal-consistency objectives. In our system
 the phase is not estimated. It is a state of a declared machine that
-advances only when a declared exit condition holds, so it is exact by
-construction and spurious switching is structurally impossible; the
+advances only when a declared exit condition holds, so it cannot flicker between stages. The corresponding failure is
+different and not milder: a one-tick glitch in an exit condition
+advances the ladder irreversibly, which a minimum-dwell bound mitigates
+and does not remove. The
 uncertainty is pushed down into the proposition layer where it is
 explicit and three-valued (Section~\ref{sec:unknown}). The trade runs
 the other way too: a learned monitor needs no specification, and ours
@@ -659,8 +684,9 @@ verification is too coarse to localise a failure, atomic-step scoring too
 noisy --- and measures it: stage-wise evaluation improves discriminability
 by over \SI{85}{\percent} against whole-trajectory evaluation, and
 permits early termination of unrecoverable
-runs~\cite{shi2026dynsteer}. That is our thesis in a different domain,
-with numbers. It is also different in kind: those stages are compiled
+runs~\cite{shi2026dynsteer}. That supports the granularity premise in a different domain; it is a
+result about discriminating between agents by evaluation score, not
+about detecting failures, and it is different in kind: those stages are compiled
 into a milestone graph and scored by LLM judges, with no formal guards,
 no deadline semantics and no claim about property classes.
 
@@ -700,10 +726,17 @@ observations~\cite{duan2025aha,pacaud2025guardian}: both \emph{consume} a
 decomposition someone else supplied. DoReMi and Code-as-Monitor
 \emph{produce} one, and their during-execution and on-completion
 constraints correspond closely to our invariant and exit
-condition~\cite{guo2024doremi,zhou2024codeasmonitor}. But in every case
-the obligations are \emph{state} constraints with no horizon. DoReMi's
-only temporal bound is a global task timeout --- precisely the single
-mission-level bound Section~\ref{sec:bounded} argues against.
+condition~\cite{guo2024doremi,zhou2024codeasmonitor}. But in the parts of these systems we examined the obligations are
+\emph{state} constraints with no horizon, and DoReMi's only temporal
+bound is a global task timeout. Horizons on progress do exist in
+practice, and the closest is inside the navigation stack we replaced:
+Nav2's progress checker fails a controller that has not moved a set
+distance within a set time~\cite{macenski2020marathon}. That is a
+progress budget in all but name. What distinguishes ours is where it
+sits --- outside the component it judges, declared per stage in a
+specification, and producing a categorised verdict rather than the
+controller's own abort --- and we claim that placement, not the
+mechanism.
 
 \textbf{So the detectability gap survives the cluster.} A robot wedged
 while still holding its object, with no obstacle newly in front of it,
