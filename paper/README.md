@@ -1,18 +1,41 @@
 # RA-L draft
 
-`ral.tex` + `refs.bib`. Build:
+**Current draft: `ral.tex` → `ral.pdf`, restructured to the 8-page outline.**
+It builds at 5 pages with every result still a `\TODO`; the remaining 3 pages
+are the budget for the drawn Figure 1, a system figure, the results table and
+figure, and the E1–E3 text.
+
+**`ral_extended.tex` is the previous 15-page version**, kept as the source for
+the longer argument (natural-language authoring, the full threats section, the
+metric defence, Table I). Most sections below describe that extended version;
+where they disagree with `ral.tex`, `ral.tex` is current.
+
+| § in `ral.tex` | Content |
+|---|---|
+| I | Wedged-humanoid opener, the gap, four contributions |
+| II | LTL in brief; LTL₃ vs LTLf vs RV-LTL; why LTL (prose, no table) |
+| III | Related work in four paragraphs + position |
+| IV | The gap; phases; Proposition 1; **conformal calibration of bounds**; what it does not fix |
+| V | Artifacts, one tick, fault → intervention |
+| VI | Data (teleop pick-and-place main, navigation supporting), arms B1–B4 and C, metrics, results `\TODO` |
+| VII | Limitations and conclusion |
+
+Claim, as now stated: a specification pairing LTL invariants with per-phase
+deadlines and progress budgets, calibrated from nominal runs, gives a
+controller-independent monitor with a verdict horizon fixed by the
+specification. Portability and natural-language authoring are no longer
+contributions. The standing length instruction ("do not trim") was superseded
+by the owner's request to restructure to 8 pages.
+
+Build:
 
 ```bash
 pdflatex ral && bibtex ral && pdflatex ral && pdflatex ral
 ```
 
 **`ral.pdf` is committed** so it can always be downloaded from the repository.
-It is a build product kept in step by hand: whenever `ral.tex` or `refs.bib`
-changes, rebuild and commit the PDF in the same commit.
-
-Verified on TeX Live 2023 (`texlive-latex-base texlive-latex-recommended
-texlive-publishers texlive-science texlive-fonts-recommended`): 8 pages, no
-undefined references, no undefined citations, no overfull box above 15 pt.
+Whenever `ral.tex` or `refs.bib` changes, rebuild and commit the PDF in the
+same commit.
 
 ---
 
