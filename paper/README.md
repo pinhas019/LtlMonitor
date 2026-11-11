@@ -108,13 +108,14 @@ they are not the fourth value DECIDED/UNDECIDED needs. §IV-F says this.
 
 ---
 
-## Page budget — 13 pages, accepted; the owner trims
+## Page budget — 14 pages, accepted; the owner trims
 
 | | pages |
 |---|---|
 | §I–§IV + bibliography | 7 |
 | + §VI (mechanism) and §VII (metric) | 11 |
-| + §VIII (threats) and the remaining mitigations | **13** |
+| + §VIII (threats) and the remaining mitigations | 13 |
+| + Proposition 1, its proof, and the two corrections | **14** |
 
 RA-L allows 8 at most.
 
@@ -149,6 +150,74 @@ paper.
 
 A venue with room for the whole argument (T-RO, IJRR) remains open and, at 11
 pages of genuine content, worth weighing rather than treating RA-L as fixed.
+
+---
+
+## The guarantee-to-safety claim is now proved — and it moved
+
+The old §IV-B asserted that *"phase decomposition with deadlines performs a
+guarantee-to-safety conversion."* Two problems, both now fixed.
+
+**1. It attributed the conversion to the wrong thing.** The conversion is done
+by **the deadline**, not by the decomposition. `F p` is a guarantee property
+with no bad prefix; `F≤k p` is decided within k+1 positions and so is safety as
+well. That is a fact about the bound. What the decomposition adds is per-stage
+bounds, a scope for the progress budget, and localisation — separate claims,
+now separated.
+
+**2. It was asserted, not proved.** §IV-B now carries:
+
+> **Proposition 1.** Let a ladder have phases 1..n visited in order, each with
+> a finite deadline kᵢ. Then within Σkᵢ ticks of the ladder being armed, the
+> monitor has either completed the ladder or raised a fault.
+
+Proof: the ladder occupies one phase at a time; the elapsed-tick counter
+increments once per tick and resets only on entry, so it measures occupancy; at
+kᵢ it raises a terminal timeout fault; phases are visited in order and not
+revisited. Verified against `monitor_node.py` — `phase_step_count` increments
+unconditionally at line 1378 and the timeout check at 1310 precedes the
+progress check, so the bound holds in ticks regardless of sensing.
+
+**The uncomfortable consequence, now owned in the paper.** ρ = 1 for the ladder
+and ρ = 0 for B1 are **theorems, not measurements.** So H1's detection-rate
+column is a *conformance check* that the implementation honours Proposition 1 —
+a claim about the code, not about the idea. H2 is therefore relabelled
+**(main)** and carries the empirical weight: how far below Σkᵢ the delay
+actually falls, and what that costs in false alarms. "We prove detection and
+measure its cost" is the right framing, and it is strictly more defensible than
+claiming a measured detection result that was never in doubt.
+
+---
+
+## Correction: freeze-on-unknown is designed, not deployed
+
+§IV-F described the three-valued/freeze rule in the present tense, as the
+system's behaviour. **It is not implemented.** `monitor_node.py:1824` reads:
+
+> *"Three-valued APs are P10's. Until then an AP that could not be evaluated is
+> simply absent from ap_values; logged so it is not invisible, but the step is
+> unchanged by it."*
+
+What actually ships: the wire contract carries `unknown_aps` beside the values
+(so an unevaluable proposition is never encoded as `false`), but the monitor
+logs it and steps anyway, and `_eval(raw, default=True, …)` makes an
+unevaluable guard **fall back to a pass**. So behaviour is **fail-open** —
+unknown suppresses faults rather than fabricating them. Safer direction, but
+not the freeze.
+
+The paper now states both, and the consequence is precise:
+
+- **Proposition 1 is unaffected.** The timeout path evaluates no expression —
+  the code comment says so explicitly — so a stalled robot with every
+  proposition unknown still times out within Σkᵢ.
+- **The progress budget is suppressed** exactly when sensing degrades. So the
+  guarantee survives a sensor outage; the latency does not. Measured delay under
+  poor coverage reflects the deadline, not the budget — which is why the
+  coverage figure must be read beside every delay.
+
+Added to §VIII as its own threat. **A paper that misdescribes its own system is
+worse than one with a gap**, so this is stated rather than quietly fixed in
+prose. If P10 lands before submission, update §IV-F and this note together.
 
 ---
 
