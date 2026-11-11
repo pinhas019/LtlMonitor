@@ -250,8 +250,9 @@ phase structure names an embodiment: one specification runs against
 hardware, a simulator and a recorded stream, and the claim is checkable
 rather than asserted. Because a phase ladder over a declared vocabulary
 is a small declarative artifact, it can be generated from a free-language
-skill description and then validated mechanically --- every formula must
-compile, every sensor key a guard references must be declared. Neither
+skill description and then validated mechanically --- every sensor key
+a guard references must be declared, and every formula must compile
+before a monitor will adopt it. Neither
 is the point of the paper, but both are evidence the decomposition cuts
 along a real joint.
 
@@ -544,12 +545,16 @@ does before anyone built it.
 
 The objection to the third option is that natural language is ambiguous,
 and it is. Our answer is not that the model is reliable. It is that
-\textbf{the model proposes and the contract checks}. Two gates run on
-every generated specification, both mechanical, neither needing a human
-or a robot: every formula must compile under
-Spot~\cite{duretlutz2016spot}, and every sensor key named by any
-grounding rule must be declared in the embodiment's schema. A proposal
-failing either is rejected and fed back for repair. Ambiguity therefore
+\textbf{the model proposes and the contract checks}. Two gates stand between a generated specification and a running
+monitor, both mechanical, neither needing a human or a robot. The first
+runs inside the generation loop: every proposition a formula, guard or
+terminal condition uses must be declared, and every sensor key named by
+a grounding rule must be declared in the embodiment's schema; a proposal
+failing it is fed back to the model for repair. The second runs when a
+monitor loads the specification: every formula must compile under
+Spot~\cite{duretlutz2016spot}, and a specification that does not is
+rejected with its problems published rather than adopted. Only the
+first gate is inside the repair loop today. Ambiguity therefore
 surfaces as a rejected proposal rather than as a monitor that is quietly
 wrong, which is the same discipline the calibrated-abstention line
 applies to translation
@@ -849,19 +854,29 @@ verdict, which is the form in which it is worth proving.
 
 \begin{proposition}
 \label{prop:bounded}
-Let a ladder have phases $1 \dots n$ visited in order, each with a
-finite deadline $k_i$. Then within $\sum_{i=1}^{n} k_i$ ticks of the
-ladder being armed, the monitor has either completed the ladder or
-raised a fault.
+Let a ladder have phases $1 \dots n$ visited in order, each declaring a
+finite deadline $k_i$. Then within $\sum_{i=1}^{n} (k_i + 1)$ ticks of
+\emph{entering the first phase}, the monitor has either completed the
+ladder or raised a fault.
 \end{proposition}
 
 \proofpar The ladder occupies exactly one phase at a time. A phase's
-elapsed-tick counter is incremented once per tick and reset only on
-entry to a phase, so it measures occupancy of the current phase. When it
-reaches $k_i$ the machine raises a timeout fault, which is terminal.
-Hence no phase is occupied for more than $k_i$ ticks. Phases are visited
-in order and not revisited, so total occupancy before either leaving the
-last phase or raising a fault is at most $\sum_i k_i$. \qedbox
+elapsed-tick counter is reset on entry and incremented once on every
+tick the phase remains active, so it measures occupancy of the current
+phase. On any tick at which the counter has reached $k_i$ the machine
+raises a timeout fault before it consults the progress or exit
+conditions, and that fault is terminal. Hence a phase is occupied for at
+most $k_i + 1$ ticks, the last being the one that faults. A phase is
+left only forwards, to its successor, and never re-entered, so total
+occupancy before either leaving the last phase or raising a fault is at
+most $\sum_i (k_i + 1)$. \qedbox
+
+Two hypotheses are doing work and are stated because the implementation
+permits their absence. The deadline is optional in the specification
+format, and a phase without one is bounded by nothing; and the ladder
+waits in an idle state, without bound, for the first phase's enter
+condition --- so the proposition is about a skill that has started, and
+says nothing about one that never does.
 
 Two things follow. First, the obligation that
 $\mathit{finished}$ is eventually reached --- never refuted on a finite
@@ -875,7 +890,7 @@ claim it as a result (Section~\ref{sec:eval}).
 The proposition rests on the deadline alone, and deliberately so: the
 timeout path counts ticks and evaluates no expression, so no sensor's
 availability bears on it. The progress budget is the opposite --- it is
-what brings the \emph{typical} detection delay far below $\sum_i k_i$,
+what brings the \emph{typical} detection delay far below that bound,
 and it does depend on its proposition being evaluable. The deadline
 gives the guarantee; the budget gives the latency; only the first is
 proved.
@@ -957,18 +972,29 @@ redesign of the automaton layer.
 describe the design as though it were built.} The wire contract already
 carries an \texttt{unknown} list beside the proposition values, so an
 unevaluable proposition is never encoded as \texttt{false}; but the
-monitor logs that list and steps anyway, and a guard whose expression
-cannot be evaluated falls back to a pass. The behaviour is therefore
-\emph{fail-open}: an unknown proposition suppresses faults rather than
-fabricating them. That is the safer of the two failure directions --- it
-is what keeps a dropped odometry sample from manufacturing a safety halt
---- but it is not the freeze, and it has a precise consequence for
-Proposition~\ref{prop:bounded}. The timeout path evaluates no
-expression, so the bound is untouched: a stalled robot with every
-proposition unknown still produces a timeout fault within
-$\sum_i k_i$ ticks. The progress path is suppressed, so the budget
-stops shortening the delay exactly when sensing degrades. The guarantee
-survives a sensor outage; the latency does not.
+monitor logs that list and steps anyway, and the two layers then treat a
+missing proposition in \emph{opposite} directions. A phase guard whose
+expression cannot be evaluated falls back to a pass, so the ladder fails
+open: an unknown proposition suppresses phase faults. The automata do
+the reverse: a proposition absent from the assignment is read as false,
+so $\G\,\mathit{upright}$ is \emph{violated} by a missing
+$\mathit{upright}$ while $\G\neg\mathit{collision\_risk}$ is silently
+satisfied by a missing $\mathit{collision\_risk}$. Neither is the
+freeze, the first of the two automaton behaviours is exactly the
+fabricated safety fault this section opened with, and which one a
+formula gets depends on nothing more principled than the polarity in
+which its proposition was named. In practice the evaluator holds the
+last value of a stale key, so propositions go stale far more often than
+they go missing, and staleness lowers the confidence that de-escalates a
+fault to a warning; but the gap is real and the freeze is what closes
+it.
+
+The consequence for Proposition~\ref{prop:bounded} is precise. The
+timeout path evaluates no expression, so the bound is untouched: a
+stalled robot with every proposition unknown still produces a timeout
+fault within the stated horizon. The progress path is suppressed, so the
+budget stops shortening the delay exactly when sensing degrades. The
+guarantee survives a sensor outage; the latency does not.
 
 Two points deserve care. First, \textsc{undecided} is a \emph{different
 axis} from LTL$_3$'s $?$, and the two must not be merged into one
@@ -985,10 +1011,10 @@ condition may be stale throughout an earlier phase at no cost. Flat
 monitoring has no such scope, because every formula is live at every
 tick.
 
-The honest consequence: $\G\neg\mathit{collision\_risk}$ cannot be
-violated during a data outage. That is epistemically correct --- no
-collision was observed --- and it makes the data-health alarm
-load-bearing for safety rather than decorative. Every episode verdict
+The honest consequence of the freeze, once deployed: no safety formula
+can be violated during a data outage. That is epistemically correct ---
+nothing was observed --- and it makes the data-health alarm load-bearing
+for safety rather than decorative. Every episode verdict
 therefore carries a coverage count, how many ticks were undecided; an
 episode with \SI{40}{\percent} undecided ticks folding to ``reached
 goal, full confidence'' is not a result.
@@ -1121,22 +1147,25 @@ The monitor is driven by an external clock, not by message arrival
   environment, in well under a millisecond. A proposition whose
   description is not reducible to a threshold goes to a model on a
   worker thread; the queue is drained when a newer request arrives, so a
-  late answer is discarded rather than applied to the wrong tick. A
-  proposition whose required sources are stale returns
-  \textsc{unknown} rather than false.
-  \item \textbf{Decide decidability.} If a proposition required by the
-  automaton's current state or by the active phase's guards is
-  \textsc{unknown}, the tick is \textsc{undecided}: nothing steps, and
-  the verdict says so (Section~\ref{sec:unknown}).
+  late answer is discarded rather than applied to the wrong tick. Stale
+  sources are reported beside the values and lower a confidence scalar
+  that travels with them.
+  \item \textbf{Account for what could not be evaluated.} A proposition
+  that could not be evaluated is listed separately rather than encoded
+  as false. As built, the monitor logs that list and steps regardless;
+  the freeze of Section~\ref{sec:unknown} is designed and not deployed.
   \item \textbf{Step the automata.} One BDD evaluation and one state
   assignment per cross-cutting formula. A formula entering its trap
   state is \textsc{violated}, permanently.
   \item \textbf{Step the ladder.} The active phase's guards are consulted
-  in a fixed order --- on entry, \emph{precondition}; then
-  \emph{invariant}; then \emph{progress condition}, incrementing or
-  resetting its violation counter; then \emph{exit condition}, which
-  advances the ladder. The phase's elapsed-tick count is compared with
-  its deadline.
+  in a fixed order --- \emph{precondition}, once, on entry; then on every
+  tick the \emph{invariant}; then the \emph{deadline}, by comparing the
+  phase's elapsed-tick count with its bound; then the \emph{progress
+  condition}, incrementing or resetting its violation counter; then the
+  \emph{exit condition}, which advances the ladder if the next phase's
+  enter condition also holds. The deadline is checked before any
+  condition that depends on a proposition other than the invariant's,
+  which is what Proposition~\ref{prop:bounded} relies on.
   \item \textbf{Publish.} One verdict carrying the active phase and
   index, each formula's status, the evaluated truth of every guard the
   phase declares, the violation counters, any fault raised with its name
@@ -1166,16 +1195,24 @@ A monitor by itself changes no outcome. The path from detection to a
 better outcome has four links, and the design makes each explicit.
 
 A guard breach produces a \textbf{named fault}, carrying the stage and
-the guard kind. The fault's \textbf{category} is declared in the
-specification: a breached invariant or failed precondition is
-\textsc{safety}; an exceeded deadline is \textsc{timeout}; an exhausted
-progress budget is \textsc{progress}. The category selects a rung of an
-\textbf{intervention ladder} --- continue, warn, replan, halt, abort ---
-graded in exactly one place so that the node actuating the robot
-contains no policy. The \textbf{supervisor} obeys the token, overriding
-the base with a zero-velocity command at halt or above, and also when
-the episode has ended; it enforces nothing until enabled, which is what
-makes a detection-only arm available for the evaluation below.
+the guard kind. The fault's \textbf{category} is fixed for two guard kinds and
+declared for the other two: an exceeded deadline is always
+\textsc{timeout} and an exhausted progress budget always
+\textsc{progress}, while the specification declares the category of each
+phase's invariant and precondition --- in our navigation specification
+every invariant is \textsc{safety}. The category, together with how
+imminent the fault is and how confident the monitor is in the signal
+behind it, selects a rung of a six-step \textbf{intervention ladder} ---
+continue, warn, slow, replan, halt, abort --- graded in exactly one place
+so that the node actuating the robot contains no policy. A confirmed
+safety fault halts or aborts; a confirmed timeout or stall requests a
+replan; and a fault resting on low-confidence sensing is de-escalated to
+a warning rather than acted on. The \textbf{supervisor} overrides the
+base with a zero-velocity command while a halting fault is active, and
+enforces nothing until enabled, which is what makes a detection-only arm
+available for the evaluation below. Extending the override to every
+episode end, so that a robot is never left driving while its monitor has
+stopped stepping, is specified and not yet built.
 
 So the causal claim the paper can make about success rate is narrow and
 worth stating as such: earlier detection helps only where something
@@ -1511,7 +1548,9 @@ about encodings rather than as a defeat of anyone's system.
 \textbf{Freeze-on-unknown is designed and not deployed.}
 Section~\ref{sec:unknown} describes a three-valued proposition layer
 with a freeze rule; what ships carries the unknown list on the wire but
-steps anyway, with guards falling back to a pass. We describe both
+steps anyway, with phase guards falling back to a pass and the automata
+reading a missing proposition as false --- so a missing proposition can
+both hide a phase fault and fabricate a safety one. We describe both
 rather than the design alone, because a paper that misstates its own
 system's behaviour is worse than one with a gap. Residual:
 Proposition~\ref{prop:bounded} is unaffected, since the timeout path

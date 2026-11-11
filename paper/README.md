@@ -108,14 +108,15 @@ they are not the fourth value DECIDED/UNDECIDED needs. §IV-F says this.
 
 ---
 
-## Page budget — 14 pages, accepted; the owner trims
+## Page budget — 15 pages, accepted; the owner trims
 
 | | pages |
 |---|---|
 | §I–§IV + bibliography | 7 |
 | + §VI (mechanism) and §VII (metric) | 11 |
 | + §VIII (threats) and the remaining mitigations | 13 |
-| + Proposition 1, its proof, and the two corrections | **14** |
+| + Proposition 1, its proof, and the two corrections | 14 |
+| + corrections from the verification pass | **15** |
 
 RA-L allows 8 at most.
 
@@ -150,6 +151,46 @@ paper.
 
 A venue with room for the whole argument (T-RO, IJRR) remains open and, at 11
 pages of genuine content, worth weighing rather than treating RA-L as fixed.
+
+---
+
+## Verification pass: paper claims checked against the code
+
+Every mechanism claim in §IV and §VI was checked against `skill_monitor/`.
+
+**Confirmed as written**
+
+| claim | evidence |
+|---|---|
+| shipped spec holds both the nested-F formula and the 3-phase ladder; deadlines 30/120/10, budgets 5/5 | `specs/formulas_g1.json` |
+| fault names `phase:<phase>:<kind>` | `monitor_node.py:151` |
+| three descriptors, identical 21-key schema | `adapter_spec.load` on all three |
+| monitor never reads the adapter directory | no reference in `monitor_node.py` |
+| fast path = restricted `eval`; slow path = worker thread with queue draining | `evaluator_node.py:373, 90, 153` |
+| per-key fold policies | `adapter_spec.py` `aggregate` |
+| debounce still counts messages on `real_g1` (`nav_stuck` has no `on: tick`) | `adapters/real_g1.json:171` |
+| five of eight propositions read planner status | the spec's grounding rules |
+| 1231 tests pass, 0 skipped | run this session |
+
+**Wrong in the draft, now corrected**
+
+| the draft said | the code does | fixed in |
+|---|---|---|
+| verdict within Σkᵢ ticks "of being armed" | bound is Σ(kᵢ+1), counted from *entering phase 1*; the idle wait for the first enter condition is unbounded, and `max_steps` is optional | Prop. 1 + a hypotheses paragraph |
+| guard order: precondition, invariant, progress, exit, deadline | invariant → **deadline** → progress → exit (the deadline is checked before progress, which the proof relies on) | §VI-B |
+| invariant and precondition breaches are SAFETY | timeout/progress categories are fixed; invariant and precondition categories are *declared per phase* (shipped spec: invariants SAFETY) | §VI-D |
+| five-rung ladder | six: CONTINUE, WARN, **SLOW**, REPLAN, HALT, ABORT, graded on category + imminence + confidence | §VI-D |
+| supervisor also stops at episode end | as built it overrides only while a halting fault is active; the episode-end rule is specified, not built | §VI-D |
+| generator checks that every formula compiles under Spot | the repair loop checks declared propositions and declared sensor keys only; Spot compilation happens when a monitor *loads* the spec | §II-D, §I |
+| stale sources make a proposition UNKNOWN; undecided ticks freeze | evaluator reports stale sources and lowers confidence; monitor logs the unknown list and steps | §VI-B |
+| unknown handling is "fail-open" | only the ladder is: guards fall back to a pass. The **automata read a missing proposition as false**, so `G(upright)` is violated by a missing `upright` — a fabricated safety fault | §IV-F, §VIII |
+
+**Not verifiable from this checkout**
+
+- Spot is not installed here, so automaton construction (determinism,
+  completeness, trap states) is unexecuted; the tests stub the ROS layer.
+- Nothing empirical: every H1–H7 number is still a `\TODO`.
+- Citation fields marked `% VERIFY` in `refs.bib` remain unchecked.
 
 ---
 
