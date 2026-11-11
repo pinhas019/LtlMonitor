@@ -6,6 +6,10 @@
 pdflatex ral && bibtex ral && pdflatex ral && pdflatex ral
 ```
 
+**`ral.pdf` is committed** so it can always be downloaded from the repository.
+It is a build product kept in step by hand: whenever `ral.tex` or `refs.bib`
+changes, rebuild and commit the PDF in the same commit.
+
 Verified on TeX Live 2023 (`texlive-latex-base texlive-latex-recommended
 texlive-publishers texlive-science texlive-fonts-recommended`): 8 pages, no
 undefined references, no undefined citations, no overfull box above 15 pt.
