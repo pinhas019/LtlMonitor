@@ -1,10 +1,12 @@
 """The offline proof of concept: flat goal formula vs phase ladder on the same frames."""
 import importlib.util
+import sys
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
     "poc_offline", Path(__file__).resolve().parents[1] / "tools" / "poc_offline.py")
 poc = importlib.util.module_from_spec(_spec)
+sys.modules["poc_offline"] = poc   # dataclasses resolves annotations via sys.modules
 _spec.loader.exec_module(poc)
 
 
